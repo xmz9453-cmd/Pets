@@ -1,0 +1,13 @@
+{
+  "name": "psop-mvp-testing",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PSOP MVP foundation tests",
+  "scripts": {
+    "test": "jest --runInBand"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2",
+    "supertest": "^7.2.2"
+  }
+}
