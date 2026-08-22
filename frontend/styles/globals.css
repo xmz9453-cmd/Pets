@@ -29,3 +29,32 @@ body {
   font-weight: 700;
   letter-spacing: 0;
 }
+
+.foundation-meta {
+  margin-top: 8px;
+  color: #667085;
+  font-size: 0.95rem;
+}
+
+.login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.login-panel {
+  width: min(100%, 380px);
+  border: 1px solid #d7dde5;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 24px;
+}
+
+.login-panel h1 {
+  margin-bottom: 24px;
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}

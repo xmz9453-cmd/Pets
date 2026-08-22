@@ -1,9 +1,15 @@
 const path = require('path');
 const { closeDatabase, executeSqlFile } = require('./helpers');
+const { seedStaffAuthentication } = require('../seeds/staff-authentication-seed');
 
 async function seed() {
-  const seedFile = path.resolve(__dirname, '..', 'seeds', '001_foundation_seed.sql');
-  await executeSqlFile(seedFile);
+  const foundationSeedFile = path.resolve(__dirname, '..', 'seeds', '001_foundation_seed.sql');
+  const roleSeedFile = path.resolve(__dirname, '..', 'seeds', '002_staff_authentication_roles.sql');
+  const appointmentServiceSeedFile = path.resolve(__dirname, '..', 'seeds', '003_appointment_service_seed.sql');
+  await executeSqlFile(foundationSeedFile);
+  await executeSqlFile(roleSeedFile);
+  await executeSqlFile(appointmentServiceSeedFile);
+  await seedStaffAuthentication();
 }
 
 if (require.main === module) {

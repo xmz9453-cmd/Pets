@@ -1,0 +1,42 @@
+CREATE TABLE IF NOT EXISTS staff (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(100) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  display_name VARCHAR(100) NOT NULL,
+  status ENUM('ACTIVE', 'INACTIVE') NOT NULL DEFAULT 'ACTIVE',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS roles (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(50) NOT NULL UNIQUE,
+  name VARCHAR(100) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS staff_roles (
+  staff_id INT NOT NULL,
+  role_id INT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (staff_id, role_id),
+  CONSTRAINT fk_staff_roles_staff
+    FOREIGN KEY (staff_id) REFERENCES staff(id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_staff_roles_role
+    FOREIGN KEY (role_id) REFERENCES roles(id)
+    ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  token_hash VARCHAR(64) NOT NULL UNIQUE,
+  staff_id INT NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_auth_sessions_staff
+    FOREIGN KEY (staff_id) REFERENCES staff(id)
+    ON DELETE CASCADE,
+  INDEX idx_auth_sessions_staff_id (staff_id),
+  INDEX idx_auth_sessions_expires_at (expires_at)
+);

@@ -15,12 +15,26 @@ function errorHandler(error, req, res, next) {
     message: error.message,
   });
 
-  res.status(statusCode).json({
+  const response = {
     success: false,
     error: {
       message,
     },
-  });
+  };
+
+  if (error.code === 'VALIDATION_ERROR' && error.fields) {
+    response.error = {
+      code: 'VALIDATION_ERROR',
+      fields: error.fields,
+    };
+  } else if (error.code) {
+    response.error = {
+      code: error.code,
+      message,
+    };
+  }
+
+  res.status(statusCode).json(response);
 }
 
 module.exports = {

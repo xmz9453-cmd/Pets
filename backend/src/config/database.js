@@ -11,6 +11,14 @@ function getPool() {
       database: config.database.name,
       user: config.database.user,
       password: config.database.password,
+      dateStrings: true,
+      timezone: '+00:00',
+      typeCast: function cast(field, next) {
+        if (field.type === 'DATE' || field.type === 'DATETIME' || field.type === 'TIMESTAMP' || field.type === 'TIME') {
+          return field.string();
+        }
+        return next();
+      },
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
