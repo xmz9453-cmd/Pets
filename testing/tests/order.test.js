@@ -40,6 +40,19 @@ describe('Order API', () => {
     await getPool().query('UPDATE products SET price = 999 WHERE id = ?', [productId]);
     const historical = await agent.get(`/api/orders/${orderId}`);
     expect(historical.body.data.order.items[1].transaction_price).toBe(200); expect(historical.body.data.order.total_amount).toBe(1200);
+    const future = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ product_id: productId, transaction_price: 1, quantity: 1 }] });
+    expect(future.body.data.order.items[0].transaction_price).toBe(999);
+  });
+
+  test('rejects inactive and invalid products for new orders', async () => {
+    const agent = await login(); const customerId = await createCustomer(agent);
+    const productResponse = await agent.post('/api/products').send({ name: `Inactive Product ${customerSequence}`, price: 300, species: 'DOG' });
+    const productId = productResponse.body.data.product.id;
+    expect((await agent.post(`/api/products/${productId}/disable`)).status).toBe(200);
+    const inactive = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ product_id: productId, quantity: 1 }] });
+    expect(inactive.status).toBe(400);
+    const invalid = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ product_id: 999999, quantity: 1 }] });
+    expect(invalid.status).toBe(400);
   });
 
   test('rejects invalid references and cross business unit items', async () => {

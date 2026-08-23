@@ -72,6 +72,7 @@ export default function Home() {
             <a href="/customers" className="btn btn-outline-light btn-sm">客戶</a>
             <a href="/pets" className="btn btn-outline-light btn-sm">寵物</a>
             <a href="/services" className="btn btn-outline-light btn-sm">服務</a>
+            <a href="/products" className="btn btn-outline-light btn-sm">商品</a>
             <a href="/appointments" className="btn btn-outline-light btn-sm">預約</a>
             <a href="/orders" className="btn btn-outline-light btn-sm">訂單</a>
             <span className="navbar-text">{staff ? staff.display_name : '驗證狀態'}</span>

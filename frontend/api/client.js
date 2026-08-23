@@ -197,6 +197,11 @@ export async function getProducts(params = {}) {
   const query = search.toString();
   return request(`/api/products${query ? `?${query}` : ''}`);
 }
+export async function getProduct(productId) { return request(`/api/products/${productId}`); }
+export async function createProduct(payload) { return request('/api/products', { method: 'POST', body: JSON.stringify(payload) }); }
+export async function updateProduct(productId, payload) { return request(`/api/products/${productId}`, { method: 'PATCH', body: JSON.stringify(payload) }); }
+export async function enableProduct(productId) { return request(`/api/products/${productId}/enable`, { method: 'POST' }); }
+export async function disableProduct(productId) { return request(`/api/products/${productId}/disable`, { method: 'POST' }); }
 
 export async function getOrders(params = {}) {
   const search = new URLSearchParams();

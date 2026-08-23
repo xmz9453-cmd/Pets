@@ -5,4 +5,6 @@ async function listProducts(req, res, next) { try { send(res, await productServi
 async function getProduct(req, res, next) { try { send(res, await productService.getProduct(req.params.id)); } catch (error) { next(error); } }
 async function createProduct(req, res, next) { try { send(res, await productService.createProduct(req.body || {}), 201); } catch (error) { next(error); } }
 async function updateProduct(req, res, next) { try { send(res, await productService.updateProduct(req.params.id, req.body || {})); } catch (error) { next(error); } }
-module.exports = { createProduct, getProduct, listProducts, updateProduct };
+async function enableProduct(req, res, next) { try { send(res, await productService.enableProduct(req.params.id)); } catch (error) { next(error); } }
+async function disableProduct(req, res, next) { try { send(res, await productService.disableProduct(req.params.id)); } catch (error) { next(error); } }
+module.exports = { createProduct, disableProduct, enableProduct, getProduct, listProducts, updateProduct };

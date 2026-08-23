@@ -46,4 +46,9 @@ async function updateProduct(id, payload) {
   return getProductById(id);
 }
 
-module.exports = { createProduct, findByName, getProductById, listProducts, updateProduct };
+async function updateProductStatus(id, status) {
+  await getPool().query('UPDATE products SET status = ? WHERE id = ?', [status, id]);
+  return getProductById(id);
+}
+
+module.exports = { createProduct, findByName, getProductById, listProducts, updateProduct, updateProductStatus };

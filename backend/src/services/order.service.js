@@ -23,8 +23,9 @@ async function validateItems(items, businessUnit, connection) {
     const master = serviceId ? await serviceRepository.getServiceById(serviceId, connection) : await productRepository.getProductById(productId, connection);
     if (!master || master.status !== 'ACTIVE') { errors[`items[${index}]`] = serviceId ? 'Service is invalid' : 'Product is invalid'; continue; }
     if (master.species !== 'BOTH' && master.species !== businessUnit) { errors[`items[${index}]`] = 'Item does not match order business unit'; continue; }
-    const amount = Math.round(price * quantity * 100) / 100;
-    normalized.push({ item_type: serviceId ? 'SERVICE' : 'PRODUCT', service_id: serviceId, product_id: productId, name: master.name, transaction_price: price, quantity, item_amount: amount });
+    const transactionPrice = productId ? Number(master.price) : price;
+    const amount = Math.round(transactionPrice * quantity * 100) / 100;
+    normalized.push({ item_type: serviceId ? 'SERVICE' : 'PRODUCT', service_id: serviceId, product_id: productId, name: master.name, transaction_price: transactionPrice, quantity, item_amount: amount });
     total += amount;
   }
   if (Object.keys(errors).length) throw validation(errors);
