@@ -75,6 +75,7 @@ export default function Home() {
             <a href="/products" className="btn btn-outline-light btn-sm">商品</a>
             <a href="/appointments" className="btn btn-outline-light btn-sm">預約</a>
             <a href="/orders" className="btn btn-outline-light btn-sm">訂單</a>
+            <a href="/reports" className="btn btn-outline-light btn-sm">報表</a>
             <span className="navbar-text">{staff ? staff.display_name : '驗證狀態'}</span>
             <button type="button" className="btn btn-outline-light btn-sm" onClick={handleLogout}>
               登出

@@ -12,6 +12,8 @@ const groomingRoutes = require('./routes/grooming.routes');
 const boardingRoutes = require('./routes/boarding.routes');
 const productRoutes = require('./routes/product.routes');
 const orderRoutes = require('./routes/order.routes');
+const paymentRoutes = require('./routes/payment.routes');
+const reportRoutes = require('./routes/report.routes');
 const { errorHandler } = require('./middleware/error-handler');
 
 const app = express();
@@ -34,6 +36,8 @@ app.use('/api', groomingRoutes);
 app.use('/api', boardingRoutes);
 app.use('/api', productRoutes);
 app.use('/api', orderRoutes);
+app.use('/api', paymentRoutes);
+app.use('/api', reportRoutes);
 
 app.use((req, res) => {
   res.status(404).json({

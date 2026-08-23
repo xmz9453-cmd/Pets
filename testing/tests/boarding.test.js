@@ -83,6 +83,7 @@ describe('Boarding API', () => {
     await pool.query('DELETE FROM pet_customer_relationships');
     await pool.query('DELETE FROM pets');
     await pool.query('DELETE FROM order_items');
+    await pool.query('DELETE FROM payments');
     await pool.query('DELETE FROM orders');
     await pool.query('DELETE FROM customers');
     await pool.query('DELETE FROM auth_sessions');
@@ -97,6 +98,7 @@ describe('Boarding API', () => {
     await pool.query('DELETE FROM pet_customer_relationships');
     await pool.query('DELETE FROM pets');
     await pool.query('DELETE FROM order_items');
+    await pool.query('DELETE FROM payments');
     await pool.query('DELETE FROM orders');
     await pool.query('DELETE FROM customers');
   });

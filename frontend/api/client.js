@@ -212,3 +212,12 @@ export async function getOrders(params = {}) {
 export async function getOrder(orderId) { return request(`/api/orders/${orderId}`); }
 export async function createOrder(payload) { return request('/api/orders', { method: 'POST', body: JSON.stringify(payload) }); }
 export async function updateOrder(orderId, payload) { return request(`/api/orders/${orderId}`, { method: 'PATCH', body: JSON.stringify(payload) }); }
+export async function getOrderPayments(orderId) { return request(`/api/orders/${orderId}/payments`); }
+export async function createPayment(orderId, payload) { return request(`/api/orders/${orderId}/payments`, { method: 'POST', body: JSON.stringify(payload) }); }
+export async function voidPayment(paymentId, payload = {}) { return request(`/api/payments/${paymentId}/void`, { method: 'POST', body: JSON.stringify(payload) }); }
+export async function getReport(params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== null && value !== '') search.append(key, String(value)); });
+  const query = search.toString();
+  return request(`/api/reports${query ? `?${query}` : ''}`);
+}

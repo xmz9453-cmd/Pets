@@ -1,0 +1,11 @@
+const express = require('express');
+const paymentController = require('../controllers/payment.controller');
+const { requireAuthentication } = require('../middleware/authenticate');
+const { requireRole } = require('../middleware/authorize');
+const router = express.Router();
+const readRoles = requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']);
+const writeRoles = requireRole(['OWNER', 'FRONT_DESK']);
+router.get('/orders/:orderId/payments', requireAuthentication, readRoles, paymentController.listPayments);
+router.post('/orders/:orderId/payments', requireAuthentication, writeRoles, paymentController.createPayment);
+router.post('/payments/:paymentId/void', requireAuthentication, writeRoles, paymentController.voidPayment);
+module.exports = router;

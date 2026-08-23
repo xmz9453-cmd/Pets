@@ -18,7 +18,7 @@ async function createCustomer(agent) { customerSequence += 1; const suffix = `${
 
 describe('Order API', () => {
   beforeAll(async () => { await setup(); await getPool().query('DELETE FROM auth_sessions'); });
-  beforeEach(async () => { await getPool().query('DELETE FROM order_items'); await getPool().query('DELETE FROM orders'); await getPool().query('DELETE FROM products'); await getPool().query('DELETE FROM auth_sessions'); });
+    beforeEach(async () => { await getPool().query('DELETE FROM payments'); await getPool().query('DELETE FROM order_items'); await getPool().query('DELETE FROM orders'); await getPool().query('DELETE FROM products'); await getPool().query('DELETE FROM auth_sessions'); });
   afterAll(async () => { await closePool(); });
 
   test('requires authentication and rejects empty orders', async () => {

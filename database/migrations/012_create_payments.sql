@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS payments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  payment_method ENUM('CASH', 'CREDIT_CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT') NOT NULL,
+  status ENUM('PAID', 'VOID') NOT NULL DEFAULT 'PAID',
+  paid_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  operator_id INT NOT NULL,
+  voided_at TIMESTAMP NULL,
+  voided_by INT NULL,
+  void_reason VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_payments_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_payments_operator FOREIGN KEY (operator_id) REFERENCES staff(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_payments_voided_by FOREIGN KEY (voided_by) REFERENCES staff(id) ON DELETE RESTRICT,
+  INDEX idx_payments_order_id (order_id),
+  INDEX idx_payments_order_status (order_id, status),
+  CHECK (amount > 0),
+  CHECK ((status = 'PAID' AND voided_at IS NULL AND voided_by IS NULL) OR (status = 'VOID' AND voided_at IS NOT NULL AND voided_by IS NOT NULL))
+);
