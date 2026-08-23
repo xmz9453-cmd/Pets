@@ -51,6 +51,8 @@ describe('Customer API', () => {
     await getPool().query('DELETE FROM auth_sessions');
     await getPool().query('DELETE FROM pet_customer_relationships');
     await getPool().query('DELETE FROM pets');
+    await getPool().query('DELETE FROM order_items');
+    await getPool().query('DELETE FROM orders');
     await getPool().query('DELETE FROM customers');
   });
 

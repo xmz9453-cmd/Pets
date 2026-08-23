@@ -190,3 +190,20 @@ export async function getService(serviceId) { return request(`/api/services/${se
 export async function createService(payload) { return request('/api/services', { method: 'POST', body: JSON.stringify(payload) }); }
 export async function updateService(serviceId, payload) { return request(`/api/services/${serviceId}`, { method: 'PUT', body: JSON.stringify(payload) }); }
 export async function deleteService(serviceId) { return request(`/api/services/${serviceId}`, { method: 'DELETE' }); }
+
+export async function getProducts(params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== null && value !== '') search.append(key, String(value)); });
+  const query = search.toString();
+  return request(`/api/products${query ? `?${query}` : ''}`);
+}
+
+export async function getOrders(params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== null && value !== '') search.append(key, String(value)); });
+  const query = search.toString();
+  return request(`/api/orders${query ? `?${query}` : ''}`);
+}
+export async function getOrder(orderId) { return request(`/api/orders/${orderId}`); }
+export async function createOrder(payload) { return request('/api/orders', { method: 'POST', body: JSON.stringify(payload) }); }
+export async function updateOrder(orderId, payload) { return request(`/api/orders/${orderId}`, { method: 'PATCH', body: JSON.stringify(payload) }); }

@@ -1,0 +1,12 @@
+const express = require('express');
+const orderController = require('../controllers/order.controller');
+const { requireAuthentication } = require('../middleware/authenticate');
+const { requireRole } = require('../middleware/authorize');
+const router = express.Router();
+const readRoles = requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']);
+const writeRoles = requireRole(['OWNER', 'FRONT_DESK']);
+router.get('/orders', requireAuthentication, readRoles, orderController.listOrders);
+router.get('/orders/:id', requireAuthentication, readRoles, orderController.getOrder);
+router.post('/orders', requireAuthentication, writeRoles, orderController.createOrder);
+router.patch('/orders/:id', requireAuthentication, writeRoles, orderController.updateOrder);
+module.exports = router;

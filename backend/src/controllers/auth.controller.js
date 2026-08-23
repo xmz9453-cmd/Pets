@@ -3,7 +3,7 @@ const { readCookie } = require('../middleware/authenticate');
 
 const cookieOptions = {
   httpOnly: true,
-  sameSite: 'lax',
+  sameSite: false, // Allow cross-port cookies for development
   path: '/',
 };
 
