@@ -75,15 +75,16 @@ describe('Grooming API', () => {
   beforeEach(async () => {
     await getPool().query('DELETE FROM auth_sessions');
     await getPool().query('DELETE FROM groomings');
+    await getPool().query('DELETE FROM boardings');
     await getPool().query('DELETE FROM daily_operations');
     await getPool().query('DELETE FROM appointment_pet_services');
     await getPool().query('DELETE FROM appointment_pets');
+    await getPool().query('DELETE FROM payments');
+    await getPool().query('DELETE FROM order_items');
+    await getPool().query('DELETE FROM orders');
     await getPool().query('DELETE FROM appointments');
     await getPool().query('DELETE FROM pet_customer_relationships');
     await getPool().query('DELETE FROM pets');
-    await getPool().query('DELETE FROM order_items');
-    await getPool().query('DELETE FROM payments');
-    await getPool().query('DELETE FROM orders');
     await getPool().query('DELETE FROM customers');
   });
 
@@ -121,6 +122,8 @@ describe('Grooming API', () => {
 
     const dailyOperationId = await ensureDailyOperationExists(appointment.body.data.appointment.id);
 
+    expect((await agent.post(`/api/operations/${dailyOperationId}/check-in`)).status).toBe(200);
+
     const createResponse = await agent.post('/api/groomings').send({
       daily_operation_id: dailyOperationId,
       pet_id: petId,
@@ -150,5 +153,46 @@ describe('Grooming API', () => {
     expect(updateResponse.status).toBe(200);
     expect(updateResponse.body.success).toBe(true);
     expect(updateResponse.body.data.note).toContain('已完成耳部清潔');
+  });
+
+  test('allows grooming execution during active work and rejects new execution after completion', async () => {
+    const { agent } = await loginAsOwner();
+    const customer = await createCustomer(agent, { name: 'Grooming Lifecycle Client', phone: '0912-555-778' });
+    const customerId = customer.body.data.customer.id;
+    const pets = [];
+    for (const name of ['Checked In Pet', 'In Progress Pet', 'Completed Operation Pet']) {
+      const pet = await createPet(agent, { name, species: 'DOG', gender: 'MALE', customer_id: customerId });
+      pets.push(pet.body.data.pet.id);
+    }
+
+    const [serviceRows] = await getPool().query('SELECT id FROM services WHERE type = ? LIMIT 1', ['GROOMING']);
+    const appointment = await createAppointment(agent, {
+      customer_id: customerId,
+      appointment_date: new Date().toISOString().split('T')[0],
+      appointment_time: '11:00:00',
+      pets: pets.map((petId) => ({ pet_id: petId, service_ids: [serviceRows[0].id] })),
+    });
+    const dailyOperationId = await ensureDailyOperationExists(appointment.body.data.appointment.id);
+
+    expect((await agent.post(`/api/operations/${dailyOperationId}/check-in`)).status).toBe(200);
+    const checkedInGrooming = await agent.post('/api/groomings').send({ daily_operation_id: dailyOperationId, pet_id: pets[0] });
+    expect(checkedInGrooming.status).toBe(201);
+
+    expect((await agent.post(`/api/operations/${dailyOperationId}/start-work`)).status).toBe(200);
+    const inProgressGrooming = await agent.post('/api/groomings').send({ daily_operation_id: dailyOperationId, pet_id: pets[1] });
+    expect(inProgressGrooming.status).toBe(201);
+
+    const completed = await agent.patch(`/api/groomings/${checkedInGrooming.body.data.id}`).send({
+      before_condition: '良好',
+      actual_grooming_content: '洗澡與修剪',
+      grooming_result: '完成',
+    });
+    expect(completed.status).toBe(200);
+    expect((await agent.post(`/api/groomings/${checkedInGrooming.body.data.id}/complete`)).status).toBe(200);
+
+    const blocked = await agent.post('/api/groomings').send({ daily_operation_id: dailyOperationId, pet_id: pets[2] });
+    expect(blocked.status).toBe(400);
+    expect(blocked.body.error.code).toBe('VALIDATION_ERROR');
+    expect(blocked.body.error.fields.status).toContain('COMPLETED');
   });
 });

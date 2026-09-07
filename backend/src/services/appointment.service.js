@@ -1,4 +1,5 @@
 const appointmentRepository = require('../data/appointment.repository');
+const dailyOperationsRepository = require('../data/daily-operations.repository');
 const { isSpeciesCompatible } = require('./service.service');
 const { getPool } = require('../config/database');
 
@@ -238,6 +239,7 @@ async function createAppointment(payload = {}) {
     }, connection);
 
     await appointmentRepository.replaceAppointmentPetRelations(appointmentId, petEntries, connection);
+  await dailyOperationsRepository.create(appointmentId, connection);
     const appointment = await appointmentRepository.getAppointmentById(appointmentId, connection);
     return { appointment };
   });

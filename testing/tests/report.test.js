@@ -72,6 +72,7 @@ describe('Report API', () => {
   test('aggregates orders, payments, products, services, and boarding without void payments', async () => {
     const agent = await login();
     const customerId = await createCustomer(agent);
+    await agent.post('/api/pets').send({ name: `Report Pet ${sequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
     const [serviceRows] = await getPool().query("SELECT id FROM services WHERE type = 'GROOMING' AND status = 'ACTIVE' LIMIT 1");
     const [boardingServiceRows] = await getPool().query("SELECT id FROM services WHERE type = 'BOARDING' AND status = 'ACTIVE' LIMIT 1");
     const [petRows] = await getPool().query('SELECT id FROM pets WHERE status = \'ACTIVE\' LIMIT 1');

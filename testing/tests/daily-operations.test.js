@@ -79,15 +79,18 @@ describe('Daily Operations API', () => {
 
   beforeEach(async () => {
     await getPool().query('DELETE FROM auth_sessions');
+    await getPool().query('DELETE FROM boardings');
+    await getPool().query('DELETE FROM groomings');
     await getPool().query('DELETE FROM daily_operations');
     await getPool().query('DELETE FROM appointment_pet_services');
     await getPool().query('DELETE FROM appointment_pets');
+    await getPool().query('DELETE FROM payments');
+    await getPool().query('DELETE FROM order_items');
+    await getPool().query('DELETE FROM orders');
     await getPool().query('DELETE FROM appointments');
     await getPool().query('DELETE FROM pet_customer_relationships');
     await getPool().query('DELETE FROM pets');
-    await getPool().query('DELETE FROM order_items');
     await getPool().query('DELETE FROM payments');
-    await getPool().query('DELETE FROM orders');
     await getPool().query('DELETE FROM customers');
   });
 
@@ -142,6 +145,8 @@ describe('Daily Operations API', () => {
       // Should be sorted by appointment time ASC
       expect(response.body.data[0].start_time).toBe('09:00:00');
       expect(response.body.data[1].start_time).toBe('10:00:00');
+      expect(response.body.data[0].can_create_appointment_order).toBe(false);
+      expect(response.body.data[1].can_create_appointment_order).toBe(false);
     });
 
     test('Cancelled appointments are excluded from list', async () => {

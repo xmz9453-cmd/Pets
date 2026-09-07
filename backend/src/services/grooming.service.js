@@ -126,8 +126,8 @@ async function createGrooming(payload = {}) {
   }
 
   const operation = await ensurePetBelongsToOperation(dailyOperationId, petId);
-  if (operation.status === 'CANCELLED') {
-    throw createValidationError({ status: 'Cancelled appointments cannot start grooming' });
+  if (operation.status !== 'CHECKED_IN' && operation.status !== 'IN_PROGRESS') {
+    throw createValidationError({ status: `Cannot start grooming from status ${operation.status}` });
   }
 
   const existing = await groomingRepository.findByDailyOperationAndPet(dailyOperationId, petId);

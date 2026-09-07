@@ -69,6 +69,23 @@ async function listTodayOperations(filters = {}, connection = null) {
       a.appointment_time as start_time,
       c.name as customer_name,
       c.phone as customer_phone,
+      CASE WHEN EXISTS (
+        SELECT 1
+        FROM appointment_pets eligible_ap
+        INNER JOIN appointment_pet_services eligible_aps ON eligible_aps.appointment_pet_id = eligible_ap.id
+        INNER JOIN services eligible_srv ON eligible_srv.id = eligible_aps.service_id
+        LEFT JOIN groomings eligible_g ON eligible_g.daily_operation_id = do.id AND eligible_g.pet_id = eligible_ap.pet_id
+        LEFT JOIN boardings eligible_b ON eligible_b.appointment_id = a.id
+          AND eligible_b.pet_id = eligible_ap.pet_id
+          AND eligible_b.service_id = eligible_aps.service_id
+        WHERE eligible_ap.appointment_id = a.id
+          AND ((eligible_srv.type = 'GROOMING' AND do.status = 'COMPLETED'
+                AND eligible_g.id IS NOT NULL
+                AND eligible_g.before_condition IS NOT NULL
+                AND eligible_g.actual_grooming_content IS NOT NULL
+                AND eligible_g.grooming_result IS NOT NULL)
+            OR (eligible_srv.type = 'BOARDING' AND eligible_b.status = 'COMPLETED'))
+      ) THEN 1 ELSE 0 END as can_create_appointment_order,
       p.name as pet_name,
       p.species,
       GROUP_CONCAT(DISTINCT srv.id ORDER BY srv.id SEPARATOR ',') as service_ids,
@@ -151,7 +168,12 @@ async function listTodayOperations(filters = {}, connection = null) {
   
   rows.forEach(row => {
     if (!grouped[row.appointment_id]) {
-      grouped[row.appointment_id] = { ...row, pets: [], services: [] };
+      grouped[row.appointment_id] = {
+        ...row,
+        can_create_appointment_order: Boolean(row.can_create_appointment_order),
+        pets: [],
+        services: [],
+      };
       order.push(row.appointment_id); // Track order
     }
     if (row.pet_name && !grouped[row.appointment_id].pets.find(p => p.name === row.pet_name)) {

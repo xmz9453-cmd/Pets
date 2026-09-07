@@ -6,7 +6,7 @@ function normalizeItem(row) {
 
 function normalizeOrder(row, items = []) {
   if (!row) return null;
-  return { ...row, id: Number(row.id), customer_id: Number(row.customer_id), total_amount: Number(row.total_amount), items };
+  return { ...row, id: Number(row.id), customer_id: Number(row.customer_id), appointment_id: row.appointment_id == null ? null : Number(row.appointment_id), total_amount: Number(row.total_amount), items };
 }
 
 async function getOrderById(id, connection = getPool()) {
@@ -30,7 +30,7 @@ async function listOrders(filters = {}) {
 }
 
 async function insertOrder(payload, connection) {
-  const [result] = await connection.query('INSERT INTO orders (customer_id, business_unit, status, total_amount) VALUES (?, ?, ?, ?)', [payload.customer_id, payload.business_unit, payload.status, payload.total_amount]);
+  const [result] = await connection.query('INSERT INTO orders (customer_id, source_type, appointment_id, business_unit, status, total_amount) VALUES (?, ?, ?, ?, ?, ?)', [payload.customer_id, payload.source_type, payload.appointment_id, payload.business_unit, payload.status, payload.total_amount]);
   return result.insertId;
 }
 

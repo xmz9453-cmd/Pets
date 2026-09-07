@@ -64,11 +64,11 @@ async function createAppointmentBoarding(agent, name = 'Boarding') {
     pets: [{ pet_id: identity.petId, service_ids: [serviceId] }],
   });
   const appointmentId = appointment.body.data.appointment.id;
-  const [operationResult] = await getPool().query(
-    'INSERT INTO daily_operations (appointment_id, status) VALUES (?, ?)',
-    [appointmentId, 'SCHEDULED'],
+  const [operationRows] = await getPool().query(
+    'SELECT id FROM daily_operations WHERE appointment_id = ? LIMIT 1',
+    [appointmentId],
   );
-  return { ...identity, serviceId, appointmentId, dailyOperationId: operationResult.insertId };
+  return { ...identity, serviceId, appointmentId, dailyOperationId: operationRows[0].id };
 }
 
 describe('Boarding API', () => {
@@ -79,12 +79,12 @@ describe('Boarding API', () => {
     await pool.query('DELETE FROM daily_operations');
     await pool.query('DELETE FROM appointment_pet_services');
     await pool.query('DELETE FROM appointment_pets');
+    await pool.query('DELETE FROM payments');
+    await pool.query('DELETE FROM order_items');
+    await pool.query('DELETE FROM orders');
     await pool.query('DELETE FROM appointments');
     await pool.query('DELETE FROM pet_customer_relationships');
     await pool.query('DELETE FROM pets');
-    await pool.query('DELETE FROM order_items');
-    await pool.query('DELETE FROM payments');
-    await pool.query('DELETE FROM orders');
     await pool.query('DELETE FROM customers');
     await pool.query('DELETE FROM auth_sessions');
   });
@@ -94,12 +94,12 @@ describe('Boarding API', () => {
     await pool.query('DELETE FROM daily_operations');
     await pool.query('DELETE FROM appointment_pet_services');
     await pool.query('DELETE FROM appointment_pets');
+    await pool.query('DELETE FROM payments');
+    await pool.query('DELETE FROM order_items');
+    await pool.query('DELETE FROM orders');
     await pool.query('DELETE FROM appointments');
     await pool.query('DELETE FROM pet_customer_relationships');
     await pool.query('DELETE FROM pets');
-    await pool.query('DELETE FROM order_items');
-    await pool.query('DELETE FROM payments');
-    await pool.query('DELETE FROM orders');
     await pool.query('DELETE FROM customers');
   });
   afterAll(async () => { await closePool(); });

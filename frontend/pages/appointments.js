@@ -7,6 +7,7 @@ import {
   getCurrentStaff,
   getCustomers,
   getPets,
+  getServices,
   updateAppointment,
 } from '../api/client';
 
@@ -36,6 +37,7 @@ export default function AppointmentsPage() {
   const [staff, setStaff] = useState(null);
   const [customers, setCustomers] = useState([]);
   const [pets, setPets] = useState([]);
+  const [services, setServices] = useState([]);
   const [appointments, setAppointments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -44,20 +46,19 @@ export default function AppointmentsPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
 
-  const serviceCatalog = useMemo(() => [
-    { id: 1, name: '基礎美容' },
-    { id: 2, name: '洗澡與吹乾' },
-    { id: 3, name: '修剪指甲' },
-    { id: 4, name: '毛髮造型' },
-  ], []);
+  const serviceCatalog = useMemo(() => services
+    .filter((service) => service.status === 'ACTIVE')
+    .map((service) => ({ id: Number(service.id), name: service.name })), [services]);
 
   async function loadCustomersAndPets() {
-    const [customerResult, petResult] = await Promise.all([
+    const [customerResult, petResult, serviceResult] = await Promise.all([
       getCustomers({ status: 'ALL' }),
       getPets({ status: 'ALL' }),
+      getServices({ status: 'ACTIVE' }),
     ]);
     setCustomers(customerResult.customers || []);
     setPets(petResult.pets || []);
+    setServices(serviceResult.services || []);
   }
 
   async function refreshAppointments() {

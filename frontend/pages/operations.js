@@ -468,6 +468,14 @@ export default function OperationsPage() {
                           住宿
                         </button>
                       ) : null}
+                      {op.can_create_appointment_order ? (
+                        <button
+                          className="btn btn-sm btn-outline-success"
+                          onClick={() => router.push(`/orders?source_type=APPOINTMENT&appointment_id=${op.appointment_id}`)}
+                        >
+                          建立訂單
+                        </button>
+                      ) : null}
                     </div>
                   </td>
                 </tr>
