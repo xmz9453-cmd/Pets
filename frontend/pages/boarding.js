@@ -24,7 +24,11 @@ export default function BoardingPage() {
   const [form, setForm] = useState({ before_condition: '', actual_boarding_content: '', boarding_result: '', note: '' });
 
   useEffect(() => {
-    if (!router.isReady || (!dailyOperationId && !boardingId)) return;
+    if (!router.isReady) return;
+    if (!dailyOperationId && !boardingId) {
+      setLoading(false);
+      return;
+    }
     async function loadData() {
       try {
         setLoading(true); setError(''); setMessage('');

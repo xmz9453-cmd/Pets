@@ -305,8 +305,13 @@ export default function OperationsPage() {
 
   return (
     <div className="container-fluid mt-4">
-      <h1>日常營運</h1>
-      <p className="text-muted">今日：{today}</p>
+      <div className="d-flex justify-content-between align-items-center mb-4">
+        <div>
+          <h1 className="mb-1">日常營運</h1>
+          <p className="text-muted mb-0">今日：{today}</p>
+        </div>
+        <a href="/" className="btn btn-outline-dark">返回首頁</a>
+      </div>
 
       {error && (
         <div className="alert alert-danger" role="alert">

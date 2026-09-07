@@ -43,15 +43,17 @@ async function createCustomerRecord(agent, customer) {
 
 async function cleanCustomerData() {
   await getPool().query('DELETE FROM auth_sessions');
-  await getPool().query('DELETE FROM pet_customer_relationships');
+  await getPool().query('DELETE FROM boardings');
+  await getPool().query('DELETE FROM groomings');
+  await getPool().query('DELETE FROM daily_operations');
   await getPool().query('DELETE FROM appointment_pet_services');
   await getPool().query('DELETE FROM appointment_pets');
-  await getPool().query('DELETE FROM groomings');
-  await getPool().query('DELETE FROM boardings');
-  await getPool().query('DELETE FROM pets');
-  await getPool().query('DELETE FROM order_items');
   await getPool().query('DELETE FROM payments');
+  await getPool().query('DELETE FROM order_items');
   await getPool().query('DELETE FROM orders');
+  await getPool().query('DELETE FROM appointments');
+  await getPool().query('DELETE FROM pet_customer_relationships');
+  await getPool().query('DELETE FROM pets');
   await getPool().query('DELETE FROM customers');
 }
 

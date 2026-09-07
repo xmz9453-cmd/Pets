@@ -19,7 +19,11 @@ export default function GroomingPage() {
   });
 
   useEffect(() => {
-    if (!router.isReady || !daily_operation_id) {
+    if (!router.isReady) {
+      return;
+    }
+    if (!daily_operation_id) {
+      setLoading(false);
       return;
     }
 
