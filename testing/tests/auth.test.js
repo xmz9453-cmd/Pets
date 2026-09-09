@@ -25,8 +25,10 @@ const { getPool, closePool } = require('../../backend/src/config/database');
 const { setup } = require('../../database/scripts/setup');
 const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
 const { hashSessionToken, createSessionToken } = require('../../backend/src/utils/session-token');
+const { hashPassword } = require('../../backend/src/utils/password');
 
 const owner = getFoundationOwner();
+const createdStaffIds = [];
 
 async function setOwnerStatus(status) {
   await getPool().query('UPDATE staff SET status = ? WHERE username = ?', [status, owner.username]);
@@ -41,6 +43,18 @@ async function loginAgent(password = owner.password) {
   return { agent, response };
 }
 
+async function createRoleStaff(roleCode) {
+  const username = `status-${roleCode.toLowerCase()}-${Date.now()}-${createdStaffIds.length}`;
+  const [staffResult] = await getPool().query(
+    'INSERT INTO staff (username, password_hash, display_name, status) VALUES (?, ?, ?, \'ACTIVE\')',
+    [username, await hashPassword('status-pass-123'), username],
+  );
+  const [roleRows] = await getPool().query('SELECT id FROM roles WHERE code = ?', [roleCode]);
+  await getPool().query('INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)', [staffResult.insertId, roleRows[0].id]);
+  createdStaffIds.push(staffResult.insertId);
+  return { id: staffResult.insertId, username, password: 'status-pass-123' };
+}
+
 describe('Staff authentication API', () => {
   beforeAll(async () => {
     await setup();
@@ -50,6 +64,11 @@ describe('Staff authentication API', () => {
 
   afterEach(async () => {
     await getPool().query('DELETE FROM auth_sessions');
+    if (createdStaffIds.length) {
+      await getPool().query('DELETE FROM staff_roles WHERE staff_id IN (?)', [createdStaffIds]);
+      await getPool().query('DELETE FROM staff WHERE id IN (?)', [createdStaffIds]);
+      createdStaffIds.length = 0;
+    }
     await setOwnerStatus('ACTIVE');
   });
 
@@ -104,7 +123,7 @@ describe('Staff authentication API', () => {
     const { response } = await loginAgent();
 
     expect(response.status).toBe(401);
-    expect(response.body.error.message).toBe('Invalid username or password');
+    expect(response.body.error.message).toBe('此帳號已停用，無法登入，請聯絡管理者。');
     const [rows] = await getPool().query('SELECT id FROM auth_sessions');
     expect(rows).toHaveLength(0);
   });
@@ -175,5 +194,59 @@ describe('Staff authentication API', () => {
 
     const meResponse = await agent.get('/api/auth/me');
     expect(meResponse.status).toBe(401);
+  });
+
+  test('OWNER can deactivate and reactivate another staff account', async () => {
+    const target = await createRoleStaff('GROOMER');
+    const { agent } = await loginAgent();
+
+    const deactivate = await agent.patch(`/api/auth/staff/${target.id}/status`).send({ status: 'inactive' });
+    expect(deactivate.status).toBe(200);
+    expect(deactivate.body.data.staff).toMatchObject({ id: target.id, status: 'inactive', roles: ['GROOMER'] });
+
+    const targetAgent = request.agent(app);
+    expect((await targetAgent.post('/api/auth/login').send({ username: target.username, password: target.password })).status).toBe(401);
+
+    const reactivate = await agent.patch(`/api/auth/staff/${target.id}/status`).send({ status: 'active' });
+    expect(reactivate.status).toBe(200);
+    expect(reactivate.body.data.staff.status).toBe('active');
+    expect((await targetAgent.post('/api/auth/login').send({ username: target.username, password: target.password })).status).toBe(200);
+  });
+
+  test('status endpoint rejects non-OWNER, self-deactivation, last OWNER, invalid and missing targets', async () => {
+    const frontDesk = await createRoleStaff('FRONT_DESK');
+    const frontDeskAgent = request.agent(app);
+    await frontDeskAgent.post('/api/auth/login').send({ username: frontDesk.username, password: frontDesk.password });
+    expect((await frontDeskAgent.patch('/api/auth/staff/1/status').send({ status: 'inactive' })).status).toBe(403);
+
+    const { agent } = await loginAgent();
+    const [ownerRows] = await getPool().query('SELECT id FROM staff WHERE username = ?', [owner.username]);
+    expect((await agent.patch(`/api/auth/staff/${ownerRows[0].id}/status`).send({ status: 'inactive' })).status).toBe(403);
+    expect((await agent.patch(`/api/auth/staff/${frontDesk.id}/status`).send({ status: 'paused' })).status).toBe(400);
+    expect((await agent.patch('/api/auth/staff/999999/status').send({ status: 'inactive' })).status).toBe(404);
+    expect((await agent.patch(`/api/auth/staff/${ownerRows[0].id}/status`).send({ status: 'active' })).status).toBe(200);
+  });
+
+  test('duplicate status operations are safe and inactive staff cannot use authenticated APIs', async () => {
+    const target = await createRoleStaff('GROOMER');
+    const { agent } = await loginAgent();
+    expect((await agent.patch(`/api/auth/staff/${target.id}/status`).send({ status: 'inactive' })).status).toBe(200);
+    const duplicate = await agent.patch(`/api/auth/staff/${target.id}/status`).send({ status: 'inactive' });
+    expect(duplicate.status).toBe(200);
+    expect(duplicate.body.data.staff.status).toBe('inactive');
+
+    const targetAgent = request.agent(app);
+    const loginResponse = await targetAgent.post('/api/auth/login').send({ username: target.username, password: target.password });
+    expect(loginResponse.status).toBe(401);
+    expect((await targetAgent.get('/api/auth/me')).status).toBe(401);
+  });
+
+  test('active FRONT_DESK and GROOMER accounts can still login', async () => {
+    const frontDesk = await createRoleStaff('FRONT_DESK');
+    const groomer = await createRoleStaff('GROOMER');
+    const frontDeskLogin = await request(app).post('/api/auth/login').send({ username: frontDesk.username, password: frontDesk.password });
+    const groomerLogin = await request(app).post('/api/auth/login').send({ username: groomer.username, password: groomer.password });
+    expect(frontDeskLogin.status).toBe(200);
+    expect(groomerLogin.status).toBe(200);
   });
 });

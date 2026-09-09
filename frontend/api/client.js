@@ -34,6 +34,31 @@ export async function login(username, password) {
   });
 }
 
+export async function register(username, password, displayName) {
+  return request('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password, display_name: displayName }),
+  });
+}
+
+export async function getStaffAccounts() {
+  return request('/api/auth/staff');
+}
+
+export async function updateStaffRoles(staffId, roles) {
+  return request(`/api/auth/staff/${staffId}/roles`, {
+    method: 'PATCH',
+    body: JSON.stringify({ roles }),
+  });
+}
+
+export async function updateStaffStatus(staffId, status) {
+  return request(`/api/auth/staff/${staffId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+}
+
 export async function logout() {
   return request('/api/auth/logout', {
     method: 'POST',

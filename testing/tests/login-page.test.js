@@ -25,6 +25,7 @@ const { getPool, closePool } = require('../../backend/src/config/database');
 const { setup } = require('../../database/scripts/setup');
 const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
 const { validateLoginForm, formatLoginError } = require('../../frontend/utils/login-form');
+const { getRoleLabel } = require('../../frontend/utils/staff-display');
 
 const owner = getFoundationOwner();
 
@@ -64,6 +65,14 @@ describe('Login page validation and authentication flow', () => {
   test('formatLoginError converts backend auth failures into the required UI message', () => {
     expect(formatLoginError('Invalid username or password')).toBe('帳號或密碼錯誤');
     expect(formatLoginError('Unauthorized')).toBe('尚未登入或登入狀態已失效');
+    expect(formatLoginError('此帳號已停用，無法登入，請聯絡管理者。')).toBe('此帳號已停用，無法登入，請聯絡管理者。');
+  });
+
+  test('account management displays the frozen role labels and preserves unknown roles', () => {
+    expect(getRoleLabel('OWNER')).toBe('管理者');
+    expect(getRoleLabel('FRONT_DESK')).toBe('櫃台');
+    expect(getRoleLabel('GROOMER')).toBe('美容師');
+    expect(getRoleLabel('CUSTOM_ROLE')).toBe('CUSTOM_ROLE');
   });
 
   test('POST /api/auth/login fails for invalid credentials and succeeds for valid credentials', async () => {

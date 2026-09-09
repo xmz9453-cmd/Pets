@@ -36,6 +36,10 @@ function formatLoginError(message) {
     return '尚未登入或登入狀態已失效';
   }
 
+  if (normalizedMessage === '此帳號已停用，無法登入，請聯絡管理者。') {
+    return normalizedMessage;
+  }
+
   if (normalizedMessage === 'Internal Server Error') {
     return '發生錯誤';
   }

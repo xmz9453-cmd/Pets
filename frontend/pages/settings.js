@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { getCurrentStaff, getShopSettings, updateShopSettings } from '../api/client';
+import { getCurrentStaff, getShopSettings, getStaffAccounts, updateShopSettings, updateStaffRoles, updateStaffStatus } from '../api/client';
+import { getRoleLabel } from '../utils/staff-display';
 
 const WEEKDAY_ORDER = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 const WEEKDAY_LABELS = {
   MONDAY: '星期一', TUESDAY: '星期二', WEDNESDAY: '星期三', THURSDAY: '星期四',
   FRIDAY: '星期五', SATURDAY: '星期六', SUNDAY: '星期日',
 };
+function normalizeTimeInput(value) {
+  return typeof value === 'string' ? value.slice(0, 5) : '';
+}
 
 function buildEmptySettings() {
   return {
@@ -32,8 +36,8 @@ function cloneSettings(settings) {
     business_hours: (settings?.business_hours || []).map((entry) => ({
       weekday: entry.weekday,
       is_closed: Boolean(entry.is_closed),
-      open_time: entry.open_time || '',
-      close_time: entry.close_time || '',
+      open_time: normalizeTimeInput(entry.open_time),
+      close_time: normalizeTimeInput(entry.close_time),
     })),
   };
 }
@@ -72,6 +76,8 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [staffAccounts, setStaffAccounts] = useState([]);
+  const [updatingStaffId, setUpdatingStaffId] = useState(null);
 
   const canEdit = staff && staff.roles && staff.roles.includes('OWNER');
 
@@ -95,6 +101,12 @@ export default function SettingsPage() {
 
         setForm(normalized);
         setOriginal(normalized);
+        if (currentStaff.staff.roles.includes('OWNER')) {
+          const staffResult = await getStaffAccounts();
+          if (active) {
+            setStaffAccounts(staffResult.staff || []);
+          }
+        }
       } catch (loadError) {
         if (active) {
           router.replace('/login');
@@ -186,6 +198,42 @@ export default function SettingsPage() {
       setError(saveError.message || '無法儲存店家設定。');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleStaffRolesChange(staffId, roles) {
+    setUpdatingStaffId(staffId);
+    setError('');
+    setSuccess('');
+    try {
+      const result = await updateStaffRoles(staffId, roles);
+      setStaffAccounts((current) => current.map((account) => (account.id === staffId ? result.staff : account)));
+      setSuccess('帳號角色已更新。');
+    } catch (updateError) {
+      setError(updateError.message || '無法更新帳號角色。');
+    } finally {
+      setUpdatingStaffId(null);
+    }
+  }
+
+  async function handleStaffStatusChange(account) {
+    const nextStatus = account.status === 'active' ? 'inactive' : 'active';
+    const actionLabel = nextStatus === 'inactive' ? '停用' : '重新啟用';
+    if (!window.confirm(`確定要${actionLabel}帳號「${account.username}」嗎？`)) {
+      return;
+    }
+
+    setUpdatingStaffId(account.id);
+    setError('');
+    setSuccess('');
+    try {
+      const result = await updateStaffStatus(account.id, nextStatus);
+      setStaffAccounts((current) => current.map((item) => (item.id === account.id ? result.staff : item)));
+      setSuccess(nextStatus === 'inactive' ? '帳號已停用' : '帳號已重新啟用');
+    } catch (statusError) {
+      setError(statusError.message || `無法${actionLabel}帳號。`);
+    } finally {
+      setUpdatingStaffId(null);
     }
   }
 
@@ -320,6 +368,56 @@ export default function SettingsPage() {
           </button>
         </div>
       </form>
+
+      {canEdit ? (
+        <section className="card shadow-sm mt-4">
+          <div className="card-body">
+            <h2 className="h5 mb-3">帳號與角色</h2>
+            <div className="table-responsive">
+              <table className="table align-middle mb-0">
+                <thead><tr><th>使用者名稱</th><th>顯示名稱</th><th>角色</th><th>狀態</th><th>操作</th></tr></thead>
+                <tbody>
+                  {staffAccounts.map((account) => (
+                    <tr key={account.id}>
+                      <td>{account.username}</td>
+                      <td>{account.display_name}</td>
+                      <td>
+                        <div className="d-flex gap-3 flex-wrap">
+                          {['OWNER', 'FRONT_DESK', 'GROOMER'].map((role) => (
+                            <label className="form-check" key={role}>
+                              <input
+                                className="form-check-input"
+                                type="checkbox"
+                                checked={account.roles.includes(role)}
+                                disabled={updatingStaffId === account.id}
+                                onChange={(event) => handleStaffRolesChange(account.id, event.target.checked
+                                  ? [...account.roles, role]
+                                  : account.roles.filter((item) => item !== role))}
+                              />
+                              <span className="form-check-label">{getRoleLabel(role)}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </td>
+                      <td>{account.status === 'active' ? '啟用' : account.status === 'inactive' ? '停用' : account.status}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn btn-outline-dark btn-sm"
+                          disabled={account.id === staff.id || updatingStaffId === account.id}
+                          onClick={() => handleStaffStatusChange(account)}
+                        >
+                          {account.status === 'active' ? '停用' : '重新啟用'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }

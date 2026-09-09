@@ -98,6 +98,7 @@ export default function Login() {
           <button className="btn btn-dark w-100" type="submit" disabled={submitting}>
             {submitting ? '登入中...' : '登入'}
           </button>
+          <a className="btn btn-link w-100 mt-2" href="/register">註冊新帳號</a>
           {error ? (
             <div className="alert alert-warning mt-3" role="alert">
               {error}

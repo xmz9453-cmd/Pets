@@ -28,6 +28,41 @@ async function login(req, res, next) {
   }
 }
 
+async function register(req, res, next) {
+  try {
+    const result = await authService.register(req.body || {});
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function listStaff(req, res, next) {
+  try {
+    res.json({ success: true, data: { staff: await authService.listStaff() } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function updateStaffRoles(req, res, next) {
+  try {
+    const staff = await authService.updateStaffRoles(req.params.id, req.body?.roles);
+    res.json({ success: true, data: { staff } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function updateStaffStatus(req, res, next) {
+  try {
+    const staff = await authService.updateStaffStatus(req.auth.staff, req.params.id, req.body?.status);
+    res.json({ success: true, data: { staff } });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function logout(req, res, next) {
   try {
     const token = readCookie(req, authService.SESSION_COOKIE_NAME);
@@ -56,5 +91,9 @@ function getCurrentStaff(req, res) {
 module.exports = {
   getCurrentStaff,
   login,
+  listStaff,
   logout,
+  register,
+  updateStaffRoles,
+  updateStaffStatus,
 };

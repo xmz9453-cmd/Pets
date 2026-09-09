@@ -1,1881 +1,680 @@
-\# TASK-0018 最終 MVP 驗證 Final MVP Verification v1.0
+# TASK-0018 最終 MVP 驗證 Final MVP Verification v1.0
 
+## 1. Document Information
 
+| Field | Value |
+|---|---|
+| Task ID | TASK-0018 |
+| Task Name | 最終 MVP 驗證 Final MVP Verification |
+| Document Type | Formal Engineering Document — Final Freeze |
+| Version | v1.0 |
+| Status | **FREEZE** |
+| Decision Status | **DECISION FREEZE** |
+| Decision Progress | **Q1–Q90 / 90–90 — 100%** |
+| Coding Readiness | **PASS** |
+| AI Coding | **PASS** |
+| Verification | **PASS** |
+| Human Acceptance | **PASS** |
+| Formal Engineering Document | **PASS** |
+| Git Checkpoint | **PASS** |
+| Working Tree | **CLEAN** |
+| Git Commit | `0898b1f` |
+| Commit Message | `TASK-0018 Final MVP Verification` |
+| Final Task Status | **FREEZE** |
+| Next Project State | **MVP Final Verification Complete** |
 
-\## 1. Document Information
+---
 
+## 2. Final Freeze Declaration
 
+TASK-0018 — Final MVP Verification 已完成全部既定流程：
 
-\- Document ID: TASK-0018
+Decision → Decision Freeze → Coding Readiness → AI Coding → Verification → Human Acceptance → Formal Engineering Document → Git Checkpoint → **FREEZE**
 
-\- 中文名稱：最終 MVP 驗證
+所有 Final MVP Verification acceptance gates 均已通過。
 
-\- English Name: Final MVP Verification
+**TASK-0018 = FREEZE**
 
-\- Version: v1.0
+---
 
-\- Status: FORMAL COMPLETION READY FOR GIT CHECKPOINT
+## 3. Decision Freeze
 
-\- Decision Status: FREEZE
+TASK-0018 Decision 共 90 題。
 
-\- Decision Coverage: Q1–Q90 / 90–90 ACCEPTED
+| Decision Range | Result |
+|---|---|
+| Q1–Q15 | **PASS — All Accepted** |
+| Q16–Q30 | **PASS — All Accepted** |
+| Q31–Q45 | **PASS — All Accepted** |
+| Q46–Q60 | **PASS — All Accepted** |
+| Q61–Q75 | **PASS — All Accepted** |
+| Q76–Q90 | **PASS — All Accepted** |
+| Overall | **90 / 90 — 100%** |
 
-\- Coding Readiness: PASS
+TASK-0018 Decision 已完成並 Freeze。
 
-\- AI Coding: PASS
+不得重新開啟 Decision，除非後續明確建立新的 Task 或正式變更流程。
 
-\- Verification: PASS
+---
 
-\- Human Acceptance: PASS
+## 4. Final Verification Scope
 
-\- Scope: Final MVP Verification
+TASK-0018 最終驗證涵蓋既有 13 個 MVP Business Blocks：
 
-\- Previous Task: TASK-0017 System Integration — FREEZE
+1. Staff / Auth
+2. Shop Settings
+3. Customer
+4. Pet
+5. Service
+6. Appointment
+7. Daily Operations
+8. Grooming
+9. Boarding
+10. Order
+11. Payment
+12. Product
+13. Report
 
-\- Next Stage: Git Checkpoint
+TASK-0018 僅進行 Final MVP Verification。
 
-\- Final Freeze Status: PENDING GIT CHECKPOINT
+未建立新的 Business Block。
 
+未重新設計既有 Business Block。
 
+未擴張 MVP Scope。
 
-\---
+---
 
+## 5. Core MVP Operational Flow
 
-
-\## 2. Purpose
-
-
-
-TASK-0018 用於對已完成的 MVP 進行最終驗證，確認既有 13 個 MVP Business Blocks 能以目前 Freeze 狀態穩定運作，核心營運流程可以完整執行，跨模組資料與 Business State 保持一致，Authentication、Authorization、API、Database、Frontend、Browser 與 Regression 均符合 MVP 最終驗收條件。
-
-
-
-本 Task 不負責重新設計 MVP，不重新定義 Business Block，不擴張產品 Scope。
-
-
-
-本 Task 的最終目標為：
-
-
+最終驗證核心流程：
 
 Customer → Pet → Appointment → Daily Operations → Check-in → Grooming / Boarding → Service Completed → Order → Payment → Report
 
+結果：
 
+**PASS**
 
-確認上述完整營運鏈路可以正常運作並通過最終 Human Acceptance。
+---
 
+## 6. Grooming End-to-End Verification
 
+實際 Human Acceptance / Browser Flow：
 
-\---
+Appointment `#19`
 
+↓
 
+Grooming
 
-\## 3. Scope
+↓
 
+Service Completed
 
+↓
 
-\### 3.1 Included MVP Blocks
+Order `#4`
 
+↓
 
+Payment
 
-1\. Staff / Auth
+↓
 
-2\. Shop Settings
+Paid `890.00`
 
-3\. Customer
+↓
 
-4\. Pet
-
-5\. Service
-
-6\. Appointment
-
-7\. Daily Operations
-
-8\. Grooming
-
-9\. Boarding
-
-10\. Order
-
-11\. Payment
-
-12\. Product
-
-13\. Report
-
-
-
-\### 3.2 Final Verification Scope
-
-
-
-\- 完整 MVP Core Flow
-
-\- Grooming E2E
-
-\- Boarding E2E
-
-\- Customer / Pet identity
-
-\- Appointment / Service identity
-
-\- Daily Operations Business State
-
-\- Check-in
-
-\- Service Completed
-
-\- Order
-
-\- Payment
-
-\- Report
-
-\- Product 基本功能
-
-\- Authentication
-
-\- Authorization
-
-\- Session
-
-\- API integration
-
-\- Database persistence
-
-\- Foreign Key consistency
-
-\- Frontend / Backend contract
-
-\- Browser Navigation
-
-\- Error handling
-
-\- Negative scenarios
-
-\- Refresh / re-entry
-
-\- Automated Regression
-
-\- Production Build
-
-\- Git static checks
-
-
-
-\### 3.3 Excluded
-
-
-
-本 Task 不新增：
-
-
-
-\- Multi-tenant SaaS
-
-\- Enterprise RBAC
-
-\- SSO
-
-\- MFA
-
-\- LINE API
-
-\- Online Booking Platform
-
-\- Full POS
-
-\- Full Inventory System
-
-\- New State Management Framework
-
-\- New API Client Layer
-
-\- New Domain Architecture
-
-\- DI Framework
-
-\- TypeScript
-
-\- Tailwind
-
-\- Prisma
-
-\- Cypress
-
-\- New E2E Framework
-
-\- Enterprise Architecture
-
-\- Unnecessary Design Patterns
-
-
-
-\---
-
-
-
-\## 4. Decision Freeze
-
-
-
-TASK-0018 Decision 已完成。
-
-
-
-\- Q1–Q15：15 / 15 ACCEPTED
-
-\- Q16–Q30：15 / 15 ACCEPTED
-
-\- Q31–Q45：15 / 15 ACCEPTED
-
-\- Q46–Q60：15 / 15 ACCEPTED
-
-\- Q61–Q75：15 / 15 ACCEPTED
-
-\- Q76–Q90：15 / 15 ACCEPTED
-
-
-
-Total:
-
-
-
-\- 90 / 90 ACCEPTED
-
-\- 100% Decision Completion
-
-
-
-Decision 全部採用 AI Recommendation 並經 Human Confirmation。
-
-
-
-Decision Freeze 後不得重新開啟既有決策，除非發現真正的 Scope 或 Business Requirement Blocker。
-
-
-
-\---
-
-
-
-\## 5. Technical Baseline
-
-
-
-\### 5.1 Frontend
-
-
-
-\- Next.js
-
-\- Pages Router
-
-\- JavaScript
-
-\- Bootstrap
-
-
-
-\### 5.2 Backend
-
-
-
-\- Express.js
-
-\- JavaScript
-
-
-
-\### 5.3 Database
-
-
-
-\- MySQL
-
-\- mysql2
-
-
-
-\### 5.4 Testing
-
-
-
-\- Jest
-
-\- Supertest
-
-
-
-\### 5.5 Engineering Principle
-
-
-
-「該寫的才寫。」
-
-
-
-所有修正均應遵守：
-
-
-
-\- Minimum Necessary Change
-
-\- No Scope Expansion
-
-\- No Business Block Redesign
-
-\- No unnecessary abstraction
-
-\- No unrelated refactor
-
-
-
-\---
-
-
-
-\## 6. Final Verification Strategy
-
-
-
-TASK-0018 採：
-
-
-
-Verification-first
-
-
-
-執行順序：
-
-
-
-1\. Repository / Git 狀態確認
-
-2\. Existing Evidence 核對
-
-3\. Database Persistence 核對
-
-4\. Automated Tests
-
-5\. Production Build
-
-6\. Authentication / API Verification
-
-7\. Browser Verification
-
-8\. Negative Verification
-
-9\. Regression Verification
-
-10\. Human Acceptance
-
-11\. Formal Engineering Documentation
-
-12\. Git Checkpoint
-
-13\. TASK-0018 FREEZE
-
-
-
-Existing Evidence 與 Re-verified Evidence 必須明確區分。
-
-
-
-不得僅因舊有測試結果存在而直接宣告目前狀態 PASS。
-
-
-
-\---
-
-
-
-\## 7. AI Coding Verification Result
-
-
-
-TASK-0018 AI Coding 第一階段完成後：
-
-
-
-\- Automated Tests：PASS
-
-\- Production Build：PASS
-
-\- API / Auth：PASS
-
-\- Git static checks：PASS
-
-\- Missing context handling：已修正
-
-\- Grooming Browser E2E：後續補齊
-
-\- Boarding Browser E2E：後續補齊
-
-
-
-初次 AI Coding 曾因尚未完成 Grooming / Boarding 完整 Browser E2E 而：
-
-
-
-\- AI Coding：BLOCKED
-
-
-
-完成完整 Browser E2E 後：
-
-
-
-\- AI Coding：PASS
-
-
-
-最終未產生未處理的 Critical / Blocker。
-
-
-
-\---
-
-
-
-\## 8. Confirmed Minimal Code Fixes
-
-
-
-TASK-0018 AI Coding 階段確認並完成三項必要最小修正：
-
-
-
-\### 8.1 Customer Test Teardown
-
-
-
-File:
-
-
-
-`testing/tests/customer.test.js`
-
-
-
-Purpose:
-
-
-
-修正測試資料清理時的 Foreign Key deletion order。
-
-
-
-Classification:
-
-
-
-\- Test infrastructure / fixture issue
-
-\- 非 Production Business Logic redesign
-
-
-
-\### 8.2 Grooming Missing Context
-
-
-
-File:
-
-
-
-`frontend/pages/grooming.js`
-
-
-
-Purpose:
-
-
-
-當 Grooming work context 不存在時，避免頁面永久 Loading。
-
-
-
-Expected behavior:
-
-
-
-顯示「未找到美容工作」等適當狀態，而非 indefinite loading。
-
-
-
-\### 8.3 Boarding Missing Context
-
-
-
-File:
-
-
-
-`frontend/pages/boarding.js`
-
-
-
-Purpose:
-
-
-
-當 Boarding work context 不存在時，避免頁面永久 Loading。
-
-
-
-Expected behavior:
-
-
-
-顯示「未找到住宿工作」等適當狀態，而非 indefinite loading。
-
-
-
-\---
-
-
-
-\## 9. Human Acceptance UI Fix
-
-
-
-Human Acceptance 階段發現 Daily Operations 缺少「返回首頁」入口。
-
-
-
-第一次修正雖然功能正確，但 Human Acceptance 發現其 UI 外觀與其他頁面不一致，因此再次進行最小 UI 修正。
-
-
-
-\### 9.1 Existing Standard Pattern
-
-
-
-已確認：
-
-
-
-\- `appointments.js`
-
-\- `settings.js`
-
-
-
-採用既有標準 Pattern：
-
-
-
-\- `d-flex justify-content-between align-items-center`
-
-\- 標題與說明位於左側內層 `<div>`
-
-\- 右側使用首頁連結
-
-\- `<a href="/">`
-
-\- `btn btn-outline-dark`
-
-\- Header `mb-4`
-
-
-
-\### 9.2 Daily Operations Final Fix
-
-
-
-File:
-
-
-
-`frontend/pages/operations.js`
-
-
-
-最終使用與既有頁面一致的 Header / Home Navigation Pattern。
-
-
-
-保留：
-
-
-
-\- 原有 `container-fluid`
-
-\- 原有 Operations layout
-
-\- 原有 Business Logic
-
-\- 原有資料表
-
-\- 原有 API
-
-\- 原有 Database behavior
-
-
-
-未新增：
-
-
-
-\- Navigation Framework
-
-\- Shared Component Framework
-
-\- State Management
-
-\- API Layer
-
-\- Business Logic
-
-
-
-\### 9.3 Human Acceptance UI Verification
-
-
-
-已確認：
-
-
-
-\- 「返回首頁」存在
-
-\- UI 外觀與既有頁面一致
-
-\- 位置與既有頁面一致
-
-\- Bootstrap button pattern 一致
-
-\- 實際可點擊
-
-\- 點擊後返回 `/`
-
-\- Daily Operations 資料正常
-
-\- 無 blocking runtime error
-
-
-
-Human Acceptance UI Fix：
-
-
-
-\*\*PASS\*\*
-
-
-
-\---
-
-
-
-\## 10. Core E2E Verification
-
-
-
-\### 10.1 Grooming
-
-
-
-完整流程：
-
-
-
-Customer
-
-→ Pet
-
-→ Appointment #19
-
-→ Daily Operations
-
-→ Check-in
-
-→ Grooming
-
-→ Service Completed
-
-→ Order #4
-
-→ Payment
-
-→ Report
-
-
+Report
 
 結果：
 
+**PASS**
 
+---
 
-\- Appointment #19：PASS
+## 7. Boarding End-to-End Verification
 
-\- Grooming：PASS
+實際 Human Acceptance / Browser Flow：
 
-\- Order #4：PASS
+Appointment `#20`
 
-\- Order amount：890.00
+↓
 
-\- Payment：890.00
+Boarding
 
-\- Remaining：0.00
+↓
 
-\- Report：Basic Grooming 1 / 890.00
+Service Completed
 
-\- Business State：PASS
+↓
 
+Order `#5`
 
+↓
 
-Final Result:
+Payment
 
+↓
 
+Paid `1200.00`
 
-\*\*Grooming E2E PASS\*\*
+↓
 
-
-
-\### 10.2 Boarding
-
-
-
-完整流程：
-
-
-
-Customer
-
-→ Pet
-
-→ Appointment #20
-
-→ Daily Operations
-
-→ Check-in
-
-→ Boarding
-
-→ Service Completed
-
-→ Order #5
-
-→ Payment
-
-→ Report
-
-
+Report
 
 結果：
 
+**PASS**
 
+---
 
-\- Appointment #20：PASS
+## 8. Cross-Module Data Verification
 
-\- Boarding Service：基礎住宿服務
+已確認：
 
-\- Boarding Service ID：6
+- Customer identity 可跨模組保持一致。
+- Pet identity 可保持 Customer relationship。
+- Appointment 可正確參照 Pet / Customer context。
+- Daily Operations 可取得 Appointment。
+- Check-in 使用既有 Appointment / Daily Operations 資料。
+- Grooming / Boarding 可取得正確營運 context。
+- Service Completed 可銜接 Order。
+- Order 可取得正確 Service。
+- Payment 可取得正確 Order。
+- Payment completion state 可正確反映。
+- Report 可取得實際完成付款資料。
+- 未建立平行 Business Data Source。
+- 未發現 orphan appointment-pet relationship。
+- 未發現 orphan payment。
 
-\- Order #5：PASS
+結果：
 
-\- Order amount：1200.00
+**PASS**
 
-\- Payment：1200.00
+---
 
-\- Remaining：0.00
+## 9. Service Catalog Verification
 
-\- Report：基礎住宿服務 2 / 2400.00
+已確認：
 
-\- Business State：PASS
+- Appointment 使用既有 Service Management / Database。
+- ACTIVE Service 可正確取得。
+- Grooming Service 可正常使用。
+- Boarding Service 可正常使用。
+- 不再依賴錯誤的 Hardcoded Service Catalog。
+- `service_ids` contract 維持不變。
+- 未修改 Service Business Model。
+- 未修改 Database Schema。
 
+結果：
 
+**PASS**
 
-Final Result:
+---
 
+## 10. Authentication / Authorization Verification
 
+已確認：
 
-\*\*Boarding E2E PASS\*\*
+- `/api/health` → `200`
+- 未登入存取受保護 Customer API → `401`
+- 未登入進入受保護 `/customers` → redirect `/login`
+- Logout 後 protected page 不可繼續使用。
+- Authentication / Authorization existing behavior 無回歸。
 
+結果：
 
+**PASS**
 
-\---
+---
 
+## 11. Automated Test Verification
 
+測試位置：
 
-\## 11. Database Persistence Verification
+`D:\MVP\testing`
 
-
-
-Final read-only database verification confirmed:
-
-
-
-\### 11.1 Service
-
-
-
-\- Basic Grooming：ACTIVE
-
-\- Service ID：1
-
-\- Price：890.00
-
-
-
-\- 基礎住宿服務：ACTIVE
-
-\- Service ID：6
-
-\- Price：1200.00
-
-
-
-\### 11.2 Appointment
-
-
-
-\- Appointment #19：存在
-
-\- Appointment #20：存在
-
-\- Customer relationship：一致
-
-\- Pet relationship：一致
-
-\- Service relationship：一致
-
-
-
-\### 11.3 Pet Links
-
-
-
-\- Appointment #19 → Pet #10
-
-\- Appointment #20 → Pet #11
-
-
-
-\### 11.4 Daily Operations
-
-
-
-\- Operation #12 → Appointment #19
-
-\- Operation #13 → Appointment #20
-
-\- Both Status：COMPLETED
-
-
-
-\### 11.5 Grooming
-
-
-
-Grooming record successfully related to the Daily Operations / Appointment / Pet / Service context.
-
-
-
-\### 11.6 Boarding
-
-
-
-Boarding record：
-
-
-
-\- Boarding ID：#3
-
-\- Appointment：#20
-
-\- Customer：#8
-
-\- Pet：#11
-
-\- Service：#6
-
-\- Status：COMPLETED
-
-
-
-\### 11.7 Orders
-
-
-
-\- Order #4：Grooming
-
-\- Order #5：Boarding
-
-\- Both Status：PAID
-
-
-
-\### 11.8 Payments
-
-
-
-\- Payment associated with Order #4：890.00
-
-\- Payment associated with Order #5：1200.00
-
-\- Both Status：PAID
-
-
-
-\### 11.9 Orphan Checks
-
-
-
-\- Orphan payments：0
-
-\- Orphan appointment-pets：0
-
-
-
-Database Persistence Final Result:
-
-
-
-\*\*PASS\*\*
-
-
-
-\---
-
-
-
-\## 12. Automated Testing
-
-
-
-Command:
-
-
-
-`cd D:\\MVP\\testing`
-
-
+執行：
 
 `npm test -- --runInBand`
 
+最終結果：
 
-
-Final result:
-
-
-
-\- Test Suites：17 / 17 PASS
-
-\- Tests：79 / 79 PASS
-
-
-
-Automated Regression：
-
-
-
-\*\*PASS\*\*
-
-
-
-No remaining test failure classified as Production Functional Regression.
-
-
-
-\---
-
-
-
-\## 13. Production Build
-
-
-
-Command:
-
-
-
-`cd D:\\MVP\\frontend`
-
-
-
-`npm run build`
-
-
-
-Final result:
-
-
-
-\*\*PASS\*\*
-
-
-
-No blocking compile / build error.
-
-
-
-\---
-
-
-
-\## 14. Authentication / Authorization / API Verification
-
-
-
-\### 14.1 Health
-
-
-
-`/api/health`
-
-
-
-Result:
-
-
-
-`200`
-
-
-
-\### 14.2 Unauthorized API
-
-
-
-Unauthenticated:
-
-
-
-`/api/customers`
-
-
-
-Result:
-
-
-
-`401`
-
-
-
-\### 14.3 Protected Frontend
-
-
-
-Unauthenticated access to:
-
-
-
-`/customers`
-
-
-
-Result:
-
-
-
-Redirect to:
-
-
-
-`/login`
-
-
-
-\### 14.4 Login / Logout
-
-
-
-\- Login：PASS
-
-\- Logout：PASS
-
-\- Protected URL：PASS
-
-
-
-Authentication Final Result:
-
-
-
-\*\*PASS\*\*
-
-
-
-\---
-
-
-
-\## 15. Negative Verification
-
-
-
-\### 15.1 Missing Grooming Context
-
-
-
-Direct access to:
-
-
-
-`/grooming`
-
-
-
-without valid work context produces an appropriate missing-work state.
-
-
-
-Result:
-
-
-
-\- No indefinite Loading
-
-\- Correct missing-context UI
-
-
-
-\*\*PASS\*\*
-
-
-
-\### 15.2 Missing Boarding Context
-
-
-
-Direct access to:
-
-
-
-`/boarding`
-
-
-
-without valid work context produces an appropriate missing-work state.
-
-
-
-Result:
-
-
-
-\- No indefinite Loading
-
-\- Correct missing-context UI
-
-
-
-\*\*PASS\*\*
-
-
-
-\### 15.3 Unauthorized API
-
-
-
-Unauthenticated protected API returns:
-
-
-
-`401`
-
-
-
-\*\*PASS\*\*
-
-
-
-\---
-
-
-
-\## 16. Browser Verification
-
-
-
-Browser verification covered:
-
-
-
-\- Major MVP pages
-
-\- Core navigation
-
-\- Customer / Pet context
-
-\- Appointment
-
-\- Daily Operations
-
-\- Check-in
-
-\- Grooming
-
-\- Boarding
-
-\- Service Completed
-
-\- Order
-
-\- Payment
-
-\- Report
-
-\- Authentication
-
-\- Logout
-
-\- Missing work context
-
-\- Return Home navigation
-
-
-
-Daily Operations final UI verification additionally confirmed:
-
-
-
-\- Existing page content remains functional
-
-\- Return Home button uses existing system UI pattern
-
-\- Button is visually consistent with Appointments / Settings
-
-\- Click returns to `/`
-
-
-
-Browser Verification:
-
-
-
-\*\*PASS\*\*
-
-
-
-\---
-
-
-
-\## 17. Product Verification
-
-
-
-Product remains within MVP basic scope.
-
-
-
-Verification confirms Product functionality did not introduce blocking regression into the final MVP flow.
-
-
-
-No expansion into:
-
-
-
-\- Full Inventory
-
-\- Enterprise POS
-
-\- Stock Management Platform
-
-
-
-Product Final Result:
-
-
-
-\*\*PASS\*\*
-
-
-
-\---
-
-
-
-\## 18. Regression Verification
-
-
-
-Regression scope included:
-
-
-
-\- Existing frozen Business Blocks
-
-\- Customer
-
-\- Pet
-
-\- Service
-
-\- Appointment
-
-\- Daily Operations
-
-\- Grooming
-
-\- Boarding
-
-\- Order
-
-\- Payment
-
-\- Report
-
-\- Product
-
-\- Auth
-
-\- Navigation
-
-\- API
-
-\- Database relationships
-
-
-
-Final regression result:
-
-
-
-\- No Critical
-
-\- No Blocker
-
-\- No unresolved Functional Regression
-
-\- No unrelated production modification
-
-\- No scope expansion
-
-
-
-Regression:
-
-
-
-\*\*PASS\*\*
-
-
-
-\---
-
-
-
-\## 19. Git Static Verification
-
-
-
-Commands executed:
-
-
-
-`git diff --check`
-
-
-
-`git status --short --branch`
-
-
-
-`git diff --stat`
-
-
-
-`git diff`
-
-
-
-`git diff --name-only`
-
-
-
-`git ls-files --others --exclude-standard`
-
-
-
-Results:
-
-
-
-\- `git diff --check`：PASS
-
-\- No new verification artifacts
-
-\- No unrelated generated files
-
-\- No Database migration/schema changes
-
-\- No Scope Expansion
-
-\- Expected existing changes only
-
-\- Human Acceptance UI fix limited to `operations.js`
-
-\- No Commit performed during Verification / Human Acceptance
-
-
-
-Git Static Verification:
-
-
-
-\*\*PASS\*\*
-
-
-
-\---
-
-
-
-\## 20. Evidence Classification
-
-
-
-\### Existing Evidence
-
-
-
-包括：
-
-
-
-\- TASK-0017 frozen integration state
-
-\- Previously completed MVP Business Blocks
-
-\- Existing automated test baseline
-
-\- Existing integration verification
-
-\- Existing Grooming / Boarding integration evidence
-
-
-
-\### Re-verified Evidence
-
-
-
-TASK-0018 final verification重新確認：
-
-
-
-\- Database persistence
-
-\- Appointment / Pet / Service identity
-
-\- Operations state
-
-\- Grooming / Boarding records
-
-\- Order / Payment relationship
-
-\- Orphan records
-
-\- Automated Tests
-
-\- Production Build
-
-\- Authentication / Authorization
-
-\- Negative verification
-
-\- Browser verification
-
-\- Daily Operations navigation
-
-\- Git static checks
-
-
-
-Existing Evidence 不得取代必要的 Final Verification。
-
-
-
-\---
-
-
-
-\## 21. Final Human Acceptance
-
-
-
-Human Acceptance 發現並處理：
-
-
-
-\### Issue 1
-
-
-
-Daily Operations 缺少返回首頁入口。
-
-
-
-Status：
-
-
-
-\*\*FIXED\*\*
-
-
-
-\### Issue 2
-
-
-
-第一次修正後返回首頁 UI 與其他頁面不一致。
-
-
-
-Status：
-
-
-
-\*\*FIXED\*\*
-
-
-
-Final UI pattern 已與既有 Appointments / Settings standard pattern 一致。
-
-
-
-Human Acceptance 最終確認：
-
-
-
-\*\*TASK-0018 HUMAN ACCEPTANCE: PASS\*\*
-
-
-
-\---
-
-
-
-\## 22. Final Acceptance Gate
-
-
-
-TASK-0018 Final Acceptance Gate：
-
-
-
-| Gate | Result |
-
+| Item | Result |
 |---|---|
+| Test Suites | **17 / 17 PASS** |
+| Tests | **79 / 79 PASS** |
+| Snapshots | **0** |
+| Remaining Failures | **None** |
+| Overall | **PASS** |
 
-| Decision Q1–Q90 | PASS |
+---
 
-| Decision Freeze | PASS |
+## 12. Production Build Verification
 
-| Coding Readiness | PASS |
+Frontend Production Build：
 
-| AI Coding | PASS |
+**PASS**
 
-| Core E2E | PASS |
+未發現 Production Build blocker。
 
-| Grooming E2E | PASS |
+---
 
-| Boarding E2E | PASS |
+## 13. Negative Verification
 
-| Database Persistence | PASS |
+已驗證重要 Negative Scenario：
 
-| Authentication | PASS |
+- Grooming 無工作 context 時顯示「未找到美容工作」。
+- Boarding 無工作 context 時顯示「未找到住宿工作」。
+- 未發生 indefinite Loading。
+- Unauthorized API request 正確拒絕。
+- Protected page 未登入時正確導向 Login。
 
-| Authorization | PASS |
+結果：
 
-| API Verification | PASS |
+**PASS**
 
-| Negative Verification | PASS |
+---
 
-| Browser Verification | PASS |
+## 14. Browser Verification
 
-| Automated Tests | PASS |
+已完成實際 Browser Verification：
 
-| Production Build | PASS |
+- Login / Logout
+- Protected Page
+- Customer
+- Pet
+- Appointment
+- Daily Operations
+- Check-in
+- Grooming
+- Boarding
+- Service Completed
+- Order
+- Payment
+- Report
+- Core navigation
+- Refresh / state continuity
+- Important error states
 
-| Regression | PASS |
+結果：
 
-| Git Static Check | PASS |
+**PASS**
 
-| Human Acceptance | PASS |
+---
 
-| Critical / Blocker | 0 |
+## 15. Human Acceptance
 
-| Scope Expansion | NONE |
+Human Acceptance 由使用者實際操作確認。
 
+### 15.1 Initial Blocker
 
+發現 Daily Operations 缺少返回首頁入口。
 
-Final Acceptance Gate：
+處理：
 
+- 使用既有 `/` route。
+- 加入返回首頁入口。
+- 未修改 Business Logic。
 
+### 15.2 UI Consistency Blocker
 
-\*\*PASS\*\*
+使用者進一步確認返回首頁按鈕與其他頁面視覺不一致。
 
+處理：
 
+- 參照既有頁面的標準 Header layout。
+- 使用既有 Bootstrap styling。
+- 使用既有 `btn btn-outline-dark`。
+- 保持右側返回首頁位置與既有頁面一致。
+- 未新增 UI Framework。
+- 未修改 Business Model。
 
-\---
+修復後：
 
+- Browser visual verification → **PASS**
+- Click `/` → **PASS**
+- Operations data → **PASS**
+- Automated regression → **PASS**
 
+### 15.3 Human Acceptance Overall
 
-\## 23. Definition of Done
+**PASS**
 
+---
 
+## 16. TASK-0018 Minimal Fixes
 
-TASK-0018 Definition of Done：
+TASK-0018 驗證期間僅進行必要最小修復。
 
+### 16.1 Customer Test Cleanup
 
+`testing/tests/customer.test.js`
 
-\- \[x] Decision Q1–Q90 completed
+目的：
 
-\- \[x] Decision Freeze
+修正測試 teardown 的 Foreign Key dependency order。
 
-\- \[x] Coding Readiness
+性質：
 
-\- \[x] AI Coding
+- Test Fixture / Cleanup Fix
+- 非 Production Business Logic redesign
+- 非 Database Schema Change
 
-\- \[x] Core E2E
+結果：
 
-\- \[x] Grooming E2E
+**PASS**
 
-\- \[x] Boarding E2E
+### 16.2 Grooming Missing Context
 
-\- \[x] Database persistence verification
+`frontend/pages/grooming.js`
 
-\- \[x] Authentication verification
+目的：
 
-\- \[x] Authorization verification
+修正缺少 Grooming work context 時的 indefinite Loading。
 
-\- \[x] Negative verification
+結果：
 
-\- \[x] Browser verification
+- 正確顯示錯誤狀態。
+- 不再 indefinite Loading。
+- Regression PASS。
 
-\- \[x] Automated regression
+### 16.3 Boarding Missing Context
 
-\- \[x] Production build
+`frontend/pages/boarding.js`
 
-\- \[x] UI navigation verification
+目的：
 
-\- \[x] Human Acceptance
+修正缺少 Boarding work context 時的 indefinite Loading。
 
-\- \[x] No Critical / Blocker
+結果：
 
-\- \[x] No Scope Expansion
+- 正確顯示錯誤狀態。
+- 不再 indefinite Loading。
+- Regression PASS。
 
-\- \[x] No new verification artifacts
+### 16.4 Daily Operations Return Home UI
 
-\- \[x] Git static check
+`frontend/pages/operations.js`
 
-\- \[ ] Git Checkpoint
+目的：
 
-\- \[ ] TASK-0018 FREEZE
+補足返回首頁入口並與既有頁面 UI pattern 一致。
 
+結果：
 
+**PASS**
 
-\---
+---
 
+## 17. Regression Status
 
+最終 Regression：
 
-\## 24. Formal Completion Status
+- Automated Test → **PASS**
+- Browser Verification → **PASS**
+- Production Build → **PASS**
+- API Verification → **PASS**
+- Database Verification → **PASS**
+- Authentication / Authorization → **PASS**
+- Grooming E2E → **PASS**
+- Boarding E2E → **PASS**
+- Order / Payment → **PASS**
+- Report → **PASS**
+- Negative Scenarios → **PASS**
 
+Remaining Critical / Blocker：
 
+**None**
 
-TASK-0018 implementation and verification requirements are complete.
+---
 
+## 18. Git Checkpoint
 
+TASK-0018 Git Checkpoint 已完成。
 
-Current formal status:
+### 18.1 Duplicate File Resolution
 
+已確認：
 
+`docs/TASK-0017 系統整合 System Integration v1.0.md`
 
-\*\*FORMAL ENGINEERING DOCUMENT COMPLETE\*\*
+為 TASK-0017 已存在 Git history 中的 duplicate / regenerated copy。
 
+既有 TASK-0017 正式文件：
 
+`Tasks/TASK-0017 系統整合 System Integration v1.0.md`
 
-The only remaining engineering workflow gates are:
+已存在於 TASK-0017 Git Checkpoint：
 
+`0b8643d6cf298ae0169b7887a279a07eeecb575a`
 
+因此未建立新的 TASK-0017 commit。
 
-1\. Git Checkpoint
+### 18.2 TASK-0018 Commit
 
-2\. TASK-0018 FREEZE
-
-
-
-No further Decision is required.
-
-
-
-No further Coding is required.
-
-
-
-No further Coding Readiness is required.
-
-
-
-No further redesign is permitted unless a new blocking defect is discovered.
-
-
-
-\---
-
-
-
-\## 25. Git Checkpoint Readiness
-
-
-
-Before Git Checkpoint, perform final:
-
-
-
-\- `git status --short --branch`
-
-\- `git diff --check`
-
-\- `git diff`
-
-\- `git diff --stat`
-
-\- Confirm no unexpected files
-
-\- Confirm no verification artifacts
-
-\- Confirm no unrelated modifications
-
-
-
-Git Checkpoint must create a dedicated checkpoint for TASK-0018 Final MVP Verification.
-
-
-
-Do not commit unrelated work.
-
-
-
-Expected checkpoint message:
-
-
+Commit Message：
 
 `TASK-0018 Final MVP Verification`
 
+Commit：
+
+`0898b1f`
+
+### 18.3 Commit Scope
+
+TASK-0018 checkpoint 共包含 7 個檔案：
+
+1. `frontend/pages/grooming.js`
+2. `frontend/pages/boarding.js`
+3. `frontend/pages/operations.js`
+4. `testing/tests/customer.test.js`
+5. `Tasks/TASK-0018 最終 MVP 驗證 Final MVP Verification Coding Readiness v1.0.md`
+6. `Tasks/TASK-0018 最終 MVP 驗證 Final MVP Verification Decision Freeze v1.0.md`
+7. `docs/TASK-0018 最終 MVP 驗證 Final MVP Verification v1.0.md`
+
+### 18.4 Git Validation
+
+`git diff --cached --check`
+
+**PASS**
+
+`git diff HEAD^ HEAD --check`
+
+**PASS**
+
+Commit：
+
+**PASS**
+
+Working Tree：
 
+**CLEAN**
 
-After successful checkpoint:
+Untracked Files：
 
+**None**
 
+Unexpected Changes：
 
-\- Working Tree must be CLEAN
+**None**
 
-\- Commit hash must be recorded
+---
 
-\- Git Checkpoint must be marked PASS
+## 19. Final Acceptance Gates
 
+| Completion Gate | Result |
+|---|---|
+| Decision Q1–Q90 | **PASS** |
+| Decision Freeze | **PASS** |
+| Coding Readiness | **PASS** |
+| AI Coding | **PASS** |
+| Automated Tests | **PASS** |
+| API Verification | **PASS** |
+| Database Verification | **PASS** |
+| Browser Verification | **PASS** |
+| Negative Verification | **PASS** |
+| Production Build | **PASS** |
+| Regression | **PASS** |
+| Human Acceptance | **PASS** |
+| Formal Engineering Document | **PASS** |
+| Git Checkpoint | **PASS** |
+| Working Tree | **CLEAN** |
+| Critical / Blocker | **NONE** |
+| Final MVP Verification | **PASS** |
 
+---
 
-\---
+## 20. Definition of Done
 
+- [x] TASK-0018 Decision 完成。
+- [x] Q1–Q90 全部確認。
+- [x] Decision Freeze 完成。
+- [x] Coding Readiness 完成。
+- [x] AI Coding 完成。
+- [x] 13 個 MVP Business Blocks 完成最終驗證。
+- [x] Customer → Pet 驗證完成。
+- [x] Pet → Appointment 驗證完成。
+- [x] Appointment → Daily Operations 驗證完成。
+- [x] Daily Operations → Check-in 驗證完成。
+- [x] Check-in → Grooming 驗證完成。
+- [x] Check-in → Boarding 驗證完成。
+- [x] Grooming → Service Completed → Order 驗證完成。
+- [x] Boarding → Service Completed → Order 驗證完成。
+- [x] Order → Payment 驗證完成。
+- [x] Payment → Report 驗證完成。
+- [x] Authentication / Authorization 驗證完成。
+- [x] Database persistence 驗證完成。
+- [x] Automated Tests 17/17 suites PASS。
+- [x] Automated Tests 79/79 PASS。
+- [x] Production Build PASS。
+- [x] Browser Verification PASS。
+- [x] Negative Verification PASS。
+- [x] Regression PASS。
+- [x] Human Acceptance PASS。
+- [x] Formal Engineering Document 完成。
+- [x] Git Checkpoint PASS。
+- [x] Commit `0898b1f` 建立。
+- [x] Working Tree CLEAN。
+- [x] Untracked Files = None。
+- [x] Critical / Blocker = None。
 
+---
 
-\## 26. Freeze Rule
+## 21. Freeze Rules
 
+TASK-0018 自本文件正式成立後：
 
+1. TASK-0018 Scope Freeze。
+2. TASK-0018 Final Verification Result Freeze。
+3. TASK-0018 Acceptance Result Freeze。
+4. 已驗證的 MVP Operational Flow 不得任意修改。
+5. 不得以 TASK-0018 名義重新設計既有 Business Blocks。
+6. 不得以 TASK-0018 名義新增 Business Block。
+7. 不得以 TASK-0018 名義擴張 MVP Scope。
+8. 不得重新引入已排除的 Enterprise Architecture。
+9. 不得因一般性開發需求解除 TASK-0018 Freeze。
+10. 後續 Bug 應依新的 Bug Fix / Change 流程處理。
+11. 後續新需求應進入新的 Task 或明確 Change Process。
+12. TASK-0018 不再進行一般性開發。
 
-TASK-0018 may be declared FREEZE only after:
+---
 
+## 22. Project Final Position
 
+TASK-0017：
 
-1\. Human Acceptance PASS
+**FREEZE**
 
-2\. Formal Engineering Document complete
+↓
 
-3\. Git Checkpoint PASS
+TASK-0018 Decision：
 
-4\. Working Tree CLEAN
+**90 / 90 PASS**
 
+↓
 
+TASK-0018 Decision Freeze：
 
-Until Git Checkpoint PASS:
+**PASS**
 
+↓
 
+TASK-0018 Coding Readiness：
 
-\*\*TASK-0018 FREEZE remains PENDING.\*\*
+**PASS**
 
+↓
 
+TASK-0018 AI Coding：
 
-After Git Checkpoint PASS:
+**PASS**
 
+↓
 
+TASK-0018 Verification：
 
-\*\*TASK-0018 → FREEZE\*\*
+**PASS**
 
+↓
 
+TASK-0018 Human Acceptance：
 
-\---
+**PASS**
 
+↓
 
+TASK-0018 Formal Completion：
 
-\## 27. Final Statement
+**PASS**
 
+↓
 
+TASK-0018 Git Checkpoint：
 
-TASK-0018 最終 MVP 驗證已完成 Decision、Coding Readiness、AI Coding、Verification 與 Human Acceptance。
+**PASS**
 
+Commit：
 
+`0898b1f`
 
-Final verification confirms that the existing MVP can execute the intended operational flow:
+↓
 
+# TASK-0018 FREEZE
 
+↓
 
-Customer
+# MVP FINAL VERIFICATION COMPLETE
 
-→ Pet
+---
 
-→ Appointment
+## 23. Final Engineering Statement
 
-→ Daily Operations
+TASK-0018 Final MVP Verification 已完成全部既定 Scope。
 
-→ Check-in
+完整 MVP 核心營運流程：
 
-→ Grooming / Boarding
+Customer → Pet → Appointment → Daily Operations → Check-in → Grooming / Boarding → Service Completed → Order → Payment → Report
 
-→ Service Completed
+已通過 Automated Test、API Verification、Database Verification、Browser Verification、Regression Verification 及 Human Acceptance。
 
-→ Order
+最終沒有 Critical Issue。
 
-→ Payment
+最終沒有 Blocker。
 
-→ Report
+Git Checkpoint 已成功建立：
 
+`0898b1f`
 
+Working Tree：
 
-Grooming and Boarding both successfully reached Order and Payment, and completed payments were reflected in Report.
+**CLEAN**
 
+因此：
 
+**TASK-0018 Final MVP Verification = FREEZE**
 
-Automated tests achieved 17/17 suites and 79/79 tests PASS.
+**MVP Final Verification = COMPLETE**
 
-
-
-Production Build PASS.
-
-
-
-Authentication, Authorization, Database Persistence, Browser Verification, Negative Verification and Regression all PASS.
-
-
-
-No Critical or Blocker remains.
-
-
-
-Human Acceptance is PASS.
-
-
-
-TASK-0018 is therefore ready for:
-
-
-
-\*\*Git Checkpoint → TASK-0018 FREEZE\*\*
+**TASK-0018 = FREEZE**
