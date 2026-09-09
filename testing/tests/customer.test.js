@@ -24,6 +24,7 @@ const app = require('../../backend/src/app');
 const { setup } = require('../../database/scripts/setup');
 const { getPool, closePool } = require('../../backend/src/config/database');
 const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
+const { hashPassword } = require('../../backend/src/utils/password');
 
 const owner = getFoundationOwner();
 
@@ -155,5 +156,41 @@ describe('Customer API', () => {
     expect(deactivateResponse.status).toBe(200);
     const deactivateAgainResponse = await agent.patch(`/api/customers/${customerId}/deactivate`);
     expect(deactivateAgainResponse.status).toBe(400);
+  });
+
+  test('OWNER can safely delete a customer and GROOMER cannot call the endpoint', async () => {
+    const { agent } = await loginAsOwner();
+    const createResponse = await createCustomerRecord(agent, { name: 'Delete Me', phone: '0912-999-001' });
+    const customerId = createResponse.body.data.customer.id;
+
+    const username = `delete-groomer-${Date.now()}`;
+    const [staffResult] = await getPool().query(
+      'INSERT INTO staff (username, password_hash, display_name, status) VALUES (?, ?, ?, \'ACTIVE\')',
+      [username, await hashPassword('groomer-pass-123'), username],
+    );
+    const [roleRows] = await getPool().query('SELECT id FROM roles WHERE code = \'GROOMER\'');
+    await getPool().query('INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)', [staffResult.insertId, roleRows[0].id]);
+    const groomerAgent = request.agent(app);
+    await groomerAgent.post('/api/auth/login').send({ username, password: 'groomer-pass-123' });
+    expect((await groomerAgent.delete(`/api/customers/${customerId}`)).status).toBe(403);
+
+    const deleteResponse = await agent.delete(`/api/customers/${customerId}`);
+    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.body.data).toEqual({ message: 'Customer deleted successfully' });
+    expect((await agent.get(`/api/customers/${customerId}`)).status).toBe(404);
+    await getPool().query('DELETE FROM staff_roles WHERE staff_id = ?', [staffResult.insertId]);
+    await getPool().query('DELETE FROM staff WHERE id = ?', [staffResult.insertId]);
+  });
+
+  test('customer with an order is rejected before any deletion', async () => {
+    const { agent } = await loginAsOwner();
+    const createResponse = await createCustomerRecord(agent, { name: 'Protected Customer', phone: '0912-999-002' });
+    const customerId = createResponse.body.data.customer.id;
+    await getPool().query('INSERT INTO orders (customer_id, business_unit, status, total_amount) VALUES (?, \'DOG\', \'UNPAID\', 0)', [customerId]);
+
+    const deleteResponse = await agent.delete(`/api/customers/${customerId}`);
+    expect(deleteResponse.status).toBe(409);
+    expect(deleteResponse.body.error.code).toBe('CUSTOMER_DELETE_PROTECTED');
+    expect((await agent.get(`/api/customers/${customerId}`)).status).toBe(200);
   });
 });

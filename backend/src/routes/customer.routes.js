@@ -11,5 +11,6 @@ router.post('/customers', requireAuthentication, requireRole(['OWNER', 'FRONT_DE
 router.patch('/customers/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.updateCustomer);
 router.patch('/customers/:id/deactivate', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.deactivateCustomer);
 router.patch('/customers/:id/reactivate', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.reactivateCustomer);
+router.delete('/customers/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.deleteCustomer);
 
 module.exports = router;

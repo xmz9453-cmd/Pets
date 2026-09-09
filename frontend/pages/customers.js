@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import {
   createCustomer,
+  deleteCustomer,
   deactivateCustomer,
   getCurrentStaff,
   getCustomers,
@@ -27,6 +28,9 @@ export default function CustomersPage() {
   const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [success, setSuccess] = useState('');
 
   async function refreshCustomers() {
     try {
@@ -116,6 +120,24 @@ export default function CustomersPage() {
       await refreshCustomers();
     } catch (reactivateError) {
       setError(reactivateError.message);
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) {
+      return;
+    }
+    setDeleting(true);
+    setError('');
+    try {
+      await deleteCustomer(deleteTarget.id);
+      setCustomers((current) => current.filter((customer) => customer.id !== deleteTarget.id));
+      setDeleteTarget(null);
+      setSuccess('客戶已刪除。');
+    } catch (deleteError) {
+      setError(deleteError.message || '無法刪除客戶。');
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -232,6 +254,7 @@ export default function CustomersPage() {
             {error ? (
               <div className="alert alert-warning" role="alert">{error}</div>
             ) : null}
+            {success ? <div className="alert alert-success" role="alert">{success}</div> : null}
 
             {loading ? (
               <p className="text-muted mb-0">客戶載入中...</p>
@@ -276,6 +299,9 @@ export default function CustomersPage() {
                                 重新啟用
                               </button>
                             )}
+                            <button type="button" className="btn btn-outline-danger" onClick={() => { setDeleteTarget(customer); setError(''); setSuccess(''); }}>
+                              刪除
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -287,6 +313,26 @@ export default function CustomersPage() {
           </div>
         </div>
       </div>
+
+      {deleteTarget ? (
+        <div className="modal d-block" role="dialog" aria-modal="true" aria-labelledby="delete-customer-title">
+          <div className="modal-dialog">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h2 className="modal-title h5" id="delete-customer-title">確認刪除客戶</h2>
+                <button type="button" className="btn-close" aria-label="關閉" onClick={() => setDeleteTarget(null)} />
+              </div>
+              <div className="modal-body">
+                <p className="mb-0">客戶「{deleteTarget.name}」將永久刪除，且無法復原。確定要繼續嗎？</p>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={() => setDeleteTarget(null)}>取消</button>
+                <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={deleting}>{deleting ? '刪除中...' : '刪除'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

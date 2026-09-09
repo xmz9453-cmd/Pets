@@ -61,8 +61,18 @@ async function reactivateCustomer(req, res, next) {
   }
 }
 
+async function deleteCustomer(req, res, next) {
+  try {
+    const result = await customerService.deleteCustomer(req.params.id);
+    sendSuccess(res, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   createCustomer,
+  deleteCustomer,
   deactivateCustomer,
   getCustomer,
   listCustomers,

@@ -59,6 +59,24 @@ export async function updateStaffStatus(staffId, status) {
   });
 }
 
+export async function changeOwnPassword(currentPassword, newPassword, confirmPassword) {
+  return request('/api/auth/password', {
+    method: 'POST',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    }),
+  });
+}
+
+export async function resetStaffPassword(staffId, newPassword, confirmPassword) {
+  return request(`/api/auth/staff/${staffId}/password`, {
+    method: 'POST',
+    body: JSON.stringify({ new_password: newPassword, confirm_password: confirmPassword }),
+  });
+}
+
 export async function logout() {
   return request('/api/auth/logout', {
     method: 'POST',
@@ -188,6 +206,12 @@ export async function deactivateCustomer(customerId) {
 export async function reactivateCustomer(customerId) {
   return request(`/api/customers/${customerId}/reactivate`, {
     method: 'PATCH',
+  });
+}
+
+export async function deleteCustomer(customerId) {
+  return request(`/api/customers/${customerId}`, {
+    method: 'DELETE',
   });
 }
 

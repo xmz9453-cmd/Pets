@@ -37,6 +37,14 @@ async function findStaffByIdForUpdate(staffId, connection = getPool()) {
   return rows[0] || null;
 }
 
+async function findStaffWithPasswordById(staffId, connection = getPool()) {
+  const [rows] = await connection.query(
+    'SELECT id, username, password_hash, display_name, status FROM staff WHERE id = ? LIMIT 1',
+    [staffId],
+  );
+  return rows[0] || null;
+}
+
 async function listRolesForStaff(staffId) {
   const [rows] = await getPool().query(
     `SELECT r.code
@@ -115,6 +123,13 @@ async function updateStaffStatus(staffId, status, connection = getPool()) {
   return findStaffByIdForUpdate(staffId, connection);
 }
 
+async function updateStaffPassword(staffId, passwordHash, connection = getPool()) {
+  await connection.query(
+    'UPDATE staff SET password_hash = ? WHERE id = ?',
+    [passwordHash, staffId],
+  );
+}
+
 async function createSession({ staffId, tokenHash, expiresAt }) {
   await getPool().query(
     'INSERT INTO auth_sessions (staff_id, token_hash, expires_at) VALUES (?, ?, ?)',
@@ -146,6 +161,7 @@ module.exports = {
   findSessionByTokenHash,
   findStaffById,
   findStaffByIdForUpdate,
+  findStaffWithPasswordById,
   findStaffByUsername,
   getPool,
   listActiveOwnerIds,
@@ -153,4 +169,5 @@ module.exports = {
   listRolesForStaff,
   replaceRolesForStaff,
   updateStaffStatus,
+  updateStaffPassword,
 };

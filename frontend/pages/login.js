@@ -99,6 +99,7 @@ export default function Login() {
             {submitting ? '登入中...' : '登入'}
           </button>
           <a className="btn btn-link w-100 mt-2" href="/register">註冊新帳號</a>
+          <a className="btn btn-link w-100" href="/forgot-password">忘記密碼？</a>
           {error ? (
             <div className="alert alert-warning mt-3" role="alert">
               {error}

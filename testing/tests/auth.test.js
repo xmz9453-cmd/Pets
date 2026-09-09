@@ -249,4 +249,47 @@ describe('Staff authentication API', () => {
     expect(frontDeskLogin.status).toBe(200);
     expect(groomerLogin.status).toBe(200);
   });
+
+  test('staff can change their own password with current-password validation', async () => {
+    const target = await createRoleStaff('GROOMER');
+    const targetAgent = request.agent(app);
+    await targetAgent.post('/api/auth/login').send({ username: target.username, password: target.password });
+
+    const invalid = await targetAgent.post('/api/auth/password').send({
+      current_password: 'wrong-password',
+      new_password: 'new-pass-123',
+      confirm_password: 'new-pass-123',
+    });
+    expect(invalid.status).toBe(401);
+    expect(invalid.body.error.message).toBe('目前密碼錯誤');
+
+    const changed = await targetAgent.post('/api/auth/password').send({
+      current_password: target.password,
+      new_password: 'new-pass-123',
+      confirm_password: 'new-pass-123',
+    });
+    expect(changed.status).toBe(200);
+    expect(changed.body.data).toEqual({ message: '密碼已更新' });
+    expect(JSON.stringify(changed.body)).not.toContain('password_hash');
+    expect((await request(app).post('/api/auth/login').send({ username: target.username, password: 'new-pass-123' })).status).toBe(200);
+  });
+
+  test('OWNER can reset another inactive account, but other roles cannot', async () => {
+    const target = await createRoleStaff('GROOMER');
+    const frontDesk = await createRoleStaff('FRONT_DESK');
+    const { agent: ownerAgent } = await loginAgent();
+    await ownerAgent.patch(`/api/auth/staff/${target.id}/status`).send({ status: 'inactive' });
+
+    const reset = await ownerAgent.post(`/api/auth/staff/${target.id}/password`).send({
+      new_password: 'reset-pass-123',
+      confirm_password: 'reset-pass-123',
+    });
+    expect(reset.status).toBe(200);
+    expect(reset.body.data).toEqual({ message: '密碼已重設' });
+    expect((await request(app).post('/api/auth/login').send({ username: target.username, password: 'reset-pass-123' })).status).toBe(401);
+
+    const frontDeskAgent = request.agent(app);
+    await frontDeskAgent.post('/api/auth/login').send({ username: frontDesk.username, password: frontDesk.password });
+    expect((await frontDeskAgent.post(`/api/auth/staff/${target.id}/password`).send({ new_password: 'blocked-123', confirm_password: 'blocked-123' })).status).toBe(403);
+  });
 });

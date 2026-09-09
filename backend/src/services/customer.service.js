@@ -193,8 +193,19 @@ async function reactivateCustomer(customerId) {
   return { customer: updated };
 }
 
+async function deleteCustomer(customerId) {
+  const normalizedCustomerId = Number(customerId);
+  if (!Number.isInteger(normalizedCustomerId) || normalizedCustomerId <= 0) {
+    throw createNotFoundError('CUSTOMER_NOT_FOUND', 'Customer not found');
+  }
+
+  await customerRepository.deleteCustomer(normalizedCustomerId);
+  return { message: 'Customer deleted successfully' };
+}
+
 module.exports = {
   createCustomer,
+  deleteCustomer,
   deactivateCustomer,
   getCustomerById,
   listCustomers,

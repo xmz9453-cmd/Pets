@@ -63,6 +63,24 @@ async function updateStaffStatus(req, res, next) {
   }
 }
 
+async function changeOwnPassword(req, res, next) {
+  try {
+    const result = await authService.changeOwnPassword(req.auth.staff, req.body || {});
+    res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function resetOtherPassword(req, res, next) {
+  try {
+    const result = await authService.resetOtherPassword(req.auth.staff, req.params.id, req.body || {});
+    res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function logout(req, res, next) {
   try {
     const token = readCookie(req, authService.SESSION_COOKIE_NAME);
@@ -90,10 +108,12 @@ function getCurrentStaff(req, res) {
 
 module.exports = {
   getCurrentStaff,
+  changeOwnPassword,
   login,
   listStaff,
   logout,
   register,
+  resetOtherPassword,
   updateStaffRoles,
   updateStaffStatus,
 };

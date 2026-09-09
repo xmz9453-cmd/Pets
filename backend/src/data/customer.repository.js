@@ -165,8 +165,126 @@ async function updateStatus(customerId, status) {
   return getCustomerById(customerId);
 }
 
+async function deleteCustomer(customerId) {
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [customerRows] = await connection.query(
+      'SELECT id FROM customers WHERE id = ? LIMIT 1 FOR UPDATE',
+      [customerId],
+    );
+    if (!customerRows[0]) {
+      const error = new Error('Customer not found');
+      error.statusCode = 404;
+      error.code = 'CUSTOMER_NOT_FOUND';
+      throw error;
+    }
+
+    const [orderRows] = await connection.query(
+      'SELECT id FROM orders WHERE customer_id = ? LIMIT 1',
+      [customerId],
+    );
+    const [paymentRows] = await connection.query(
+      `SELECT p.id
+       FROM payments p
+       INNER JOIN orders o ON o.id = p.order_id
+       WHERE o.customer_id = ?
+       LIMIT 1`,
+      [customerId],
+    );
+    const [boardingRows] = await connection.query(
+      `SELECT id FROM boardings WHERE customer_id = ?
+       UNION
+       SELECT b.id
+       FROM boardings b
+       INNER JOIN appointments a ON a.id = b.appointment_id
+       WHERE a.customer_id = ?
+       LIMIT 1`,
+      [customerId, customerId],
+    );
+    const [groomingRows] = await connection.query(
+      `SELECT g.id
+       FROM groomings g
+       INNER JOIN daily_operations d ON d.id = g.daily_operation_id
+       INNER JOIN appointments a ON a.id = d.appointment_id
+       WHERE a.customer_id = ?
+       UNION
+       SELECT g.id
+       FROM groomings g
+       INNER JOIN pet_customer_relationships pcr ON pcr.pet_id = g.pet_id
+       WHERE pcr.customer_id = ?
+       LIMIT 1`,
+      [customerId, customerId],
+    );
+    const [completedRows] = await connection.query(
+      `SELECT d.id
+       FROM daily_operations d
+       INNER JOIN appointments a ON a.id = d.appointment_id
+       WHERE a.customer_id = ? AND d.status = 'COMPLETED'
+       LIMIT 1`,
+      [customerId],
+    );
+
+    if (orderRows.length || paymentRows.length || boardingRows.length || groomingRows.length || completedRows.length) {
+      const error = new Error('Customer has protected business history and cannot be deleted');
+      error.statusCode = 409;
+      error.code = 'CUSTOMER_DELETE_PROTECTED';
+      throw error;
+    }
+
+    const [appointmentRows] = await connection.query(
+      'SELECT id FROM appointments WHERE customer_id = ?',
+      [customerId],
+    );
+    const appointmentIds = appointmentRows.map((row) => row.id);
+    if (appointmentIds.length) {
+      await connection.query('DELETE FROM appointment_pets WHERE appointment_id IN (?)', [appointmentIds]);
+      await connection.query('DELETE FROM daily_operations WHERE appointment_id IN (?)', [appointmentIds]);
+      await connection.query('DELETE FROM appointments WHERE id IN (?)', [appointmentIds]);
+    }
+
+    const [petRows] = await connection.query(
+      'SELECT pet_id FROM pet_customer_relationships WHERE customer_id = ?',
+      [customerId],
+    );
+    const petIds = petRows.map((row) => row.pet_id);
+    await connection.query('DELETE FROM pet_customer_relationships WHERE customer_id = ?', [customerId]);
+
+    for (const petId of petIds) {
+      const [otherRelationshipRows] = await connection.query(
+        'SELECT pet_id FROM pet_customer_relationships WHERE pet_id = ? LIMIT 1',
+        [petId],
+      );
+      if (otherRelationshipRows.length) {
+        continue;
+      }
+
+      const [petHistoryRows] = await connection.query(
+        `SELECT id FROM groomings WHERE pet_id = ?
+         UNION SELECT id FROM boardings WHERE pet_id = ?
+         UNION SELECT id FROM appointment_pets WHERE pet_id = ?
+         LIMIT 1`,
+        [petId, petId, petId],
+      );
+      if (!petHistoryRows.length) {
+        await connection.query('DELETE FROM pets WHERE id = ?', [petId]);
+      }
+    }
+
+    await connection.query('DELETE FROM customers WHERE id = ?', [customerId]);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 module.exports = {
   createCustomer,
+  deleteCustomer,
   getCustomerById,
   listCustomers,
   updateCustomer,

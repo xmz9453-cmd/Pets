@@ -257,15 +257,81 @@ async function logout(token) {
   await authRepository.deleteSessionByTokenHash(hashSessionToken(token));
 }
 
+function normalizePasswordPayload(payload = {}) {
+  return {
+    currentPassword: typeof payload.current_password === 'string' ? payload.current_password : '',
+    newPassword: typeof payload.new_password === 'string' ? payload.new_password : '',
+    confirmPassword: typeof payload.confirm_password === 'string' ? payload.confirm_password : '',
+  };
+}
+
+function validateNewPassword(values) {
+  const fields = {};
+  if (values.newPassword.length < 8) {
+    fields.new_password = '新密碼至少需要 8 碼';
+  }
+  if (values.newPassword !== values.confirmPassword) {
+    fields.confirm_password = '兩次輸入的密碼不一致';
+  }
+  if (Object.keys(fields).length) {
+    throw createValidationError(fields);
+  }
+}
+
+async function changeOwnPassword(actor, payload) {
+  const values = normalizePasswordPayload(payload);
+  if (!values.currentPassword) {
+    throw createValidationError({ current_password: '目前密碼為必填' });
+  }
+  validateNewPassword(values);
+
+  const staff = await authRepository.findStaffWithPasswordById(actor.id);
+  if (!staff || !(await verifyPassword(values.currentPassword, staff.password_hash))) {
+    const error = new Error('目前密碼錯誤');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  await authRepository.updateStaffPassword(actor.id, await hashPassword(values.newPassword));
+  return { message: '密碼已更新' };
+}
+
+async function resetOtherPassword(actor, staffId, payload) {
+  const values = normalizePasswordPayload(payload);
+  validateNewPassword(values);
+
+  const targetId = Number(staffId);
+  if (!Number.isInteger(targetId)) {
+    throw createValidationError({ staff_id: 'Staff id is invalid' });
+  }
+  if (targetId === actor.id) {
+    const error = new Error('OWNER 修改自己的密碼必須驗證目前密碼');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const target = await authRepository.findStaffById(targetId);
+  if (!target) {
+    const error = new Error('找不到指定帳號');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  await authRepository.updateStaffPassword(targetId, await hashPassword(values.newPassword));
+  return { message: '密碼已重設' };
+}
+
 module.exports = {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
   authenticateToken,
+  changeOwnPassword,
   createAuthError,
   login,
   listStaff,
   logout,
   register,
+  resetOtherPassword,
   updateStaffRoles,
   updateStaffStatus,
 };

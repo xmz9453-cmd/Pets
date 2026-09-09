@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { getCurrentStaff, getShopSettings, getStaffAccounts, updateShopSettings, updateStaffRoles, updateStaffStatus } from '../api/client';
+import { changeOwnPassword, getCurrentStaff, getShopSettings, getStaffAccounts, resetStaffPassword, updateShopSettings, updateStaffRoles, updateStaffStatus } from '../api/client';
 import { getRoleLabel } from '../utils/staff-display';
 
 const WEEKDAY_ORDER = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -78,6 +78,10 @@ export default function SettingsPage() {
   const [success, setSuccess] = useState('');
   const [staffAccounts, setStaffAccounts] = useState([]);
   const [updatingStaffId, setUpdatingStaffId] = useState(null);
+  const [passwordModal, setPasswordModal] = useState(null);
+  const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' });
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSaving, setPasswordSaving] = useState(false);
 
   const canEdit = staff && staff.roles && staff.roles.includes('OWNER');
 
@@ -106,6 +110,8 @@ export default function SettingsPage() {
           if (active) {
             setStaffAccounts(staffResult.staff || []);
           }
+        } else if (active) {
+          setStaffAccounts([currentStaff.staff]);
         }
       } catch (loadError) {
         if (active) {
@@ -234,6 +240,38 @@ export default function SettingsPage() {
       setError(statusError.message || `無法${actionLabel}帳號。`);
     } finally {
       setUpdatingStaffId(null);
+    }
+  }
+
+  function openPasswordModal(account = null) {
+    setPasswordModal(account || false);
+    setPasswordForm({ current: '', next: '', confirm: '' });
+    setPasswordError('');
+  }
+
+  async function handlePasswordSubmit(event) {
+    event.preventDefault();
+    if (passwordForm.next.length < 8) {
+      setPasswordError('新密碼至少需要 8 碼');
+      return;
+    }
+    if (passwordForm.next !== passwordForm.confirm) {
+      setPasswordError('兩次輸入的密碼不一致');
+      return;
+    }
+    setPasswordSaving(true);
+    setPasswordError('');
+    try {
+      const result = passwordModal
+        ? await resetStaffPassword(passwordModal.id, passwordForm.next, passwordForm.confirm)
+        : await changeOwnPassword(passwordForm.current, passwordForm.next, passwordForm.confirm);
+      setPasswordModal(null);
+      setPasswordForm({ current: '', next: '', confirm: '' });
+      setSuccess(result.message);
+    } catch (passwordSubmitError) {
+      setPasswordError(passwordSubmitError.message || '無法更新密碼。');
+    } finally {
+      setPasswordSaving(false);
     }
   }
 
@@ -369,7 +407,7 @@ export default function SettingsPage() {
         </div>
       </form>
 
-      {canEdit ? (
+      {staffAccounts.length ? (
         <section className="card shadow-sm mt-4">
           <div className="card-body">
             <h2 className="h5 mb-3">帳號與角色</h2>
@@ -389,7 +427,7 @@ export default function SettingsPage() {
                                 className="form-check-input"
                                 type="checkbox"
                                 checked={account.roles.includes(role)}
-                                disabled={updatingStaffId === account.id}
+                                disabled={!canEdit || updatingStaffId === account.id}
                                 onChange={(event) => handleStaffRolesChange(account.id, event.target.checked
                                   ? [...account.roles, role]
                                   : account.roles.filter((item) => item !== role))}
@@ -404,11 +442,20 @@ export default function SettingsPage() {
                         <button
                           type="button"
                           className="btn btn-outline-dark btn-sm"
-                          disabled={account.id === staff.id || updatingStaffId === account.id}
+                          disabled={!canEdit || account.id === staff.id || updatingStaffId === account.id}
                           onClick={() => handleStaffStatusChange(account)}
                         >
                           {account.status === 'active' ? '停用' : '重新啟用'}
                         </button>
+                        {account.id === staff.id ? (
+                          <button type="button" className="btn btn-outline-dark btn-sm ms-1" onClick={() => openPasswordModal()}>
+                            更改密碼
+                          </button>
+                        ) : canEdit ? (
+                          <button type="button" className="btn btn-outline-dark btn-sm ms-1" onClick={() => openPasswordModal(account)} disabled={updatingStaffId === account.id}>
+                            重設密碼
+                          </button>
+                        ) : null}
                       </td>
                     </tr>
                   ))}
@@ -417,6 +464,35 @@ export default function SettingsPage() {
             </div>
           </div>
         </section>
+      ) : null}
+
+      <button type="button" className="btn btn-outline-dark mt-4" onClick={() => openPasswordModal()}>
+        更改我的密碼
+      </button>
+
+      {passwordModal !== null ? (
+        <div className="modal d-block" role="dialog" aria-modal="true" aria-labelledby="password-modal-title">
+          <div className="modal-dialog">
+            <div className="modal-content">
+              <form onSubmit={handlePasswordSubmit}>
+                <div className="modal-header">
+                  <h2 className="modal-title h5" id="password-modal-title">{passwordModal ? `重設 ${passwordModal.username} 的密碼` : '更改我的密碼'}</h2>
+                  <button type="button" className="btn-close" aria-label="關閉" onClick={() => setPasswordModal(null)} />
+                </div>
+                <div className="modal-body">
+                  {passwordError ? <div className="alert alert-danger">{passwordError}</div> : null}
+                  {!passwordModal ? <label className="form-label">目前密碼<input className="form-control" type="password" value={passwordForm.current} onChange={(event) => setPasswordForm({ ...passwordForm, current: event.target.value })} required /></label> : null}
+                  <label className="form-label">新密碼<input className="form-control" type="password" minLength="8" value={passwordForm.next} onChange={(event) => setPasswordForm({ ...passwordForm, next: event.target.value })} required /></label>
+                  <label className="form-label">確認新密碼<input className="form-control" type="password" minLength="8" value={passwordForm.confirm} onChange={(event) => setPasswordForm({ ...passwordForm, confirm: event.target.value })} required /></label>
+                </div>
+                <div className="modal-footer">
+                  <button type="button" className="btn btn-outline-secondary" onClick={() => setPasswordModal(null)}>取消</button>
+                  <button type="submit" className="btn btn-dark" disabled={passwordSaving}>{passwordSaving ? '處理中...' : '確認'}</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
       ) : null}
     </main>
   );
