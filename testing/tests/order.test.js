@@ -19,7 +19,7 @@ async function createCustomer(agent) { customerSequence += 1; const suffix = `${
 describe('Order API', () => {
   beforeAll(async () => { await setup(); await getPool().query('DELETE FROM auth_sessions'); });
     beforeEach(async () => { await getPool().query('DELETE FROM payments'); await getPool().query('DELETE FROM order_items'); await getPool().query('DELETE FROM orders'); await getPool().query('DELETE FROM products'); await getPool().query('DELETE FROM auth_sessions'); });
-  afterAll(async () => { await closePool(); });
+    afterAll(async () => { await getPool().query("DELETE FROM payments WHERE order_id IN (SELECT o.id FROM orders o INNER JOIN customers c ON c.id = o.customer_id WHERE c.name LIKE 'Order Client %')"); await getPool().query("DELETE FROM order_items WHERE order_id IN (SELECT o.id FROM orders o INNER JOIN customers c ON c.id = o.customer_id WHERE c.name LIKE 'Order Client %')"); await getPool().query("DELETE FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE name LIKE 'Order Client %')"); await getPool().query("DELETE FROM appointments WHERE customer_id IN (SELECT id FROM customers WHERE name LIKE 'Order Client %')"); await closePool(); });
 
   test('requires authentication and rejects empty orders', async () => {
     expect((await request(app).get('/api/orders')).status).toBe(401);
@@ -72,5 +72,53 @@ describe('Order API', () => {
     expect(updated.status).toBe(200); expect(updated.body.data.order.status).toBe('PAID');
     const blocked = await agent.patch(`/api/orders/${orderId}`).send({ status: 'UNPAID', customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, transaction_price: 1, quantity: 1 }] });
     expect(blocked.status).toBe(409); expect(blocked.body.error.code).toBe('ORDER_READ_ONLY');
+  });
+
+  test('deletes a pure unpaid walk-in order without deleting its customer', async () => {
+    const agent = await login(); const customerId = await createCustomer(agent); const [serviceRows] = await getPool().query("SELECT id FROM services WHERE status = 'ACTIVE' LIMIT 1");
+    const created = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }] });
+    const orderId = created.body.data.order.id;
+
+    const response = await agent.delete(`/api/orders/${orderId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ message: 'Order deleted successfully' });
+    expect((await agent.get(`/api/orders/${orderId}`)).status).toBe(404);
+    expect((await agent.get(`/api/customers/${customerId}`)).status).toBe(200);
+  });
+
+  test('does not delete an order or payment when payment exists', async () => {
+    const agent = await login(); const customerId = await createCustomer(agent); const [serviceRows] = await getPool().query("SELECT id FROM services WHERE status = 'ACTIVE' LIMIT 1");
+    const created = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }] });
+    const orderId = created.body.data.order.id;
+    const [staffRows] = await getPool().query('SELECT id FROM staff WHERE username = ? LIMIT 1', [owner.username]);
+    await getPool().query('INSERT INTO payments (order_id, amount, payment_method, operator_id, status) VALUES (?, 1, \'CASH\', ?, \'PAID\')', [orderId, staffRows[0].id]);
+
+    const response = await agent.delete(`/api/orders/${orderId}`);
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('ORDER_DELETE_PROTECTED');
+    expect((await agent.get(`/api/orders/${orderId}`)).status).toBe(200);
+    const [paymentRows] = await getPool().query('SELECT id FROM payments WHERE order_id = ?', [orderId]);
+    expect(paymentRows).toHaveLength(1);
+  });
+
+  test('does not delete an order linked to an appointment', async () => {
+    const agent = await login(); const customerId = await createCustomer(agent);
+    const [appointmentResult] = await getPool().query(
+      'INSERT INTO appointments (customer_id, appointment_date, appointment_time) VALUES (?, \'2026-12-21\', \'11:00:00\')',
+      [customerId],
+    );
+    const [orderResult] = await getPool().query(
+      'INSERT INTO orders (customer_id, source_type, appointment_id, business_unit, status, total_amount) VALUES (?, \'APPOINTMENT\', ?, \'DOG\', \'UNPAID\', 0)',
+      [customerId, appointmentResult.insertId],
+    );
+
+    const response = await agent.delete(`/api/orders/${orderResult.insertId}`);
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('ORDER_DELETE_PROTECTED');
+    expect((await agent.get(`/api/orders/${orderResult.insertId}`)).status).toBe(200);
+    expect((await agent.get(`/api/appointments/${appointmentResult.insertId}`)).status).toBe(200);
   });
 });

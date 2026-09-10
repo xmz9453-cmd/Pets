@@ -47,4 +47,42 @@ async function updateOrder(id, payload, connection) {
 
 async function deleteItems(orderId, connection) { await connection.query('DELETE FROM order_items WHERE order_id = ?', [orderId]); }
 
-module.exports = { deleteItems, getOrderById, insertItem, insertOrder, listOrders, updateOrder };
+async function deleteOrder(orderId) {
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const [orderRows] = await connection.query(
+      'SELECT id, status, appointment_id FROM orders WHERE id = ? LIMIT 1 FOR UPDATE',
+      [orderId],
+    );
+    const order = orderRows[0];
+    if (!order) {
+      const error = new Error('Order not found');
+      error.statusCode = 404;
+      error.code = 'ORDER_NOT_FOUND';
+      throw error;
+    }
+
+    const [paymentRows] = await connection.query(
+      'SELECT id FROM payments WHERE order_id = ? LIMIT 1',
+      [orderId],
+    );
+    if (order.status !== 'UNPAID' || order.appointment_id !== null || paymentRows.length) {
+      const error = new Error('Order has related business records and cannot be deleted');
+      error.statusCode = 409;
+      error.code = 'ORDER_DELETE_PROTECTED';
+      throw error;
+    }
+
+    await deleteItems(orderId, connection);
+    await connection.query('DELETE FROM orders WHERE id = ?', [orderId]);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+module.exports = { deleteItems, deleteOrder, getOrderById, insertItem, insertOrder, listOrders, updateOrder };

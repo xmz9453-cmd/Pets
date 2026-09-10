@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
-    "check": "node -e \"require('./src/app')\""
+    "check": "node -e \"require('./src/app')\"",
+    "db:reset-operational-data": "node ../database/scripts/reset-operational-data.js"
   },
   "dependencies": {
     "cors": "^2.8.6",

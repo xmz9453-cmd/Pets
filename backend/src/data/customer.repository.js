@@ -185,6 +185,14 @@ async function deleteCustomer(customerId) {
       'SELECT id FROM orders WHERE customer_id = ? LIMIT 1',
       [customerId],
     );
+    const [appointmentRows] = await connection.query(
+      'SELECT id FROM appointments WHERE customer_id = ? LIMIT 1',
+      [customerId],
+    );
+    const [petRows] = await connection.query(
+      'SELECT pet_id FROM pet_customer_relationships WHERE customer_id = ? LIMIT 1',
+      [customerId],
+    );
     const [paymentRows] = await connection.query(
       `SELECT p.id
        FROM payments p
@@ -226,50 +234,11 @@ async function deleteCustomer(customerId) {
       [customerId],
     );
 
-    if (orderRows.length || paymentRows.length || boardingRows.length || groomingRows.length || completedRows.length) {
+    if (petRows.length || appointmentRows.length || orderRows.length || paymentRows.length || boardingRows.length || groomingRows.length || completedRows.length) {
       const error = new Error('Customer has protected business history and cannot be deleted');
       error.statusCode = 409;
       error.code = 'CUSTOMER_DELETE_PROTECTED';
       throw error;
-    }
-
-    const [appointmentRows] = await connection.query(
-      'SELECT id FROM appointments WHERE customer_id = ?',
-      [customerId],
-    );
-    const appointmentIds = appointmentRows.map((row) => row.id);
-    if (appointmentIds.length) {
-      await connection.query('DELETE FROM appointment_pets WHERE appointment_id IN (?)', [appointmentIds]);
-      await connection.query('DELETE FROM daily_operations WHERE appointment_id IN (?)', [appointmentIds]);
-      await connection.query('DELETE FROM appointments WHERE id IN (?)', [appointmentIds]);
-    }
-
-    const [petRows] = await connection.query(
-      'SELECT pet_id FROM pet_customer_relationships WHERE customer_id = ?',
-      [customerId],
-    );
-    const petIds = petRows.map((row) => row.pet_id);
-    await connection.query('DELETE FROM pet_customer_relationships WHERE customer_id = ?', [customerId]);
-
-    for (const petId of petIds) {
-      const [otherRelationshipRows] = await connection.query(
-        'SELECT pet_id FROM pet_customer_relationships WHERE pet_id = ? LIMIT 1',
-        [petId],
-      );
-      if (otherRelationshipRows.length) {
-        continue;
-      }
-
-      const [petHistoryRows] = await connection.query(
-        `SELECT id FROM groomings WHERE pet_id = ?
-         UNION SELECT id FROM boardings WHERE pet_id = ?
-         UNION SELECT id FROM appointment_pets WHERE pet_id = ?
-         LIMIT 1`,
-        [petId, petId, petId],
-      );
-      if (!petHistoryRows.length) {
-        await connection.query('DELETE FROM pets WHERE id = ?', [petId]);
-      }
     }
 
     await connection.query('DELETE FROM customers WHERE id = ?', [customerId]);

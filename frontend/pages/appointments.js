@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import {
   createAppointment,
+  deleteAppointment,
   getAppointment,
   getAppointments,
   getCurrentStaff,
@@ -48,7 +49,7 @@ export default function AppointmentsPage() {
 
   const serviceCatalog = useMemo(() => services
     .filter((service) => service.status === 'ACTIVE')
-    .map((service) => ({ id: Number(service.id), name: service.name })), [services]);
+    .map((service) => ({ id: Number(service.id), name: service.name, species: service.species })), [services]);
 
   async function loadCustomersAndPets() {
     const [customerResult, petResult, serviceResult] = await Promise.all([
@@ -116,7 +117,11 @@ export default function AppointmentsPage() {
   function handlePetChange(index, field, value) {
     setForm((current) => {
       const nextPets = [...current.pets];
-      nextPets[index] = { ...nextPets[index], [field]: value };
+      nextPets[index] = {
+        ...nextPets[index],
+        [field]: value,
+        ...(field === 'pet_id' ? { service_ids: [] } : {}),
+      };
       return { ...current, pets: nextPets };
     });
   }
@@ -192,6 +197,21 @@ export default function AppointmentsPage() {
       });
     } catch (editError) {
       setError(editError.message);
+    }
+  }
+
+  async function handleDelete(appointment) {
+    if (!window.confirm(`確定要永久刪除 ${appointment.appointment_date} ${appointment.appointment_time} 的預約嗎？此操作無法復原。`)) return;
+    try {
+      setSaving(true);
+      setError('');
+      await deleteAppointment(appointment.id);
+      setSuccess('預約已成功刪除。');
+      await refreshAppointments();
+    } catch (deleteError) {
+      setError(deleteError.message || '刪除預約失敗');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -317,7 +337,9 @@ export default function AppointmentsPage() {
                     </select>
 
                     <div className="d-flex flex-wrap gap-2">
-                      {serviceCatalog.map((service) => {
+                      {serviceCatalog
+                        .filter((service) => service.species === 'BOTH' || service.species === customerPets.find((pet) => Number(pet.id) === Number(entry.pet_id))?.species)
+                        .map((service) => {
                         const selected = (entry.service_ids || []).includes(service.id);
                         return (
                           <button
@@ -383,6 +405,9 @@ export default function AppointmentsPage() {
                           <td className="text-end">
                             <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => handleEdit(appointment.id)}>
                               編輯
+                            </button>
+                            <button type="button" className="btn btn-sm btn-outline-danger ms-1" onClick={() => handleDelete(appointment)} disabled={saving}>
+                              刪除
                             </button>
                           </td>
                         </tr>

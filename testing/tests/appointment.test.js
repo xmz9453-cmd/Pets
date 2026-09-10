@@ -274,4 +274,107 @@ describe('Appointment API', () => {
     expect(invalidTimeResponse.status).toBe(400);
     expect(invalidTimeResponse.body.error.code).toBe('VALIDATION_ERROR');
   });
+
+  test('DELETE /api/appointments/:id removes an untouched appointment and its initial daily operation', async () => {
+    const { agent } = await loginAsOwner();
+    const customerResponse = await createCustomer(agent, { name: 'Protected Appointment Customer', phone: '0912-777-888' });
+    const petResponse = await createPet(agent, { name: 'Appointment Pet', species: 'DOG', gender: 'MALE', customer_id: customerResponse.body.data.customer.id });
+    const [serviceId] = await getServiceIds();
+    const createResponse = await agent.post('/api/appointments').send({
+      customer_id: customerResponse.body.data.customer.id,
+      appointment_date: '2026-12-02',
+      appointment_time: '11:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceId] }],
+    });
+    const appointmentId = createResponse.body.data.appointment.id;
+    const [operationBefore] = await getPool().query('SELECT id, status FROM daily_operations WHERE appointment_id = ?', [appointmentId]);
+    expect(operationBefore).toHaveLength(1);
+    expect(operationBefore[0].status).toBe('SCHEDULED');
+
+    const deleteResponse = await agent.delete(`/api/appointments/${appointmentId}`);
+    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.body.data).toEqual({ message: 'Appointment deleted successfully' });
+    expect((await agent.get(`/api/appointments/${appointmentId}`)).status).toBe(404);
+    expect((await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ?', [appointmentId]))[0]).toHaveLength(0);
+    expect((await getPool().query('SELECT id FROM customers WHERE id = ?', [customerResponse.body.data.customer.id]))[0]).toHaveLength(1);
+    expect((await getPool().query('SELECT id FROM pets WHERE id = ?', [petResponse.body.data.pet.id]))[0]).toHaveLength(1);
+  });
+
+  test('DELETE /api/appointments/:id rejects an appointment after check-in', async () => {
+    const { agent } = await loginAsOwner();
+    const customerResponse = await createCustomer(agent, { name: 'Active Appointment Customer', phone: '0912-777-889' });
+    const petResponse = await createPet(agent, { name: 'Active Appointment Pet', species: 'DOG', gender: 'MALE', customer_id: customerResponse.body.data.customer.id });
+    const [serviceId] = await getServiceIds();
+    const createResponse = await agent.post('/api/appointments').send({
+      customer_id: customerResponse.body.data.customer.id,
+      appointment_date: '2026-12-03',
+      appointment_time: '11:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceId] }],
+    });
+    const appointmentId = createResponse.body.data.appointment.id;
+    const [operationRows] = await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ?', [appointmentId]);
+    await agent.post(`/api/operations/${operationRows[0].id}/check-in`);
+
+    const deleteResponse = await agent.delete(`/api/appointments/${appointmentId}`);
+    expect(deleteResponse.status).toBe(409);
+    expect(deleteResponse.body.error.code).toBe('APPOINTMENT_DELETE_PROTECTED');
+  });
+
+  test('DELETE /api/appointments/:id rejects appointments with grooming or boarding records', async () => {
+    const { agent } = await loginAsOwner();
+    const customerResponse = await createCustomer(agent, { name: 'Execution Customer', phone: '0912-777-890' });
+    const petResponse = await createPet(agent, { name: 'Execution Pet', species: 'DOG', gender: 'MALE', customer_id: customerResponse.body.data.customer.id });
+    const [serviceRows] = await getPool().query('SELECT id, type FROM services WHERE type IN (\'GROOMING\', \'BOARDING\') ORDER BY type');
+    const groomingService = serviceRows.find((service) => service.type === 'GROOMING');
+    const boardingService = serviceRows.find((service) => service.type === 'BOARDING');
+    const createResponse = await agent.post('/api/appointments').send({
+      customer_id: customerResponse.body.data.customer.id,
+      appointment_date: '2026-12-04',
+      appointment_time: '12:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [groomingService.id, boardingService.id] }],
+    });
+    const appointmentId = createResponse.body.data.appointment.id;
+    const [operationRows] = await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ?', [appointmentId]);
+
+    await getPool().query('INSERT INTO groomings (daily_operation_id, pet_id) VALUES (?, ?)', [operationRows[0].id, petResponse.body.data.pet.id]);
+    await getPool().query(
+      'INSERT INTO boardings (customer_id, pet_id, service_id, appointment_id, status) VALUES (?, ?, ?, ?, \'PENDING\')',
+      [customerResponse.body.data.customer.id, petResponse.body.data.pet.id, boardingService.id, appointmentId],
+    );
+
+    const deleteResponse = await agent.delete(`/api/appointments/${appointmentId}`);
+    expect(deleteResponse.status).toBe(409);
+    expect(deleteResponse.body.error.code).toBe('APPOINTMENT_DELETE_PROTECTED');
+  });
+
+  test('DELETE /api/appointments/:id rejects appointments with orders and payments', async () => {
+    const { agent } = await loginAsOwner();
+    const customerResponse = await createCustomer(agent, { name: 'Transaction Customer', phone: '0912-777-891' });
+    const petResponse = await createPet(agent, { name: 'Transaction Pet', species: 'DOG', gender: 'MALE', customer_id: customerResponse.body.data.customer.id });
+    const [serviceId] = await getServiceIds();
+    const createResponse = await agent.post('/api/appointments').send({
+      customer_id: customerResponse.body.data.customer.id,
+      appointment_date: '2026-12-05',
+      appointment_time: '13:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceId] }],
+    });
+    const appointmentId = createResponse.body.data.appointment.id;
+    const [orderResult] = await getPool().query(
+      'INSERT INTO orders (customer_id, source_type, appointment_id, business_unit, status, total_amount) VALUES (?, \'APPOINTMENT\', ?, \'DOG\', \'UNPAID\', 0)',
+      [customerResponse.body.data.customer.id, appointmentId],
+    );
+
+    const orderDeleteResponse = await agent.delete(`/api/appointments/${appointmentId}`);
+    expect(orderDeleteResponse.status).toBe(409);
+    expect(orderDeleteResponse.body.error.code).toBe('APPOINTMENT_DELETE_PROTECTED');
+
+    const [ownerRows] = await getPool().query('SELECT id FROM staff WHERE username = ? LIMIT 1', [owner.username]);
+    await getPool().query(
+      'INSERT INTO payments (order_id, amount, payment_method, operator_id, status) VALUES (?, 1, \'CASH\', ?, \'PAID\')',
+      [orderResult.insertId, ownerRows[0].id],
+    );
+    const paymentDeleteResponse = await agent.delete(`/api/appointments/${appointmentId}`);
+    expect(paymentDeleteResponse.status).toBe(409);
+    expect(paymentDeleteResponse.body.error.code).toBe('APPOINTMENT_DELETE_PROTECTED');
+  });
 });

@@ -1,5 +1,6 @@
 const shopSettingsRepository = require('../data/shop-settings.repository');
 const { getPool } = require('../config/database');
+const { resetOperationalDataForApplication } = require('../../../database/scripts/reset-operational-data');
 
 const WEEKDAYS = shopSettingsRepository.WEEKDAYS;
 
@@ -134,6 +135,11 @@ async function getShopSettings() {
   return shopSettingsRepository.getShopSettingsWithHours();
 }
 
+async function getShopIdentity() {
+  const shop = await shopSettingsRepository.getShopSettings();
+  return { shop: { name: shop?.name || '店家' } };
+}
+
 async function updateShopSettings(payload = {}) {
   const shopErrors = validateShopPayload(payload);
   const businessHourErrors = validateBusinessHours(payload.business_hours || []);
@@ -181,8 +187,18 @@ async function updateShopSettings(payload = {}) {
   });
 }
 
+async function resetOperationalData() {
+  await resetOperationalDataForApplication();
+  return {
+    reset: true,
+    message: '測試／營運資料已清除。',
+  };
+}
+
 module.exports = {
   createNotFoundError,
   getShopSettings,
+  getShopIdentity,
+  resetOperationalData,
   updateShopSettings,
 };

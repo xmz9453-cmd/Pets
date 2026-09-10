@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
+import { getUserFacingErrorMessage } from '../utils/error-message';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
+const SPECIES_LABELS = { DOG: '狗', CAT: '貓' };
 
 export default function GroomingPage() {
   const router = useRouter();
@@ -105,7 +107,7 @@ export default function GroomingPage() {
 
       const body = await response.json();
       if (!response.ok || body.success === false) {
-        throw new Error(body.error && body.error.message ? body.error.message : '美容資料保存失敗');
+        throw new Error(getUserFacingErrorMessage(body.error, response.status, '美容資料保存失敗'));
       }
 
       const saved = body.data;
@@ -138,7 +140,7 @@ export default function GroomingPage() {
       });
       const body = await response.json();
       if (!response.ok || body.success === false) {
-        throw new Error(body.error && body.error.message ? body.error.message : '美容完成失敗');
+        throw new Error(getUserFacingErrorMessage(body.error, response.status, '美容完成失敗'));
       }
       router.push('/operations');
     } catch (completeError) {
@@ -176,7 +178,7 @@ export default function GroomingPage() {
             <div className="col-md-4"><label className="form-label">客戶</label><input className="form-control" value={operation.customer_name || ''} readOnly /></div>
             <div className="col-md-4"><label className="form-label">電話</label><input className="form-control" value={operation.customer_phone || ''} readOnly /></div>
             <div className="col-md-4"><label className="form-label">寵物</label><input className="form-control" value={pet ? pet.name : ''} readOnly /></div>
-            <div className="col-md-4"><label className="form-label">品種</label><input className="form-control" value={pet ? pet.species : ''} readOnly /></div>
+            <div className="col-md-4"><label className="form-label">種類</label><input className="form-control" value={pet ? SPECIES_LABELS[pet.species] || pet.species : ''} readOnly /></div>
             <div className="col-md-4"><label className="form-label">預約時間</label><input className="form-control" value={operation.appointment_time || ''} readOnly /></div>
             <div className="col-md-4"><label className="form-label">服務</label><input className="form-control" value={pet && pet.services && pet.services.length ? pet.services.map((item) => item.name).join(', ') : ''} readOnly /></div>
           </div>

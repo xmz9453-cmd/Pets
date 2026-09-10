@@ -1,4 +1,5 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
+const { getUserFacingErrorMessage } = require('../utils/error-message');
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -12,8 +13,11 @@ async function request(path, options = {}) {
   const body = await response.json();
 
   if (!response.ok || body.success === false) {
-    const message = body.error && body.error.message ? body.error.message : 'API request failed';
-    throw new Error(message);
+    const apiError = body.error || {};
+    const error = new Error(getUserFacingErrorMessage(apiError, response.status));
+    error.code = apiError.code;
+    error.statusCode = response.status;
+    throw error;
   }
 
   return body.data;
@@ -116,6 +120,10 @@ export async function updatePet(petId, payload) {
   });
 }
 
+export async function deletePet(petId) {
+  return request(`/api/pets/${petId}`, { method: 'DELETE' });
+}
+
 export async function getPetRelationships(petId) {
   return request(`/api/pets/${petId}/customers`);
 }
@@ -179,6 +187,10 @@ export async function updateAppointment(appointmentId, payload) {
   });
 }
 
+export async function deleteAppointment(appointmentId) {
+  return request(`/api/appointments/${appointmentId}`, { method: 'DELETE' });
+}
+
 export async function getCustomer(customerId) {
   return request(`/api/customers/${customerId}`);
 }
@@ -219,10 +231,20 @@ export async function getShopSettings() {
   return request('/api/shop-settings');
 }
 
+export async function getShopIdentity() {
+  return request('/api/shop-identity');
+}
+
 export async function updateShopSettings(payload) {
   return request('/api/shop-settings', {
     method: 'PUT',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function resetOperationalData() {
+  return request('/api/shop-settings/reset-operational-data', {
+    method: 'POST',
   });
 }
 
@@ -261,6 +283,7 @@ export async function getOrders(params = {}) {
 export async function getOrder(orderId) { return request(`/api/orders/${orderId}`); }
 export async function createOrder(payload) { return request('/api/orders', { method: 'POST', body: JSON.stringify(payload) }); }
 export async function updateOrder(orderId, payload) { return request(`/api/orders/${orderId}`, { method: 'PATCH', body: JSON.stringify(payload) }); }
+export async function deleteOrder(orderId) { return request(`/api/orders/${orderId}`, { method: 'DELETE' }); }
 export async function getOrderPayments(orderId) { return request(`/api/orders/${orderId}/payments`); }
 export async function createPayment(orderId, payload) { return request(`/api/orders/${orderId}/payments`, { method: 'POST', body: JSON.stringify(payload) }); }
 export async function voidPayment(paymentId, payload = {}) { return request(`/api/payments/${paymentId}/void`, { method: 'POST', body: JSON.stringify(payload) }); }

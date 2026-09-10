@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { getCurrentStaff, getReport, getShopSettings } from '../api/client';
+import { getCurrentStaff, getReport, getShopIdentity, getShopSettings } from '../api/client';
 
 const paymentMethodLabels = { CASH: '現金', CREDIT_CARD: '信用卡', BANK_TRANSFER: '銀行轉帳', MOBILE_PAYMENT: '行動支付' };
 
@@ -35,8 +35,11 @@ export default function ReportsPage() {
   }
 
   useEffect(() => {
-    Promise.all([getCurrentStaff(), getShopSettings()])
-      .then(([, settings]) => {
+    getCurrentStaff()
+      .then(async (currentStaff) => {
+        const settings = currentStaff.staff.roles.includes('OWNER')
+          ? await getShopSettings()
+          : await getShopIdentity();
         setShopName(settings.shop?.name || '店家');
         return load();
       })

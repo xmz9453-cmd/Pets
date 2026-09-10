@@ -229,9 +229,42 @@ async function findCustomerById(customerId) {
   return rows[0] || null;
 }
 
+async function deletePet(petId) {
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const pet = await getPetById(petId, connection);
+    if (!pet) {
+      const error = new Error('Pet not found');
+      error.statusCode = 404;
+      error.code = 'PET_NOT_FOUND';
+      throw error;
+    }
+
+    const [appointmentRows] = await connection.query('SELECT id FROM appointment_pets WHERE pet_id = ? LIMIT 1', [petId]);
+    const [groomingRows] = await connection.query('SELECT id FROM groomings WHERE pet_id = ? LIMIT 1', [petId]);
+    const [boardingRows] = await connection.query('SELECT id FROM boardings WHERE pet_id = ? LIMIT 1', [petId]);
+    if (appointmentRows.length || groomingRows.length || boardingRows.length) {
+      const error = new Error('Pet has related business records and cannot be deleted');
+      error.statusCode = 409;
+      error.code = 'PET_DELETE_PROTECTED';
+      throw error;
+    }
+
+    await connection.query('DELETE FROM pets WHERE id = ?', [petId]);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 module.exports = {
   createPet,
   createPetRelationship,
+  deletePet,
   findCustomerById,
   findPrimaryRelationship,
   findRelationshipByPetAndCustomer,

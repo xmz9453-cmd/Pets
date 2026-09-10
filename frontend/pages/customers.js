@@ -194,7 +194,7 @@ export default function CustomersPage() {
                 />
               </div>
               <div className="mb-3">
-                <label className="form-label">LINE ID</label>
+                <label className="form-label">LINE 帳號</label>
                 <input
                   className="form-control"
                   value={formData.lineId}

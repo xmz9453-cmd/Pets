@@ -5,7 +5,9 @@ const { requireRole } = require('../middleware/authorize');
 
 const router = express.Router();
 
-router.get('/shop-settings', requireAuthentication, shopSettingsController.getShopSettings);
+router.get('/shop-settings', requireAuthentication, requireRole(['OWNER']), shopSettingsController.getShopSettings);
+router.get('/shop-identity', requireAuthentication, shopSettingsController.getShopIdentity);
 router.put('/shop-settings', requireAuthentication, requireRole(['OWNER']), shopSettingsController.updateShopSettings);
+router.post('/shop-settings/reset-operational-data', requireAuthentication, requireRole(['OWNER']), shopSettingsController.resetOperationalData);
 
 module.exports = router;

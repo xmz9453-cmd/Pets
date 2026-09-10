@@ -25,6 +25,7 @@ const { setup } = require('../../database/scripts/setup');
 const { getPool, closePool } = require('../../backend/src/config/database');
 const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
 const { hashPassword } = require('../../backend/src/utils/password');
+const shopSettingsService = require('../../backend/src/services/shop-settings.service');
 
 const owner = getFoundationOwner();
 
@@ -67,6 +68,7 @@ describe('Shop Settings API', () => {
   });
 
   afterEach(async () => {
+    jest.restoreAllMocks();
     await getPool().query('DELETE FROM auth_sessions');
     await getPool().query('DELETE FROM shop_business_hours');
     await getPool().query('DELETE FROM shop_settings');
@@ -165,7 +167,7 @@ describe('Shop Settings API', () => {
     expect(persisted.name).toBe('Original Shop');
   });
 
-  test('GET /api/shop-settings requires authentication, and PUT /api/shop-settings denies non-owner staff', async () => {
+  test('shop settings requires authentication and OWNER authorization', async () => {
     const anonymousResponse = await request(app).get('/api/shop-settings');
     expect(anonymousResponse.status).toBe(401);
 
@@ -184,6 +186,9 @@ describe('Shop Settings API', () => {
     const loginResponse = await frontDeskAgent.post('/api/auth/login').send({ username: uniqueUsername, password: 'frontdesk-pass' });
     expect(loginResponse.status).toBe(200);
 
+    const getForbiddenResponse = await frontDeskAgent.get('/api/shop-settings');
+    expect(getForbiddenResponse.status).toBe(403);
+
     const forbiddenResponse = await frontDeskAgent.put('/api/shop-settings').send({
       name: 'Nope',
       business_hours: [
@@ -198,5 +203,80 @@ describe('Shop Settings API', () => {
     });
 
     expect(forbiddenResponse.status).toBe(403);
+  });
+
+  test('reset operational data is OWNER-only and returns success from the reset service', async () => {
+    const groomerUsername = `groomer-reset-${Date.now()}`;
+    const groomerId = await createStaffUser({
+      username: groomerUsername,
+      password: 'groomer-pass',
+      displayName: 'Groomer',
+      roleCode: 'GROOMER',
+    });
+    const frontDeskUsername = `frontdesk-reset-${Date.now()}`;
+    const frontDeskId = await createStaffUser({
+      username: frontDeskUsername,
+      password: 'frontdesk-pass',
+      displayName: 'Front Desk',
+      roleCode: 'FRONT_DESK',
+    });
+    const resetSpy = jest.spyOn(shopSettingsService, 'resetOperationalData').mockResolvedValue({
+      reset: true,
+      message: '測試／營運資料已清除。',
+    });
+
+    const { agent: ownerAgent } = await loginAsOwner();
+    const ownerResponse = await ownerAgent.post('/api/shop-settings/reset-operational-data').send({
+      table: 'staff',
+      database: 'other_database',
+      environment: 'production',
+      reset_scope: 'everything',
+    });
+    expect(ownerResponse.status).toBe(200);
+    expect(ownerResponse.body).toEqual({
+      success: true,
+      data: { reset: true, message: '測試／營運資料已清除。' },
+    });
+    expect(resetSpy).toHaveBeenCalledTimes(1);
+
+    const frontDeskAgent = request.agent(app);
+    await frontDeskAgent.post('/api/auth/login').send({ username: frontDeskUsername, password: 'frontdesk-pass' });
+    expect((await frontDeskAgent.post('/api/shop-settings/reset-operational-data')).status).toBe(403);
+
+    const groomerAgent = request.agent(app);
+    await groomerAgent.post('/api/auth/login').send({ username: groomerUsername, password: 'groomer-pass' });
+    expect((await groomerAgent.post('/api/shop-settings/reset-operational-data')).status).toBe(403);
+
+    expect(frontDeskId).toBeTruthy();
+    expect(groomerId).toBeTruthy();
+  });
+
+  test('reset operational data failure returns no success response', async () => {
+    jest.spyOn(shopSettingsService, 'resetOperationalData').mockRejectedValue(new Error('database failure'));
+    const { agent } = await loginAsOwner();
+
+    const response = await agent.post('/api/shop-settings/reset-operational-data');
+
+    expect(response.status).toBe(500);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error.message).toBe('Internal server error');
+  });
+
+  test('shop identity is readable by authenticated non-owner staff without exposing settings management access', async () => {
+    const uniqueUsername = `identity-frontdesk-${Date.now()}`;
+    await createStaffUser({
+      username: uniqueUsername,
+      password: 'frontdesk-pass',
+      displayName: 'Front Desk',
+      roleCode: 'FRONT_DESK',
+    });
+    const frontDeskAgent = request.agent(app);
+    expect((await frontDeskAgent.post('/api/auth/login').send({ username: uniqueUsername, password: 'frontdesk-pass' })).status).toBe(200);
+
+    const identityResponse = await frontDeskAgent.get('/api/shop-identity');
+    expect(identityResponse.status).toBe(200);
+    expect(identityResponse.body.data.shop.name).toBeTruthy();
+    expect(identityResponse.body.data.shop.phone).toBeUndefined();
+    expect((await frontDeskAgent.get('/api/shop-settings')).status).toBe(403);
   });
 });

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { createPet, getCurrentStaff, getCustomers, getPets, updatePet } from '../api/client';
+import { createPet, deletePet, getCurrentStaff, getCustomers, getPets, updatePet } from '../api/client';
 
 const emptyForm = {
   customer_id: '',
@@ -119,6 +119,20 @@ export default function PetsPage() {
     }
   }
 
+  async function handleDelete(pet) {
+    if (!window.confirm(`確定要永久刪除寵物「${pet.name}」嗎？此操作無法復原。`)) return;
+    try {
+      setSaving(true);
+      setError('');
+      await deletePet(pet.id);
+      await loadPets();
+    } catch (deleteError) {
+      setError(deleteError.message || '刪除寵物失敗');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function submitFilters(event) {
     event.preventDefault();
     setSubmittedFilters(filters);
@@ -180,7 +194,7 @@ export default function PetsPage() {
               <div className="col-md-2 d-flex gap-2"><button type="submit" className="btn btn-dark">搜尋</button><button type="button" className="btn btn-outline-secondary" onClick={clearFilters}>清除</button></div>
             </form>
             {error ? <div className="alert alert-warning" role="alert">{error}</div> : null}
-            {loading ? <p className="text-muted mb-0">寵物載入中...</p> : pets.length === 0 ? <div className="alert alert-light border" role="alert">查無符合條件的寵物</div> : <div className="table-responsive"><table className="table align-middle"><thead><tr><th>名稱</th><th>種類</th><th>客戶</th><th>狀態</th><th className="text-end">操作</th></tr></thead><tbody>{pets.map((pet) => <tr key={pet.id}><td>{pet.name}<small className="d-block text-muted">{pet.breed || '未填寫品種'}</small></td><td>{speciesLabels[pet.species] || pet.species}<small className="d-block text-muted">{genderLabels[pet.gender] || pet.gender}</small></td><td>{pet.customer_name || pet.primary_customer_name || '未指定'}</td><td><span className={`badge ${pet.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>{pet.status === 'ACTIVE' ? '啟用' : '停用'}</span></td><td className="text-end"><div className="btn-group btn-group-sm"><button type="button" className="btn btn-outline-dark" onClick={() => startEdit(pet)}>編輯</button><button type="button" className={`btn ${pet.status === 'ACTIVE' ? 'btn-outline-warning' : 'btn-outline-success'}`} onClick={() => handleStatusChange(pet, pet.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE')} disabled={saving}>{pet.status === 'ACTIVE' ? '停用' : '啟用'}</button></div></td></tr>)}</tbody></table></div>}
+            {loading ? <p className="text-muted mb-0">寵物載入中...</p> : pets.length === 0 ? <div className="alert alert-light border" role="alert">查無符合條件的寵物</div> : <div className="table-responsive"><table className="table align-middle"><thead><tr><th>名稱</th><th>種類</th><th>客戶</th><th>狀態</th><th className="text-end">操作</th></tr></thead><tbody>{pets.map((pet) => <tr key={pet.id}><td>{pet.name}<small className="d-block text-muted">{pet.breed || '未填寫品種'}</small></td><td>{speciesLabels[pet.species] || pet.species}<small className="d-block text-muted">{genderLabels[pet.gender] || pet.gender}</small></td><td>{pet.customer_name || pet.primary_customer_name || '未指定'}</td><td><span className={`badge ${pet.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>{pet.status === 'ACTIVE' ? '啟用' : '停用'}</span></td><td className="text-end"><div className="btn-group btn-group-sm"><button type="button" className="btn btn-outline-dark" onClick={() => startEdit(pet)}>編輯</button><button type="button" className={`btn ${pet.status === 'ACTIVE' ? 'btn-outline-warning' : 'btn-outline-success'}`} onClick={() => handleStatusChange(pet, pet.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE')} disabled={saving}>{pet.status === 'ACTIVE' ? '停用' : '啟用'}</button><button type="button" className="btn btn-outline-danger" onClick={() => handleDelete(pet)} disabled={saving}>刪除</button></div></td></tr>)}</tbody></table></div>}
           </div>
         </div>
       </div>

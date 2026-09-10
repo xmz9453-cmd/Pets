@@ -351,9 +351,20 @@ async function removeCustomerRelationship(petId, customerId) {
   });
 }
 
+async function deletePet(petId) {
+  const normalizedPetId = Number(petId);
+  if (!Number.isInteger(normalizedPetId) || normalizedPetId <= 0) {
+    throw createNotFoundError('PET_NOT_FOUND', 'Pet not found');
+  }
+
+  await petRepository.deletePet(normalizedPetId);
+  return { message: 'Pet deleted successfully' };
+}
+
 module.exports = {
   addRelationship,
   createPet,
+  deletePet,
   deactivatePet,
   getPetById,
   listPets,

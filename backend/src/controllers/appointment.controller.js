@@ -43,8 +43,18 @@ async function updateAppointment(req, res, next) {
   }
 }
 
+async function deleteAppointment(req, res, next) {
+  try {
+    const result = await appointmentService.deleteAppointment(req.params.id);
+    sendSuccess(res, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   createAppointment,
+  deleteAppointment,
   getAppointment,
   listAppointments,
   updateAppointment,

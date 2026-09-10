@@ -27,6 +27,13 @@ const { getFoundationOwner } = require('../../database/seeds/staff-authenticatio
 
 const owner = getFoundationOwner();
 
+function localDateString(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 async function loginAsOwner() {
   const agent = request.agent(app);
   const response = await agent.post('/api/auth/login').send({
@@ -118,7 +125,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt1 = await createAppointment(agent, {
         customer_id: customerId,
@@ -149,6 +156,52 @@ describe('Daily Operations API', () => {
       expect(response.body.data[1].can_create_appointment_order).toBe(false);
     });
 
+    test('GET /api/operations supports selected dates for past and future', async () => {
+      const { agent } = await loginAsOwner();
+
+      const customer = await createCustomer(agent, {
+        name: 'Past Future User',
+        phone: '0912-555-555',
+      });
+      const customerId = customer.body.data.customer.id;
+
+      const pet = await createPet(agent, {
+        name: 'Nova',
+        species: 'DOG',
+        gender: 'FEMALE',
+        customer_id: customerId,
+      });
+      const petId = pet.body.data.pet.id;
+
+      const [serviceId] = await getServiceIds();
+      const pastDate = '2026-09-09';
+      const futureDate = '2026-09-11';
+
+      const pastAppt = await createAppointment(agent, {
+        customer_id: customerId,
+        appointment_date: pastDate,
+        appointment_time: '09:00:00',
+        pets: [{ pet_id: petId, service_ids: [serviceId] }],
+      });
+      const futureAppt = await createAppointment(agent, {
+        customer_id: customerId,
+        appointment_date: futureDate,
+        appointment_time: '14:00:00',
+        pets: [{ pet_id: petId, service_ids: [serviceId] }],
+      });
+
+      await ensureDailyOperationExists(pastAppt.body.data.appointment.id);
+      await ensureDailyOperationExists(futureAppt.body.data.appointment.id);
+
+      const pastResponse = await agent.get(`/api/operations?date=${pastDate}`);
+      const futureResponse = await agent.get(`/api/operations?date=${futureDate}`);
+
+      expect(pastResponse.status).toBe(200);
+      expect(pastResponse.body.data.some((op) => op.appointment_id === pastAppt.body.data.appointment.id)).toBe(true);
+      expect(futureResponse.status).toBe(200);
+      expect(futureResponse.body.data.some((op) => op.appointment_id === futureAppt.body.data.appointment.id)).toBe(true);
+    });
+
     test('Cancelled appointments are excluded from list', async () => {
       const { agent } = await loginAsOwner();
 
@@ -167,7 +220,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const normalAppt = await createAppointment(agent, {
         customer_id: customerId,
@@ -200,7 +253,7 @@ describe('Daily Operations API', () => {
   });
 
   describe('Check-in Workflow', () => {
-    test('POST /api/operations/:id/check-in transitions SCHEDULED → CHECKED_IN and records time', async () => {
+    test('POST /api/operations/:id/check-in transitions SCHEDULED ??CHECKED_IN and records time', async () => {
       const { agent } = await loginAsOwner();
 
       const customer = await createCustomer(agent, {
@@ -218,7 +271,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -255,7 +308,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -276,7 +329,7 @@ describe('Daily Operations API', () => {
       expect(response.body.error.code).toBe('VALIDATION_ERROR');
     });
 
-    test('POST /api/operations/:id/undo-check-in transitions CHECKED_IN → SCHEDULED', async () => {
+    test('POST /api/operations/:id/undo-check-in transitions CHECKED_IN ??SCHEDULED', async () => {
       const { agent } = await loginAsOwner();
 
       const customer = await createCustomer(agent, {
@@ -294,7 +347,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -318,7 +371,7 @@ describe('Daily Operations API', () => {
   });
 
   describe('State Transitions', () => {
-    test('CHECKED_IN → IN_PROGRESS transition with started time', async () => {
+    test('CHECKED_IN ??IN_PROGRESS transition with started time', async () => {
       const { agent } = await loginAsOwner();
 
       const customer = await createCustomer(agent, {
@@ -336,7 +389,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -376,7 +429,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -416,7 +469,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -427,7 +480,7 @@ describe('Daily Operations API', () => {
 
       const operationId = await ensureDailyOperationExists(appt.body.data.appointment.id);
 
-      // Check-in → Start
+      // Check-in ??Start
       await agent.post(`/api/operations/${operationId}/check-in`);
       await agent.post(`/api/operations/${operationId}/start-work`);
 
@@ -457,7 +510,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -497,7 +550,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -508,11 +561,11 @@ describe('Daily Operations API', () => {
 
       const operationId = await ensureDailyOperationExists(appt.body.data.appointment.id);
 
-      // Try SCHEDULED → IN_PROGRESS (invalid)
+      // Try SCHEDULED ??IN_PROGRESS (invalid)
       const response1 = await agent.post(`/api/operations/${operationId}/start-work`);
       expect(response1.status).toBe(400);
 
-      // Try SCHEDULED → COMPLETED (invalid)
+      // Try SCHEDULED ??COMPLETED (invalid)
       const response2 = await agent.post(`/api/operations/${operationId}/complete-work`);
       expect(response2.status).toBe(400);
     });
@@ -537,7 +590,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -581,7 +634,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -620,7 +673,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -667,7 +720,7 @@ describe('Daily Operations API', () => {
       const petId = pet.body.data.pet.id;
 
       const [serviceId] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,
@@ -713,7 +766,7 @@ describe('Daily Operations API', () => {
       });
 
       const [serviceId1, serviceId2] = await getServiceIds();
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
 
       const appt = await createAppointment(agent, {
         customer_id: customerId,

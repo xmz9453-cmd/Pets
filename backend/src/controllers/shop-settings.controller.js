@@ -16,6 +16,15 @@ async function getShopSettings(req, res, next) {
   }
 }
 
+async function getShopIdentity(req, res, next) {
+  try {
+    const result = await shopSettingsService.getShopIdentity();
+    sendSuccess(res, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function updateShopSettings(req, res, next) {
   try {
     const result = await shopSettingsService.updateShopSettings(req.body || {});
@@ -25,7 +34,18 @@ async function updateShopSettings(req, res, next) {
   }
 }
 
+async function resetOperationalData(req, res, next) {
+  try {
+    const result = await shopSettingsService.resetOperationalData();
+    sendSuccess(res, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   getShopSettings,
+  getShopIdentity,
+  resetOperationalData,
   updateShopSettings,
 };

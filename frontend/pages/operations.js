@@ -4,6 +4,28 @@ import { useRouter } from 'next/router';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
 
+function localDateInputValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function localDateForDisplay(dateString) {
+  if (!dateString || !/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    return '';
+  }
+  const [year, month, day] = dateString.split('-');
+  return `${year}/${month}/${day}`;
+}
+
+function addDaysToDateString(dateString, days) {
+  const [year, month, day] = dateString.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + days);
+  return localDateInputValue(date);
+}
+
 // 狀態中文映射
 const STATUS_LABELS = {
   'SCHEDULED': '已預約',
@@ -11,13 +33,15 @@ const STATUS_LABELS = {
   'IN_PROGRESS': '進行中',
   'COMPLETED': '已完成',
 };
+const SPECIES_LABELS = { DOG: '狗', CAT: '貓' };
 
 export default function OperationsPage() {
   const router = useRouter();
   const [operations, setOperations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [today, setToday] = useState('');
+  const [today, setToday] = useState(localDateInputValue());
+  const [selectedDate, setSelectedDate] = useState(localDateInputValue());
   const [selectedOperation, setSelectedOperation] = useState(null);
   const [staffAssignmentModalOpen, setStaffAssignmentModalOpen] = useState(false);
   const [workNoteModalOpen, setWorkNoteModalOpen] = useState(false);
@@ -36,15 +60,39 @@ export default function OperationsPage() {
   });
 
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
-    setToday(today);
-    loadOperations();
-  }, []);
+    if (!router.isReady) return;
 
-  async function loadOperations() {
+    const urlDate = typeof router.query.date === 'string' ? router.query.date : localDateInputValue();
+    const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(urlDate) ? urlDate : localDateInputValue();
+    setToday(normalizedDate);
+    setSelectedDate(normalizedDate);
+  }, [router.isReady, router.query.date]);
+
+  useEffect(() => {
+    if (!router.isReady || !selectedDate) return;
+
+    const currentQuery = new URLSearchParams((router.asPath.split('?')[1] || ''));
+    const currentDate = currentQuery.get('date');
+    if (currentDate !== selectedDate) {
+      router.replace({
+        pathname: '/operations',
+        query: {
+          ...router.query,
+          date: selectedDate,
+        },
+      }, undefined, { shallow: true });
+    }
+
+    loadOperations(selectedDate);
+  }, [router.isReady, selectedDate]);
+
+  async function loadOperations(dateValue = selectedDate) {
     try {
       setLoading(true);
       const query = new URLSearchParams();
+      if (dateValue) {
+        query.append('date', dateValue);
+      }
       if (filters.status && filters.status !== 'ALL') {
         query.append('status', filters.status);
       }
@@ -277,7 +325,19 @@ export default function OperationsPage() {
   };
 
   const applyFilters = () => {
-    loadOperations();
+    loadOperations(selectedDate);
+  };
+
+  const handleDateChange = (nextDate) => {
+    if (!nextDate) return;
+    setSelectedDate(nextDate);
+    setToday(nextDate);
+  };
+
+  const handleDateOffset = (days) => {
+    if (!selectedDate) return;
+    const nextDate = addDaysToDateString(selectedDate, days);
+    handleDateChange(nextDate);
   };
 
   const statusBadgeClass = (status) => {
@@ -308,9 +368,25 @@ export default function OperationsPage() {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <div>
           <h1 className="mb-1">日常營運</h1>
-          <p className="text-muted mb-0">今日：{today}</p>
+          <p className="text-muted mb-0">營運日期：{localDateForDisplay(selectedDate) || localDateForDisplay(today)}</p>
         </div>
         <a href="/" className="btn btn-outline-dark">返回首頁</a>
+      </div>
+
+      <div className="card mb-4">
+        <div className="card-body d-flex flex-wrap align-items-center gap-3">
+          <button type="button" className="btn btn-outline-secondary" onClick={() => handleDateOffset(-1)} aria-label="前一天">←</button>
+          <input
+            type="date"
+            className="form-control"
+            value={selectedDate}
+            onChange={(event) => handleDateChange(event.target.value)}
+            aria-label="營運日期"
+            style={{ maxWidth: '220px' }}
+          />
+          <button type="button" className="btn btn-outline-secondary" onClick={() => handleDateOffset(1)} aria-label="後一天">→</button>
+          <span className="text-muted">{localDateForDisplay(selectedDate) || '請選擇日期'}</span>
+        </div>
       </div>
 
       {error && (
@@ -402,7 +478,7 @@ export default function OperationsPage() {
             {operations.length === 0 ? (
               <tr>
                 <td colSpan="7" className="text-center text-muted">
-                  今日沒有待處理的營運項目
+                  此日期目前沒有營運資料。
                 </td>
               </tr>
             ) : (
@@ -422,7 +498,7 @@ export default function OperationsPage() {
                             <Link href={`/pets`} className="link-primary">
                               {pet.name}
                             </Link>{' '}
-                            ({pet.species})
+                            ({SPECIES_LABELS[pet.species] || pet.species})
                           </div>
                         ))}
                       </div>

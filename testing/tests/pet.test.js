@@ -209,4 +209,39 @@ describe('Pet API', () => {
     const missing = await agent.get('/api/pets/999999999');
     expect(missing.status).toBe(404);
   });
+
+  test('DELETE /api/pets/:id removes an unreferenced pet without deleting its customer', async () => {
+    const { agent } = await loginAsOwner();
+    const customerId = await ensureCustomer('Delete Pet Customer', '0912000006');
+    const createResponse = await agent.post('/api/pets').send({
+      name: 'Delete Me',
+      species: 'DOG',
+      customer_id: customerId,
+    });
+    const petId = createResponse.body.data.pet.id;
+
+    const deleteResponse = await agent.delete(`/api/pets/${petId}`);
+    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.body.data).toEqual({ message: 'Pet deleted successfully' });
+    expect((await agent.get(`/api/pets/${petId}`)).status).toBe(404);
+    expect((await getPool().query('SELECT id FROM customers WHERE id = ?', [customerId]))[0]).toHaveLength(1);
+  });
+
+  test('DELETE /api/pets/:id rejects a pet referenced by an appointment', async () => {
+    const { agent } = await loginAsOwner();
+    const customerId = await ensureCustomer('Protected Pet Customer', '0912000007');
+    const petResponse = await agent.post('/api/pets').send({ name: 'Protected Pet', species: 'DOG', customer_id: customerId });
+    const [serviceRows] = await getPool().query('SELECT id FROM services LIMIT 1');
+    const appointmentResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-12-01',
+      appointment_time: '10:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceRows[0].id] }],
+    });
+    expect(appointmentResponse.status).toBe(201);
+
+    const deleteResponse = await agent.delete(`/api/pets/${petResponse.body.data.pet.id}`);
+    expect(deleteResponse.status).toBe(409);
+    expect(deleteResponse.body.error.code).toBe('PET_DELETE_PROTECTED');
+  });
 });

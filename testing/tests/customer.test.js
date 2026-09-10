@@ -193,4 +193,42 @@ describe('Customer API', () => {
     expect(deleteResponse.body.error.code).toBe('CUSTOMER_DELETE_PROTECTED');
     expect((await agent.get(`/api/customers/${customerId}`)).status).toBe(200);
   });
+
+  test('customer with a pet is protected without deleting the pet', async () => {
+    const { agent } = await loginAsOwner();
+    const customerResponse = await createCustomerRecord(agent, { name: 'Pet Owner', phone: '0912-999-003' });
+    const customerId = customerResponse.body.data.customer.id;
+    const petResponse = await agent.post('/api/pets').send({
+      name: 'Protected Pet',
+      species: 'DOG',
+      gender: 'MALE',
+      customer_id: customerId,
+    });
+    const petId = petResponse.body.data.pet.id;
+
+    const deleteResponse = await agent.delete(`/api/customers/${customerId}`);
+
+    expect(deleteResponse.status).toBe(409);
+    expect(deleteResponse.body.error.code).toBe('CUSTOMER_DELETE_PROTECTED');
+    expect((await agent.get(`/api/customers/${customerId}`)).status).toBe(200);
+    expect((await agent.get(`/api/pets/${petId}`)).status).toBe(200);
+  });
+
+  test('customer with an appointment is protected without deleting the appointment', async () => {
+    const { agent } = await loginAsOwner();
+    const customerResponse = await createCustomerRecord(agent, { name: 'Appointment Owner', phone: '0912-999-004' });
+    const customerId = customerResponse.body.data.customer.id;
+    const [appointmentResult] = await getPool().query(
+      'INSERT INTO appointments (customer_id, appointment_date, appointment_time) VALUES (?, \'2026-12-20\', \'10:00:00\')',
+      [customerId],
+    );
+    const appointmentId = appointmentResult.insertId;
+
+    const deleteResponse = await agent.delete(`/api/customers/${customerId}`);
+
+    expect(deleteResponse.status).toBe(409);
+    expect(deleteResponse.body.error.code).toBe('CUSTOMER_DELETE_PROTECTED');
+    expect((await agent.get(`/api/customers/${customerId}`)).status).toBe(200);
+    expect((await agent.get(`/api/appointments/${appointmentId}`)).status).toBe(200);
+  });
 });

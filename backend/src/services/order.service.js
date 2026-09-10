@@ -129,4 +129,11 @@ async function updateOrder(orderId, payload = {}) {
   const orderIdResult = await saveOrder(payload, existing); return getOrder(orderIdResult);
 }
 
-module.exports = { createOrder, getOrder, listOrders, updateOrder };
+async function deleteOrder(orderId) {
+  const normalizedOrderId = id(orderId);
+  if (!normalizedOrderId) throw notFound();
+  await orderRepository.deleteOrder(normalizedOrderId);
+  return { message: 'Order deleted successfully' };
+}
+
+module.exports = { createOrder, deleteOrder, getOrder, listOrders, updateOrder };

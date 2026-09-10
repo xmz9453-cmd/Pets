@@ -339,8 +339,19 @@ async function updateAppointment(appointmentId, payload = {}) {
   });
 }
 
+async function deleteAppointment(appointmentId) {
+  const normalizedAppointmentId = Number(appointmentId);
+  if (!Number.isInteger(normalizedAppointmentId) || normalizedAppointmentId <= 0) {
+    throw createNotFoundError('APPOINTMENT_NOT_FOUND', 'Appointment not found');
+  }
+
+  await appointmentRepository.deleteAppointment(normalizedAppointmentId);
+  return { message: 'Appointment deleted successfully' };
+}
+
 module.exports = {
   createAppointment,
+  deleteAppointment,
   getAppointmentById,
   listAppointments,
   updateAppointment,

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { changeOwnPassword, getCurrentStaff, getShopSettings, getStaffAccounts, resetStaffPassword, updateShopSettings, updateStaffRoles, updateStaffStatus } from '../api/client';
+import { changeOwnPassword, getCurrentStaff, getShopSettings, getStaffAccounts, resetOperationalData, resetStaffPassword, updateShopSettings, updateStaffRoles, updateStaffStatus } from '../api/client';
 import { getRoleLabel } from '../utils/staff-display';
 
 const WEEKDAY_ORDER = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -82,6 +82,8 @@ export default function SettingsPage() {
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' });
   const [passwordError, setPasswordError] = useState('');
   const [passwordSaving, setPasswordSaving] = useState(false);
+  const [resetModal, setResetModal] = useState(null);
+  const [resetting, setResetting] = useState(false);
 
   const canEdit = staff && staff.roles && staff.roles.includes('OWNER');
 
@@ -96,6 +98,11 @@ export default function SettingsPage() {
         }
 
         setStaff(currentStaff.staff);
+        if (!currentStaff.staff.roles.includes('OWNER')) {
+          router.replace('/');
+          return;
+        }
+
         const result = await getShopSettings();
         const normalized = normalizeSavedSettings(result);
 
@@ -110,8 +117,6 @@ export default function SettingsPage() {
           if (active) {
             setStaffAccounts(staffResult.staff || []);
           }
-        } else if (active) {
-          setStaffAccounts([currentStaff.staff]);
         }
       } catch (loadError) {
         if (active) {
@@ -275,6 +280,22 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleResetOperationalData() {
+    setResetting(true);
+    setError('');
+    setSuccess('');
+    try {
+      const result = await resetOperationalData();
+      setResetModal(null);
+      setSuccess(result.message || '測試／營運資料已清除。');
+    } catch (resetError) {
+      setResetModal(null);
+      setError(resetError.message || '無法清除測試／營運資料。');
+    } finally {
+      setResetting(false);
+    }
+  }
+
   if (loading) {
     return (
       <main className="container py-4">
@@ -329,7 +350,7 @@ export default function SettingsPage() {
                 />
               </div>
               <div className="col-md-6">
-                <label className="form-label">Email</label>
+                <label className="form-label">電子郵件</label>
                 <input
                   className="form-control"
                   type="email"
@@ -437,7 +458,7 @@ export default function SettingsPage() {
                           ))}
                         </div>
                       </td>
-                      <td>{account.status === 'active' ? '啟用' : account.status === 'inactive' ? '停用' : account.status}</td>
+                      <td>{account.status === 'ACTIVE' || account.status === 'active' ? '啟用' : account.status === 'INACTIVE' || account.status === 'inactive' ? '停用' : account.status}</td>
                       <td>
                         <button
                           type="button"
@@ -469,6 +490,59 @@ export default function SettingsPage() {
       <button type="button" className="btn btn-outline-dark mt-4" onClick={() => openPasswordModal()}>
         更改我的密碼
       </button>
+
+      {canEdit ? (
+        <section className="card border-danger shadow-sm mt-4">
+          <div className="card-body">
+            <h2 className="h5 mb-2">測試／營運資料管理</h2>
+            <p className="text-muted">清除測試期間建立的所有營運資料，店家設定與登入資料會保留。</p>
+            <button type="button" className="btn btn-danger" onClick={() => setResetModal('warning')} disabled={resetting}>
+              清除測試／營運資料
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {resetModal === 'warning' ? (
+        <div className="modal d-block" role="dialog" aria-modal="true" aria-labelledby="reset-warning-title">
+          <div className="modal-dialog">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h2 className="modal-title h5" id="reset-warning-title">清除測試／營運資料</h2>
+                <button type="button" className="btn-close" aria-label="關閉" onClick={() => setResetModal(null)} />
+              </div>
+              <div className="modal-body">
+                <p>這會清除大量測試／營運資料，包括 Customer、Pet、Service、Product、Appointment、Order、Payment 等資料。</p>
+                <p>這不是單筆刪除，清除後無法透過一般 UI 還原。店家設定、員工、角色與登入 session 等基礎資料不會被清除。</p>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={() => setResetModal(null)}>取消</button>
+                <button type="button" className="btn btn-danger" onClick={() => setResetModal('confirm')}>繼續</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {resetModal === 'confirm' ? (
+        <div className="modal d-block" role="dialog" aria-modal="true" aria-labelledby="reset-confirm-title">
+          <div className="modal-dialog">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h2 className="modal-title h5" id="reset-confirm-title">再次確認</h2>
+                <button type="button" className="btn-close" aria-label="關閉" onClick={() => setResetModal(null)} />
+              </div>
+              <div className="modal-body">是否確定要清除所有測試／營運資料？</div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={() => setResetModal(null)}>取消</button>
+                <button type="button" className="btn btn-danger" onClick={handleResetOperationalData} disabled={resetting}>
+                  {resetting ? '清除中...' : '確定清除'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {passwordModal !== null ? (
         <div className="modal d-block" role="dialog" aria-modal="true" aria-labelledby="password-modal-title">

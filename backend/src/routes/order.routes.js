@@ -9,4 +9,5 @@ router.get('/orders', requireAuthentication, readRoles, orderController.listOrde
 router.get('/orders/:id', requireAuthentication, readRoles, orderController.getOrder);
 router.post('/orders', requireAuthentication, writeRoles, orderController.createOrder);
 router.patch('/orders/:id', requireAuthentication, writeRoles, orderController.updateOrder);
+router.delete('/orders/:id', requireAuthentication, writeRoles, orderController.deleteOrder);
 module.exports = router;

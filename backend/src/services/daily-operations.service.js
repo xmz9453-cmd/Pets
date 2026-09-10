@@ -2,6 +2,13 @@ const dailyOperationsRepository = require('../data/daily-operations.repository')
 const appointmentRepository = require('../data/appointment.repository');
 const { getPool } = require('../config/database');
 
+function getLocalDateString(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 // State Machine Configuration
 const VALID_TRANSITIONS = {
   'SCHEDULED': ['CHECKED_IN'],
@@ -58,8 +65,15 @@ async function withTransaction(handler) {
 }
 
 async function listTodayOperations(query = {}) {
+  const rawDate = typeof query.date === 'string' ? query.date : null;
+  if (rawDate && !/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    throw createValidationError({
+      date: '日期格式錯誤，請選擇 YYYY-MM-DD 格式。',
+    });
+  }
+
   const filters = {
-    date: query.date || null,
+    date: rawDate || getLocalDateString(),
     status: query.status || 'ALL',
     serviceType: query.serviceType || null,
     species: query.species || null,

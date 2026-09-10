@@ -43,6 +43,15 @@ async function updatePet(req, res, next) {
   }
 }
 
+async function deletePet(req, res, next) {
+  try {
+    const result = await petService.deletePet(req.params.id);
+    sendSuccess(res, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function activatePet(req, res, next) {
   try {
     const result = await petService.activatePet(req.params.id);
@@ -101,6 +110,7 @@ module.exports = {
   activatePet,
   addRelationship,
   createPet,
+  deletePet,
   deactivatePet,
   getPet,
   listPets,

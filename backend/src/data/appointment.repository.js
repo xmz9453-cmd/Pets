@@ -269,8 +269,77 @@ async function findAppointmentById(appointmentId, connection = getPool()) {
   return rows[0] || null;
 }
 
+async function deleteAppointment(appointmentId) {
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const appointment = await findAppointmentById(appointmentId, connection);
+    if (!appointment) {
+      const error = new Error('Appointment not found');
+      error.statusCode = 404;
+      error.code = 'APPOINTMENT_NOT_FOUND';
+      throw error;
+    }
+
+    const [dailyOperationRows] = await connection.query(
+      `SELECT id, status, check_in_time, started_time, completed_time, responsible_staff_id, work_note
+       FROM daily_operations
+       WHERE appointment_id = ?
+       LIMIT 1
+       FOR UPDATE`,
+      [appointmentId],
+    );
+    const [groomingRows] = await connection.query(
+      `SELECT g.id
+       FROM groomings g
+       INNER JOIN daily_operations d ON d.id = g.daily_operation_id
+       WHERE d.appointment_id = ?
+       LIMIT 1`,
+      [appointmentId],
+    );
+    const [boardingRows] = await connection.query('SELECT id FROM boardings WHERE appointment_id = ? LIMIT 1', [appointmentId]);
+    const [orderRows] = await connection.query('SELECT id FROM orders WHERE appointment_id = ? LIMIT 1', [appointmentId]);
+    const [paymentRows] = await connection.query(
+      `SELECT p.id
+       FROM payments p
+       INNER JOIN orders o ON o.id = p.order_id
+       WHERE o.appointment_id = ?
+       LIMIT 1`,
+      [appointmentId],
+    );
+
+    const dailyOperation = dailyOperationRows[0];
+    const hasOperationalData = dailyOperation && (
+      dailyOperation.status !== 'SCHEDULED'
+      || dailyOperation.check_in_time
+      || dailyOperation.started_time
+      || dailyOperation.completed_time
+      || dailyOperation.responsible_staff_id
+      || dailyOperation.work_note
+    );
+    if (hasOperationalData || groomingRows.length || boardingRows.length || orderRows.length || paymentRows.length) {
+      const error = new Error('Appointment has related business records and cannot be deleted');
+      error.statusCode = 409;
+      error.code = 'APPOINTMENT_DELETE_PROTECTED';
+      throw error;
+    }
+
+    if (dailyOperation) {
+      await connection.query('DELETE FROM daily_operations WHERE id = ?', [dailyOperation.id]);
+    }
+    await connection.query('DELETE FROM appointments WHERE id = ?', [appointmentId]);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 module.exports = {
   createAppointment,
+  deleteAppointment,
   createAppointmentPet,
   createAppointmentPetService,
   findAppointmentById,
