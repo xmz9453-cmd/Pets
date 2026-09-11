@@ -137,6 +137,25 @@ describe('Customer API', () => {
     expect(invalidPhoneResponse.body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  test('GET /api/customers returns pet counts from each customer relationship', async () => {
+    const { agent } = await loginAsOwner();
+    const customerAResponse = await createCustomerRecord(agent, { name: 'Pet Count A', phone: '0912-555-701' });
+    const customerBResponse = await createCustomerRecord(agent, { name: 'Pet Count B', phone: '0912-555-702' });
+    const customerAId = customerAResponse.body.data.customer.id;
+    const customerBId = customerBResponse.body.data.customer.id;
+
+    await agent.post('/api/pets').send({ name: 'Count Dog 1', species: 'DOG', gender: 'MALE', customer_id: customerAId });
+    await agent.post('/api/pets').send({ name: 'Count Dog 2', species: 'DOG', gender: 'FEMALE', customer_id: customerAId });
+    await agent.post('/api/pets').send({ name: 'Count Cat', species: 'CAT', gender: 'UNKNOWN', customer_id: customerBId });
+
+    const response = await agent.get('/api/customers').query({ status: 'ALL', search: 'Pet Count' });
+    const counts = Object.fromEntries(response.body.data.customers.map((customer) => [customer.id, customer.pet_count]));
+
+    expect(response.status).toBe(200);
+    expect(counts[customerAId]).toBe(2);
+    expect(counts[customerBId]).toBe(1);
+  });
+
   test('Customer API requires authentication and rejects invalid lifecycle transitions', async () => {
     const anonymousResponse = await request(app).get('/api/customers');
     expect(anonymousResponse.status).toBe(401);

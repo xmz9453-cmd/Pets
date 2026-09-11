@@ -39,7 +39,11 @@ async function listCustomers(filters = {}) {
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const [rows] = await getPool().query(
-    `SELECT c.*
+    `SELECT c.*, (
+      SELECT COUNT(*)
+      FROM pet_customer_relationships pcr
+      WHERE pcr.customer_id = c.id
+    ) AS pet_count
      FROM customers c
      ${whereClause}
      ORDER BY c.created_at DESC
