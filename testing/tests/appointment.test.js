@@ -127,6 +127,123 @@ describe('Appointment API', () => {
     expect(detailResponse.body.data.appointment.pets[0].services).toHaveLength(2);
   });
 
+  test('GET /api/appointments returns actual pet counts per appointment without cross-contamination', async () => {
+    const { agent } = await loginAsOwner();
+
+    const customerResponse = await createCustomer(agent, {
+      name: 'Pet Count Customer',
+      phone: '0912-000-111',
+    });
+    const customerId = customerResponse.body.data.customer.id;
+
+    const petOneResponse = await createPet(agent, {
+      name: 'Count Pet One',
+      species: 'DOG',
+      gender: 'MALE',
+      customer_id: customerId,
+    });
+    const petTwoResponse = await createPet(agent, {
+      name: 'Count Pet Two',
+      species: 'CAT',
+      gender: 'FEMALE',
+      customer_id: customerId,
+    });
+    const petThreeResponse = await createPet(agent, {
+      name: 'Count Pet Three',
+      species: 'DOG',
+      gender: 'FEMALE',
+      customer_id: customerId,
+    });
+
+    const [serviceId] = await getServiceIds();
+
+    const appointmentOneResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-09-20',
+      appointment_time: '08:00:00',
+      status: 'SCHEDULED',
+      pets: [{ pet_id: petOneResponse.body.data.pet.id, service_ids: [serviceId] }],
+    });
+
+    const appointmentTwoResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-09-21',
+      appointment_time: '09:00:00',
+      status: 'SCHEDULED',
+      pets: [
+        { pet_id: petOneResponse.body.data.pet.id, service_ids: [serviceId] },
+        { pet_id: petTwoResponse.body.data.pet.id, service_ids: [serviceId] },
+      ],
+    });
+
+    const [noPetInsertResult] = await getPool().query(
+      'INSERT INTO appointments (customer_id, appointment_date, appointment_time, status) VALUES (?, ?, ?, ?)',
+      [customerId, '2026-09-22', '10:00:00', 'SCHEDULED'],
+    );
+
+    const response = await agent.get('/api/appointments').query({ status: 'ALL' });
+    const map = new Map(response.body.data.appointments.map((appointment) => [appointment.id, appointment]));
+
+    expect(response.status).toBe(200);
+    expect(map.get(appointmentOneResponse.body.data.appointment.id)?.pet_count).toBe(1);
+    expect(map.get(appointmentTwoResponse.body.data.appointment.id)?.pet_count).toBe(2);
+    expect(map.get(noPetInsertResult.insertId)?.pet_count).toBe(0);
+    expect(response.body.data.appointments.filter((appointment) => appointment.pet_count === 1)).toHaveLength(1);
+    expect(response.body.data.appointments.filter((appointment) => appointment.pet_count === 2)).toHaveLength(1);
+    expect(response.body.data.appointments.filter((appointment) => appointment.pet_count === 0)).toHaveLength(1);
+
+    const totalPetCountForCustomer = [petOneResponse.body.data.pet.id, petTwoResponse.body.data.pet.id, petThreeResponse.body.data.pet.id].length;
+    expect(totalPetCountForCustomer).toBe(3);
+    expect(response.body.data.appointments.some((appointment) => appointment.pet_count > totalPetCountForCustomer)).toBe(false);
+  });
+
+  test('GET /api/appointments filters appointments by selected date', async () => {
+    const { agent } = await loginAsOwner();
+
+    const customerResponse = await createCustomer(agent, {
+      name: 'Calendar Customer',
+      phone: '0912-000-111',
+    });
+    const customerId = customerResponse.body.data.customer.id;
+    const petResponse = await createPet(agent, {
+      name: 'Calendar Pet',
+      species: 'DOG',
+      gender: 'MALE',
+      customer_id: customerId,
+    });
+    const [serviceId] = await getServiceIds();
+
+    await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-09-10',
+      appointment_time: '10:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceId] }],
+    });
+    await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-09-11',
+      appointment_time: '11:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceId] }],
+    });
+    await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-09-10',
+      appointment_time: '10:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceId] }],
+    });
+
+    const response = await agent.get('/api/appointments').query({
+      appointmentDate: '2026-09-10',
+      status: 'ALL',
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.appointments).toHaveLength(2);
+    expect(response.body.data.appointments.every((appointment) => appointment.appointment_date === '2026-09-10')).toBe(true);
+    expect(response.body.data.appointments[0].appointment_time).toBe('10:00:00');
+    expect(response.body.data.appointments[1].appointment_time).toBe('10:00:00');
+  });
+
   test('PATCH /api/appointments/:id updates data and supports cancellation protection', async () => {
     const { agent } = await loginAsOwner();
 

@@ -35,6 +35,7 @@ function normalizeAppointment(row) {
     customer_name: row.customer_name || null,
     customer_phone: row.customer_phone || null,
     staff_name: row.staff_name || null,
+    pet_count: Number(row.pet_count || 0),
   };
 }
 
@@ -42,6 +43,7 @@ async function listAppointments(filters = {}) {
   const {
     status = '',
     customerId = '',
+    appointmentDate = '',
     page = 1,
     limit = 20,
   } = filters;
@@ -59,15 +61,23 @@ async function listAppointments(filters = {}) {
     params.push(customerId);
   }
 
+  if (appointmentDate) {
+    conditions.push('a.appointment_date = ?');
+    params.push(appointmentDate);
+  }
+
   const offset = (Number(page) - 1) * Number(limit);
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const [rows] = await getPool().query(
-    `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, s.display_name AS staff_name
+    `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, s.display_name AS staff_name,
+            COUNT(ap.id) AS pet_count
      FROM appointments a
      LEFT JOIN customers c ON c.id = a.customer_id
      LEFT JOIN staff s ON s.id = a.staff_id
+     LEFT JOIN appointment_pets ap ON ap.appointment_id = a.id
      ${whereClause}
+     GROUP BY a.id, c.name, c.phone, s.display_name
      ORDER BY a.appointment_date DESC, a.appointment_time DESC
      LIMIT ? OFFSET ?`,
     [...params, Number(limit), Number(offset)],

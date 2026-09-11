@@ -186,7 +186,12 @@ async function validatePetEntries(customerId, petEntries = []) {
 }
 
 async function listAppointments(filters = {}) {
-  return appointmentRepository.listAppointments(filters);
+  const normalizedFilters = { ...filters };
+  if (filters.appointmentDate) {
+    normalizedFilters.appointmentDate = normalizeDateString(filters.appointmentDate);
+  }
+
+  return appointmentRepository.listAppointments(normalizedFilters);
 }
 
 async function getAppointmentById(appointmentId) {

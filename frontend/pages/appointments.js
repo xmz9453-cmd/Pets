@@ -401,7 +401,7 @@ export default function AppointmentsPage() {
                           <td>{appointment.appointment_time}</td>
                           <td>{appointment.customer_name || appointment.customer_id}</td>
                           <td><span className="badge bg-secondary">{APPOINTMENT_STATUS_LABELS[appointment.status] || appointment.status}</span></td>
-                          <td>{appointment.pets?.length || 0}</td>
+                          <td>{appointment.pet_count || 0}</td>
                           <td className="text-end">
                             <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => handleEdit(appointment.id)}>
                               編輯
