@@ -11,6 +11,9 @@ function normalizeCustomer(row) {
     status: row.status || 'ACTIVE',
     created_at: row.created_at,
     updated_at: row.updated_at,
+    id_card_number: row.id_card_number || null,
+    emergency_contact_name: row.emergency_contact_name || null,
+    emergency_contact_phone: row.emergency_contact_phone || null,
   };
 }
 
@@ -106,13 +109,16 @@ async function getCustomerById(customerId) {
 
 async function createCustomer(payload) {
   const [result] = await getPool().query(
-    `INSERT INTO customers (name, phone, address, line_id, note, status)
-     VALUES (?, ?, ?, ?, ?, 'ACTIVE')`,
+    `INSERT INTO customers (name, phone, address, line_id, id_card_number, emergency_contact_name, emergency_contact_phone, note, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
     [
       payload.name,
       payload.phone,
       payload.address || null,
       payload.line_id || payload.lineId || null,
+      payload.id_card_number || payload.idCardNumber || null,
+      payload.emergency_contact_name || payload.emergencyContactName || null,
+      payload.emergency_contact_phone || payload.emergencyContactPhone || null,
       payload.note || null,
     ],
   );
@@ -131,6 +137,24 @@ async function updateCustomer(customerId, patch) {
 
     if (key === 'lineId') {
       fields.push('line_id = ?');
+      values.push(value || null);
+      continue;
+    }
+
+    if (key === 'idCardNumber') {
+      fields.push('id_card_number = ?');
+      values.push(value || null);
+      continue;
+    }
+
+    if (key === 'emergencyContactName') {
+      fields.push('emergency_contact_name = ?');
+      values.push(value || null);
+      continue;
+    }
+
+    if (key === 'emergencyContactPhone') {
+      fields.push('emergency_contact_phone = ?');
       values.push(value || null);
       continue;
     }

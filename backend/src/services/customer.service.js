@@ -17,13 +17,25 @@ function createNotFoundError(code, message) {
   return error;
 }
 
+function normalizeOptionalText(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const text = String(value).trim();
+  return text === '' ? null : text;
+}
+
 function normalizeCustomerInput(payload = {}) {
   return {
     name: payload.name,
     phone: payload.phone,
     address: payload.address,
     lineId: payload.lineId,
-    note: payload.note,
+    idCardNumber: normalizeOptionalText(payload.idCardNumber ?? payload.id_card_number),
+    emergencyContactName: normalizeOptionalText(payload.emergencyContactName ?? payload.emergency_contact_name),
+    emergencyContactPhone: normalizeOptionalText(payload.emergencyContactPhone ?? payload.emergency_contact_phone),
+    note: normalizeOptionalText(payload.note),
   };
 }
 
@@ -63,6 +75,18 @@ function validateCustomerPayload(payload, { allowPartial = false } = {}) {
 
   if (normalized.lineId !== undefined && normalized.lineId !== null && String(normalized.lineId).length > 100) {
     errors.lineId = 'Line ID must be 100 characters or less';
+  }
+
+  if (normalized.idCardNumber !== undefined && normalized.idCardNumber !== null && String(normalized.idCardNumber).length > 50) {
+    errors.idCardNumber = 'ID card number must be 50 characters or less';
+  }
+
+  if (normalized.emergencyContactName !== undefined && normalized.emergencyContactName !== null && String(normalized.emergencyContactName).length > 100) {
+    errors.emergencyContactName = 'Emergency contact name must be 100 characters or less';
+  }
+
+  if (normalized.emergencyContactPhone !== undefined && normalized.emergencyContactPhone !== null && String(normalized.emergencyContactPhone).length > 30) {
+    errors.emergencyContactPhone = 'Emergency contact phone must be 30 characters or less';
   }
 
   if (normalized.note !== undefined && normalized.note !== null && String(normalized.note).length > 1000) {
@@ -105,9 +129,12 @@ async function createCustomer(payload) {
   const cleaned = {
     name: String(payload.name).trim(),
     phone: String(payload.phone).trim(),
-    address: payload.address ? String(payload.address).trim() : null,
-    lineId: payload.lineId !== undefined ? String(payload.lineId).trim() : (payload.line_id ? String(payload.line_id).trim() : null),
-    note: payload.note ? String(payload.note).trim() : null,
+    address: normalizeOptionalText(payload.address),
+    lineId: normalizeOptionalText(payload.lineId ?? payload.line_id),
+    idCardNumber: normalizeOptionalText(payload.idCardNumber ?? payload.id_card_number),
+    emergencyContactName: normalizeOptionalText(payload.emergencyContactName ?? payload.emergency_contact_name),
+    emergencyContactPhone: normalizeOptionalText(payload.emergencyContactPhone ?? payload.emergency_contact_phone),
+    note: normalizeOptionalText(payload.note),
   };
 
   const customerId = await customerRepository.createCustomer(cleaned);
@@ -138,6 +165,15 @@ async function updateCustomer(customerId, payload) {
   }
   if (payload.lineId !== undefined || payload.line_id !== undefined) {
     patch.lineId = payload.lineId !== undefined ? String(payload.lineId).trim() : (payload.line_id === null ? null : String(payload.line_id).trim());
+  }
+  if (payload.idCardNumber !== undefined || payload.id_card_number !== undefined) {
+    patch.idCardNumber = payload.idCardNumber !== undefined ? String(payload.idCardNumber).trim() : (payload.id_card_number === null ? null : String(payload.id_card_number).trim());
+  }
+  if (payload.emergencyContactName !== undefined || payload.emergency_contact_name !== undefined) {
+    patch.emergencyContactName = payload.emergencyContactName !== undefined ? String(payload.emergencyContactName).trim() : (payload.emergency_contact_name === null ? null : String(payload.emergency_contact_name).trim());
+  }
+  if (payload.emergencyContactPhone !== undefined || payload.emergency_contact_phone !== undefined) {
+    patch.emergencyContactPhone = payload.emergencyContactPhone !== undefined ? String(payload.emergencyContactPhone).trim() : (payload.emergency_contact_phone === null ? null : String(payload.emergency_contact_phone).trim());
   }
   if (payload.note !== undefined) {
     patch.note = payload.note === null ? null : String(payload.note).trim();

@@ -99,6 +99,27 @@ describe('Customer API', () => {
     expect(phoneSearchResponse.body.data.customers[0].phone).toBe('0912-345-678');
   });
 
+  test('POST /api/customers accepts omitted or blank id card values', async () => {
+    const { agent } = await loginAsOwner();
+
+    const createResponse = await createCustomerRecord(agent, {
+      name: 'Blank ID Customer',
+      phone: '0912-111-222',
+      idCardNumber: '',
+      emergencyContactName: 'Guardian',
+      emergencyContactPhone: '0911-333-444',
+    });
+
+    expect(createResponse.status).toBe(201);
+    expect(createResponse.body.success).toBe(true);
+    expect(createResponse.body.data.customer.id_card_number).toBeNull();
+    expect(createResponse.body.data.customer.emergency_contact_name).toBe('Guardian');
+
+    const detailResponse = await agent.get(`/api/customers/${createResponse.body.data.customer.id}`);
+    expect(detailResponse.status).toBe(200);
+    expect(detailResponse.body.data.customer.id_card_number).toBeNull();
+  });
+
   test('GET /api/customers/:id and lifecycle operations work with validation', async () => {
     const { agent } = await loginAsOwner();
 
