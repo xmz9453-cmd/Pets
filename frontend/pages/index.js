@@ -67,28 +67,6 @@ export default function Home() {
 
   return (
     <main className="foundation-shell">
-      <nav className="navbar navbar-expand navbar-dark bg-dark">
-        <div className="container-fluid">
-          <span className="navbar-brand mb-0 h1">{shopName}</span>
-          <div className="d-flex align-items-center gap-3 flex-wrap">
-            {staff && staff.roles.includes('OWNER') ? <a href="/settings" className="btn btn-outline-light btn-sm">店家設定</a> : null}
-            <a href="/customers" className="btn btn-outline-light btn-sm">客戶</a>
-            <a href="/pets" className="btn btn-outline-light btn-sm">寵物</a>
-            <a href="/services" className="btn btn-outline-light btn-sm">服務</a>
-            <a href="/products" className="btn btn-outline-light btn-sm">商品</a>
-            <a href="/appointments" className="btn btn-outline-light btn-sm">預約</a>
-            <a href="/calendar" className="btn btn-outline-light btn-sm">行事曆</a>
-            <a href="/operations" className="btn btn-outline-light btn-sm">日常營運</a>
-            <a href="/orders" className="btn btn-outline-light btn-sm">訂單</a>
-            <a href="/reports" className="btn btn-outline-light btn-sm">報表</a>
-            <span className="navbar-text">{staff ? staff.display_name : '驗證狀態'}</span>
-            <button type="button" className="btn btn-outline-light btn-sm" onClick={handleLogout}>
-              登出
-            </button>
-          </div>
-        </div>
-      </nav>
-
       <section className="container py-4">
         <div className="row g-3">
           <div className="col-12 col-md-6">

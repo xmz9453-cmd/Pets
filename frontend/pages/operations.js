@@ -370,7 +370,6 @@ export default function OperationsPage() {
           <h1 className="mb-1">日常營運</h1>
           <p className="text-muted mb-0">營運日期：{localDateForDisplay(selectedDate) || localDateForDisplay(today)}</p>
         </div>
-        <a href="/" className="btn btn-outline-dark">返回首頁</a>
       </div>
 
       <div className="card mb-4">

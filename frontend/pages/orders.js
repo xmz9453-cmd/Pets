@@ -147,7 +147,6 @@ export default function OrdersPage() {
           <h1 className="mb-1">訂單</h1>
           <p className="text-muted mb-0">建立訂單並保存交易資料。</p>
         </div>
-        <button type="button" className="btn btn-outline-dark" onClick={() => router.push('/')}>返回首頁</button>
       </div>
 
       {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}

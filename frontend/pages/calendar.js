@@ -150,17 +150,6 @@ export default function CalendarPage() {
 
   return (
     <main className="foundation-shell">
-      <nav className="navbar navbar-expand navbar-dark bg-dark">
-        <div className="container-fluid">
-          <span className="navbar-brand mb-0 h1">行事曆</span>
-          <div className="d-flex align-items-center gap-2">
-            <a href="/" className="btn btn-outline-light btn-sm">返回首頁</a>
-            <a href="/appointments" className="btn btn-outline-light btn-sm">預約</a>
-            <a href="/operations" className="btn btn-outline-light btn-sm">日常營運</a>
-          </div>
-        </div>
-      </nav>
-
       <section className="container py-4">
         <div className="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
           <div>

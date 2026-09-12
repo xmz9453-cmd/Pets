@@ -230,7 +230,6 @@ export default function AppointmentsPage() {
           <h1 className="mb-1">預約管理</h1>
           <p className="text-muted mb-0">建立與維護客戶預約。</p>
         </div>
-        <a href="/" className="btn btn-outline-dark">返回首頁</a>
       </div>
 
       {error ? <div className="alert alert-danger">{error}</div> : null}

@@ -51,7 +51,6 @@ export default function ReportsPage() {
   const hasRows = report && (report.payment_methods.length || report.daily_revenue.length || report.products.length || report.services.length || report.boarding.usage_count);
 
   return <main className="foundation-shell">
-    <nav className="navbar navbar-expand navbar-dark bg-dark"><div className="container-fluid"><span className="navbar-brand mb-0 h1">{shopName}</span><div className="d-flex align-items-center gap-2"><a href="/" className="btn btn-outline-light btn-sm">返回首頁</a></div></div></nav>
     <section className="container py-4">
       <div className="d-flex justify-content-between align-items-center mb-4"><div><h1 className="mb-1">報表</h1><p className="text-muted mb-0">查看指定期間的基本營運資訊。</p></div></div>
       <div className="foundation-panel mb-4"><h2 className="h5">日期範圍</h2><form className="row g-3 align-items-end" onSubmit={submit}><div className="col-md-4"><label className="form-label" htmlFor="report-start-date">開始日期</label><input id="report-start-date" className="form-control" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></div><div className="col-md-4"><label className="form-label" htmlFor="report-end-date">結束日期</label><input id="report-end-date" className="form-control" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></div><div className="col-md-4"><button className="btn btn-primary" type="submit" disabled={loading}>查詢</button></div></form></div>
