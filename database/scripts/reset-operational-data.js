@@ -95,6 +95,7 @@ async function executeResetOperationalData() {
     await connection.beginTransaction();
     for (const table of RESET_TABLES) {
       await connection.query(`DELETE FROM \`${table}\``);
+      await connection.query(`ALTER TABLE \`${table}\` AUTO_INCREMENT = 1`);
     }
 
     const resetCounts = await getRowCounts(connection, RESET_TABLES);
