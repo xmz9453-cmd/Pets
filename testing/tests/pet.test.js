@@ -120,6 +120,30 @@ describe('Pet API', () => {
     ]);
   });
 
+  test('stores personality and medical history as multi-select values while keeping chip number', async () => {
+    const { agent } = await loginAsOwner();
+    const customerId = await ensureCustomer('Multi Select Owner', '0912000007');
+
+    const response = await agent.post('/api/pets').send({
+      name: 'Option Pet',
+      species: 'DOG',
+      gender: 'MALE',
+      customer_id: customerId,
+      personality: ['親近人', '親近狗', '容易緊張'],
+      medical_history: ['心臟病', '其他'],
+      other_history: '曾經受傷',
+      chip_number: 'DOG-001',
+    });
+
+    expect(response.status).toBe(201);
+    const [petRows] = await getPool().query('SELECT personality, medical_history, other_history, chip_number FROM pets WHERE id = ?', [response.body.data.pet.id]);
+    expect(petRows).toHaveLength(1);
+    expect(petRows[0].personality).toBe(JSON.stringify(['親近人', '親近狗', '容易緊張']));
+    expect(petRows[0].medical_history).toBe(JSON.stringify(['心臟病', '其他']));
+    expect(petRows[0].other_history).toBe('曾經受傷');
+    expect(petRows[0].chip_number).toBe('DOG-001');
+  });
+
   test('PUT /api/pets/:id updates status and validation rejects invalid species', async () => {
     const { agent } = await loginAsOwner();
     const customerId = await ensureCustomer('Valid Customer', '0912000002');

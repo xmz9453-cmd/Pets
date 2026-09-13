@@ -149,8 +149,8 @@ async function createPet(petPayload, connection = getPool()) {
   const [result] = await connection.query(
     `INSERT INTO pets (
       name, species, breed, gender, birth_date, weight, weight_unit, chip_number,
-      photo_url, notes, special_notes, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      photo_url, notes, personality, medical_history, other_history, special_notes, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
     [
       petPayload.name,
       petPayload.species,
@@ -162,6 +162,9 @@ async function createPet(petPayload, connection = getPool()) {
       petPayload.chip_number || null,
       petPayload.photo_url || null,
       petPayload.notes || null,
+      petPayload.personality || null,
+      petPayload.medical_history || null,
+      petPayload.other_history || null,
       petPayload.special_notes || null,
       petPayload.status || 'ACTIVE',
     ],

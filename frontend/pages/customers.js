@@ -13,9 +13,12 @@ import {
 const emptyForm = {
   name: '',
   phone: '',
-  note: '',
   address: '',
   lineId: '',
+  idCardNumber: '',
+  emergencyContactName: '',
+  emergencyContactPhone: '',
+  note: '',
 };
 
 export default function CustomersPage() {
@@ -75,6 +78,11 @@ export default function CustomersPage() {
     }
   }, [status, search, router.isReady]);
 
+  function updateField(field, value) {
+    setFormData((current) => ({ ...current, [field]: value }));
+    setError('');
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
     setSaving(true);
@@ -87,6 +95,9 @@ export default function CustomersPage() {
         note: formData.note || null,
         address: formData.address || null,
         lineId: formData.lineId || null,
+        idCardNumber: formData.idCardNumber || null,
+        emergencyContactName: formData.emergencyContactName || null,
+        emergencyContactPhone: formData.emergencyContactPhone || null,
       };
 
       if (editingId) {
@@ -149,7 +160,11 @@ export default function CustomersPage() {
       note: customer.note || '',
       address: customer.address || '',
       lineId: customer.line_id || '',
+      idCardNumber: customer.id_card_number || '',
+      emergencyContactName: customer.emergency_contact_name || '',
+      emergencyContactPhone: customer.emergency_contact_phone || '',
     });
+    setError('');
   }
 
   return (
@@ -159,9 +174,6 @@ export default function CustomersPage() {
           <h1 className="mb-1">客戶管理</h1>
           <p className="text-muted mb-0">管理客戶主檔資料與狀態。</p>
         </div>
-        <button type="button" className="btn btn-outline-dark" onClick={() => router.push('/')}>
-          返回首頁
-        </button>
       </div>
 
       <div className="row g-4">
@@ -174,7 +186,7 @@ export default function CustomersPage() {
                 <input
                   className="form-control"
                   value={formData.name}
-                  onChange={(event) => setFormData({ ...formData, name: event.target.value })}
+                  onChange={(event) => updateField('name', event.target.value)}
                 />
               </div>
               <div className="mb-3">
@@ -182,7 +194,7 @@ export default function CustomersPage() {
                 <input
                   className="form-control"
                   value={formData.phone}
-                  onChange={(event) => setFormData({ ...formData, phone: event.target.value })}
+                  onChange={(event) => updateField('phone', event.target.value)}
                 />
               </div>
               <div className="mb-3">
@@ -190,7 +202,7 @@ export default function CustomersPage() {
                 <input
                   className="form-control"
                   value={formData.address}
-                  onChange={(event) => setFormData({ ...formData, address: event.target.value })}
+                  onChange={(event) => updateField('address', event.target.value)}
                 />
               </div>
               <div className="mb-3">
@@ -198,7 +210,31 @@ export default function CustomersPage() {
                 <input
                   className="form-control"
                   value={formData.lineId}
-                  onChange={(event) => setFormData({ ...formData, lineId: event.target.value })}
+                  onChange={(event) => updateField('lineId', event.target.value)}
+                />
+              </div>
+              <div className="mb-3">
+                <label className="form-label">身分證字號</label>
+                <input
+                  className="form-control"
+                  value={formData.idCardNumber}
+                  onChange={(event) => updateField('idCardNumber', event.target.value)}
+                />
+              </div>
+              <div className="mb-3">
+                <label className="form-label">緊急聯絡人</label>
+                <input
+                  className="form-control"
+                  value={formData.emergencyContactName}
+                  onChange={(event) => updateField('emergencyContactName', event.target.value)}
+                />
+              </div>
+              <div className="mb-3">
+                <label className="form-label">緊急聯絡電話</label>
+                <input
+                  className="form-control"
+                  value={formData.emergencyContactPhone}
+                  onChange={(event) => updateField('emergencyContactPhone', event.target.value)}
                 />
               </div>
               <div className="mb-3">
@@ -207,7 +243,7 @@ export default function CustomersPage() {
                   className="form-control"
                   rows="3"
                   value={formData.note}
-                  onChange={(event) => setFormData({ ...formData, note: event.target.value })}
+                  onChange={(event) => updateField('note', event.target.value)}
                 />
               </div>
               <div className="d-flex gap-2">

@@ -21,6 +21,41 @@ function createNotFoundError(code, message) {
   return error;
 }
 
+function normalizeMultiSelectValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item !== undefined && item !== null && String(item).trim() !== '')
+      .map((item) => String(item).trim())
+      .filter((item) => item.length > 0);
+  }
+
+  if (value === undefined || value === null || value === '') {
+    return [];
+  }
+
+  const asString = String(value).trim();
+  if (!asString) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(asString);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((item) => item !== undefined && item !== null && String(item).trim() !== '')
+        .map((item) => String(item).trim())
+        .filter((item) => item.length > 0);
+    }
+  } catch (error) {
+    // legacy comma-separated strings should still be accepted and normalized to arrays
+  }
+
+  return asString
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 function validatePetPayload(payload, { allowPartial = false } = {}) {
   const fieldErrors = {};
   const requiredFields = ['name', 'species'];
@@ -80,6 +115,24 @@ function validatePetPayload(payload, { allowPartial = false } = {}) {
 
   if (payload.note !== undefined && payload.note !== null && String(payload.note).length > 1000) {
     fieldErrors.note = 'Note must be 1000 characters or less';
+  }
+
+  if (payload.personality !== undefined && payload.personality !== null) {
+    const values = normalizeMultiSelectValue(payload.personality);
+    if (values.length > 8) {
+      fieldErrors.personality = 'Personality selection must have 8 or fewer values';
+    }
+  }
+
+  if (payload.medical_history !== undefined && payload.medical_history !== null) {
+    const values = normalizeMultiSelectValue(payload.medical_history);
+    if (values.length > 30) {
+      fieldErrors.medical_history = 'Medical history selection must have 30 or fewer values';
+    }
+  }
+
+  if (payload.other_history !== undefined && payload.other_history !== null && String(payload.other_history).length > 1000) {
+    fieldErrors.other_history = 'Other history must be 1000 characters or less';
   }
 
   if (payload.special_notes !== undefined && payload.special_notes !== null && String(payload.special_notes).length > 2000) {
@@ -150,6 +203,9 @@ async function createPet(payload) {
       chip_number: payload.chip_number,
       photo_url: payload.photo_url,
       notes: payload.note !== undefined ? payload.note : payload.notes,
+      personality: JSON.stringify(normalizeMultiSelectValue(payload.personality)),
+      medical_history: JSON.stringify(normalizeMultiSelectValue(payload.medical_history)),
+      other_history: payload.other_history,
       special_notes: payload.special_notes,
       status: 'ACTIVE',
     }, connection);
@@ -200,6 +256,9 @@ async function updatePet(petId, payload) {
     chip_number: payload.chip_number,
     photo_url: payload.photo_url,
     notes: payload.note !== undefined ? (payload.note || null) : payload.notes,
+    personality: payload.personality !== undefined ? JSON.stringify(normalizeMultiSelectValue(payload.personality)) : undefined,
+    medical_history: payload.medical_history !== undefined ? JSON.stringify(normalizeMultiSelectValue(payload.medical_history)) : undefined,
+    other_history: payload.other_history,
     special_notes: payload.special_notes,
     status: payload.status,
   };

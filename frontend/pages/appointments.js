@@ -124,6 +124,7 @@ export default function AppointmentsPage() {
       };
       return { ...current, pets: nextPets };
     });
+    setError('');
   }
 
   function addPetEntry() {

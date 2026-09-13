@@ -42,6 +42,11 @@ export default function ProductsPage() {
     setEditingId(null);
   }
 
+  function updateField(field, value) {
+    setFormData((current) => ({ ...current, [field]: value }));
+    setError('');
+  }
+
   function startEdit(product) {
     setEditingId(product.id);
     setFormData({ name: product.name, price: product.price.toFixed(2) });
@@ -109,7 +114,6 @@ export default function ProductsPage() {
     <main className="container py-4">
       <div className="d-flex justify-content-between align-items-center mb-4">
         <div><h1 className="mb-1">商品管理</h1><p className="text-muted mb-0">管理店家可銷售的商品資料。</p></div>
-        <button type="button" className="btn btn-outline-dark" onClick={() => router.push('/')}>返回首頁</button>
       </div>
       {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
       {success ? <div className="alert alert-success" role="alert">{success}</div> : null}

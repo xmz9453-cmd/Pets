@@ -311,7 +311,6 @@ export default function SettingsPage() {
           <h1 className="mb-1">店家設定</h1>
           <p className="text-muted mb-0">管理店家資料與每週營業時間。</p>
         </div>
-        <a href="/" className="btn btn-outline-dark">返回首頁</a>
       </div>
 
       {error ? <div className="alert alert-danger">{error}</div> : null}
