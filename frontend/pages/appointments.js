@@ -18,7 +18,6 @@ const EMPTY_FORM = {
   appointment_time: '',
   status: 'SCHEDULED',
   note: '',
-  staff_id: '',
   pets: [],
 };
 
@@ -155,7 +154,6 @@ export default function AppointmentsPage() {
         appointment_time: form.appointment_time,
         status: form.status,
         note: form.note || null,
-        staff_id: form.staff_id || null,
         pets: form.pets.map((petEntry) => ({
           pet_id: petEntry.pet_id,
           service_ids: petEntry.service_ids,
@@ -190,7 +188,6 @@ export default function AppointmentsPage() {
         appointment_time: appointment.appointment_time,
         status: appointment.status,
         note: appointment.note || '',
-        staff_id: appointment.staff_id ? String(appointment.staff_id) : '',
         pets: (appointment.pets || []).map((pet) => ({
           pet_id: String(pet.pet_id),
           service_ids: (pet.services || []).map((service) => Number(service.id)),
@@ -289,16 +286,6 @@ export default function AppointmentsPage() {
                     <option value="CONFIRMED">已確認</option>
                     <option value="CANCELLED">已取消</option>
                   </select>
-                </div>
-
-                <div className="mb-3">
-                  <label className="form-label">員工（選填）</label>
-                  <input
-                    className="form-control"
-                    value={form.staff_id}
-                    onChange={(event) => setForm({ ...form, staff_id: event.target.value })}
-                    placeholder="員工 ID"
-                  />
                 </div>
 
                 <div className="mb-3">

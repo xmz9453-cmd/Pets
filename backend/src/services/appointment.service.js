@@ -236,7 +236,6 @@ async function createAppointment(payload = {}) {
   return withTransaction(async (connection) => {
     const appointmentId = await appointmentRepository.createAppointment({
       customer_id: customerId,
-      staff_id: payload.staff_id !== undefined && payload.staff_id !== null && payload.staff_id !== '' ? Number(payload.staff_id) : null,
       appointment_date: appointmentDate,
       appointment_time: appointmentTime,
       status,
@@ -261,7 +260,6 @@ async function updateAppointment(appointmentId, payload = {}) {
     || payload.appointment_date !== undefined
     || payload.appointment_time !== undefined
     || payload.note !== undefined
-    || payload.staff_id !== undefined
     || payload.pets !== undefined
   );
 
@@ -307,10 +305,6 @@ async function updateAppointment(appointmentId, payload = {}) {
   if (payload.note !== undefined) {
     updatePayload.note = payload.note === null ? null : String(payload.note).trim();
   }
-  if (payload.staff_id !== undefined) {
-    updatePayload.staff_id = payload.staff_id === null || payload.staff_id === '' ? null : Number(payload.staff_id);
-  }
-
   if (updatePayload.appointment_date !== undefined && !updatePayload.appointment_date) {
     throw createValidationError({ appointment_date: 'Appointment date is required' });
   }

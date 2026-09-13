@@ -25,7 +25,6 @@ function normalizeAppointment(row) {
   return {
     id: Number(row.id),
     customer_id: Number(row.customer_id),
-    staff_id: row.staff_id === null || row.staff_id === undefined ? null : Number(row.staff_id),
     appointment_date: toIsoDateString(row.appointment_date),
     appointment_time: row.appointment_time ? String(row.appointment_time).slice(0, 8) : null,
     status: row.status,
@@ -34,7 +33,6 @@ function normalizeAppointment(row) {
     updated_at: row.updated_at,
     customer_name: row.customer_name || null,
     customer_phone: row.customer_phone || null,
-    staff_name: row.staff_name || null,
     pet_count: Number(row.pet_count || 0),
   };
 }
@@ -70,14 +68,13 @@ async function listAppointments(filters = {}) {
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const [rows] = await getPool().query(
-    `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, s.display_name AS staff_name,
+    `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone,
             COUNT(ap.id) AS pet_count
      FROM appointments a
      LEFT JOIN customers c ON c.id = a.customer_id
-     LEFT JOIN staff s ON s.id = a.staff_id
      LEFT JOIN appointment_pets ap ON ap.appointment_id = a.id
      ${whereClause}
-     GROUP BY a.id, c.name, c.phone, s.display_name
+     GROUP BY a.id, c.name, c.phone
      ORDER BY a.appointment_date DESC, a.appointment_time DESC
      LIMIT ? OFFSET ?`,
     [...params, Number(limit), Number(offset)],
@@ -100,10 +97,9 @@ async function listAppointments(filters = {}) {
 
 async function getAppointmentById(appointmentId, connection = getPool()) {
   const [rows] = await connection.query(
-    `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, s.display_name AS staff_name
+    `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone
      FROM appointments a
      LEFT JOIN customers c ON c.id = a.customer_id
-     LEFT JOIN staff s ON s.id = a.staff_id
      WHERE a.id = ?
      LIMIT 1`,
     [appointmentId],
@@ -175,11 +171,10 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
 
 async function createAppointment(payload, connection = getPool()) {
   const [result] = await connection.query(
-    `INSERT INTO appointments (customer_id, staff_id, appointment_date, appointment_time, status, note)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO appointments (customer_id, appointment_date, appointment_time, status, note)
+     VALUES (?, ?, ?, ?, ?)` ,
     [
       payload.customer_id,
-      payload.staff_id ?? null,
       payload.appointment_date,
       payload.appointment_time,
       payload.status || 'SCHEDULED',
@@ -199,7 +194,7 @@ async function updateAppointment(appointmentId, patch, connection = getPool()) {
       continue;
     }
 
-    if (key === 'status' || key === 'appointment_date' || key === 'appointment_time' || key === 'note' || key === 'staff_id' || key === 'customer_id') {
+    if (key === 'status' || key === 'appointment_date' || key === 'appointment_time' || key === 'note' || key === 'customer_id') {
       fields.push(`${key} = ?`);
       values.push(value === null ? null : value);
     }
