@@ -14,8 +14,6 @@ const NAV_ITEMS = [
   { href: '/operations', label: '日常營運', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
   { href: '/orders', label: '訂單', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
   { href: '/reports', label: '報表', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/grooming', label: '美容', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/boarding', label: '住宿', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
 ];
 
 function AppShell({ Component, pageProps }) {

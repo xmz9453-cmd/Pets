@@ -313,7 +313,15 @@ export default function CustomersPage() {
                   <tbody>
                     {customers.map((customer) => (
                       <tr key={customer.id}>
-                        <td>{customer.name}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn-link p-0 text-start text-dark text-decoration-none"
+                            onClick={() => router.push(`/customers/${customer.id}`)}
+                          >
+                            {customer.name}
+                          </button>
+                        </td>
                         <td>{customer.phone}</td>
                         <td>
                           <span className={`badge ${customer.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>

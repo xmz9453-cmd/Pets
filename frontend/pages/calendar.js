@@ -71,6 +71,8 @@ export default function CalendarPage() {
   const [appointments, setAppointments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [dayDetailDate, setDayDetailDate] = useState(null);
+  const [selectedAppointment, setSelectedAppointment] = useState(null);
 
   useEffect(() => {
     if (!router.isReady) {
@@ -139,6 +141,23 @@ export default function CalendarPage() {
     setSelectedDate(localDateInputValue());
   }
 
+  function openDayAppointments(dateString) {
+    setDayDetailDate(dateString);
+    setSelectedAppointment(null);
+  }
+
+  function closeDayAppointments() {
+    setDayDetailDate(null);
+    setSelectedAppointment(null);
+  }
+
+  function getCompactAppointmentSummary(appointment) {
+    const summary = getAppointmentSummary(appointment);
+    const petLabel = summary.petNames === '未指定寵物' ? '未指定寵物' : summary.petNames;
+    const serviceLabel = summary.serviceNames === '未指定服務' ? '' : summary.serviceNames;
+    return [petLabel, serviceLabel].filter(Boolean).join(' · ');
+  }
+
   const calendarDays = useMemo(() => getCalendarDays(selectedDate), [selectedDate]);
   const appointmentsByDate = useMemo(() => appointments.reduce((groups, appointment) => {
     const dateAppointments = groups[appointment.appointment_date] || [];
@@ -179,30 +198,123 @@ export default function CalendarPage() {
               const dayAppointments = (appointmentsByDate[calendarDay.date] || [])
                 .slice()
                 .sort((first, second) => String(first.appointment_time || '').localeCompare(String(second.appointment_time || '')));
+              const visibleAppointments = dayAppointments.slice(0, 2);
+              const overflowCount = Math.max(dayAppointments.length - visibleAppointments.length, 0);
+
               return (
-                <button
-                  type="button"
+                <div
                   className={`calendar-day${calendarDay.isCurrentMonth ? '' : ' calendar-day-muted'}${calendarDay.date === today ? ' calendar-day-today' : ''}${calendarDay.date === selectedDate ? ' calendar-day-selected' : ''}`}
                   key={calendarDay.date}
                   onClick={() => setSelectedDate(calendarDay.date)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setSelectedDate(calendarDay.date);
+                    }
+                  }}
                   role="gridcell"
+                  tabIndex={0}
                 >
                   <span className="calendar-day-number">{calendarDay.day}</span>
                   <span className="calendar-events">
-                    {dayAppointments.map((appointment) => {
-                      const summary = getAppointmentSummary(appointment);
+                    {visibleAppointments.map((appointment) => {
+                      const summary = getCompactAppointmentSummary(appointment);
                       return (
-                        <span className={`calendar-event${appointment.status === 'CANCELLED' ? ' calendar-event-cancelled' : ''}`} key={appointment.id}>
+                        <button
+                          type="button"
+                          className={`calendar-event${appointment.status === 'CANCELLED' ? ' calendar-event-cancelled' : ''}`}
+                          key={appointment.id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedDate(calendarDay.date);
+                            setSelectedAppointment(appointment);
+                          }}
+                        >
                           <strong>{displayTime(appointment.appointment_time)}</strong>
-                          <span>{summary.customerName} / {summary.petNames}</span>
-                          <span>{summary.serviceNames}</span>
-                        </span>
+                          <span>{summary}</span>
+                        </button>
                       );
                     })}
+                    {overflowCount > 0 ? (
+                      <button
+                        type="button"
+                        className="calendar-more"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openDayAppointments(calendarDay.date);
+                        }}
+                      >
+                        +{overflowCount} 更多
+                      </button>
+                    ) : null}
                   </span>
-                </button>
+                </div>
               );
             })}
+          </div>
+        ) : null}
+
+        {dayDetailDate ? (
+          <div className="calendar-modal-backdrop" onClick={closeDayAppointments}>
+            <div className="calendar-modal" role="dialog" aria-modal="true" aria-labelledby="calendar-day-appointments-title" onClick={(event) => event.stopPropagation()}>
+              <div className="calendar-modal-header">
+                <h3 className="calendar-modal-title" id="calendar-day-appointments-title">{dayDetailDate.replace(/-/g, '/')} 預約</h3>
+                <button type="button" className="btn-close" aria-label="關閉" onClick={closeDayAppointments} />
+              </div>
+
+              <div className="calendar-modal-body">
+                {selectedAppointment ? (
+                  <div className="calendar-appointment-detail">
+                    <div className="calendar-appointment-detail-header">
+                      <div>
+                        <div className="text-muted small">預約時間</div>
+                        <strong>{displayTime(selectedAppointment.appointment_time)}</strong>
+                      </div>
+                      <span className={`badge ${selectedAppointment.status === 'CANCELLED' ? 'bg-secondary' : 'bg-primary'}`}>
+                        {selectedAppointment.status === 'CANCELLED' ? '已取消' : '已排程'}
+                      </span>
+                    </div>
+                    <div className="mt-3">
+                      <div className="text-muted small">客戶</div>
+                      <div>{getAppointmentSummary(selectedAppointment).customerName}</div>
+                    </div>
+                    <div className="mt-3">
+                      <div className="text-muted small">寵物</div>
+                      <div>{getAppointmentSummary(selectedAppointment).petNames}</div>
+                    </div>
+                    <div className="mt-3">
+                      <div className="text-muted small">服務</div>
+                      <div>{getAppointmentSummary(selectedAppointment).serviceNames}</div>
+                    </div>
+                    <button type="button" className="btn btn-outline-dark mt-3" onClick={() => setSelectedAppointment(null)}>
+                      返回列表
+                    </button>
+                  </div>
+                ) : (
+                  <div className="calendar-appointment-list">
+                    {(appointmentsByDate[dayDetailDate] || [])
+                      .slice()
+                      .sort((first, second) => String(first.appointment_time || '').localeCompare(String(second.appointment_time || '')))
+                      .map((appointment) => {
+                        const summary = getAppointmentSummary(appointment);
+                        return (
+                          <button
+                            type="button"
+                            key={appointment.id}
+                            className="calendar-appointment-row"
+                            onClick={() => setSelectedAppointment(appointment)}
+                          >
+                            <span className="calendar-appointment-row-time">{displayTime(appointment.appointment_time)}</span>
+                            <span className="calendar-appointment-row-text">{summary.customerName}</span>
+                            <span className="calendar-appointment-row-text">{summary.petNames}</span>
+                            <span className="calendar-appointment-row-text">{summary.serviceNames}</span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         ) : null}
 

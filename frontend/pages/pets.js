@@ -22,18 +22,6 @@ const personalityOptionsBySpecies = {
   CAT: ['親近人', '親近貓', '會咬人', '會咬貓', '容易緊張', '有攻擊性', '不會咬人', '不會咬貓'],
 };
 const medicalHistoryOptions = ['心臟病', '氣喘', '氣管塌陷', '白內障', '癲癇', '心絲蟲', '艾利希體', '腹膜炎', '腹積水', '手術外傷未癒合', '髖關節問題', '骨折', '腸炎', '血便', '血尿', '懷孕', '傳染性疾病', '其他'];
-const tagButtonStyle = {
-  border: '1px solid #d1d5db',
-  backgroundColor: '#ffffff',
-  color: '#111827',
-  borderRadius: '999px',
-  padding: '0.35rem 0.75rem',
-  fontSize: '0.875rem',
-  lineHeight: 1.4,
-  cursor: 'pointer',
-  transition: 'all 0.2s ease',
-  userSelect: 'none',
-};
 
 function toArray(value) {
   if (Array.isArray(value)) {
@@ -88,7 +76,6 @@ export default function PetsPage() {
   const [submittedFilters, setSubmittedFilters] = useState(filters);
   const [formData, setFormData] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
-  const [selectedPetId, setSelectedPetId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -143,14 +130,6 @@ export default function PetsPage() {
       [field]: toggleSelection(current[field], value),
     }));
     setError('');
-  }
-
-  function openPetDetail(pet) {
-    setSelectedPetId(pet.id);
-  }
-
-  function closePetDetail() {
-    setSelectedPetId(null);
   }
 
   function startEdit(pet) {
@@ -300,8 +279,7 @@ export default function PetsPage() {
                       <button
                         key={option}
                         type="button"
-                        className="btn btn-sm"
-                        style={selected ? { ...tagButtonStyle, backgroundColor: '#e5e7eb', borderColor: '#9ca3af', fontWeight: 600 } : tagButtonStyle}
+                        className={`btn btn-sm pet-tag-button ${selected ? 'selected' : ''}`}
                         onClick={() => toggleMultiSelect('personality', option)}
                       >
                         {option}
@@ -320,8 +298,7 @@ export default function PetsPage() {
                       <button
                         key={option}
                         type="button"
-                        className="btn btn-sm"
-                        style={selected ? { ...tagButtonStyle, backgroundColor: '#e5e7eb', borderColor: '#9ca3af', fontWeight: 600 } : tagButtonStyle}
+                        className={`btn btn-sm pet-tag-button ${selected ? 'selected' : ''}`}
                         onClick={() => toggleMultiSelect('medical_history', option)}
                       >
                         {option}
@@ -353,45 +330,10 @@ export default function PetsPage() {
               <div className="col-md-2 d-flex gap-2"><button type="submit" className="btn btn-dark">搜尋</button><button type="button" className="btn btn-outline-secondary" onClick={clearFilters}>清除</button></div>
             </form>
             {error ? <div className="alert alert-warning" role="alert">{error}</div> : null}
-            {loading ? <p className="text-muted mb-0">寵物載入中...</p> : pets.length === 0 ? <div className="alert alert-light border" role="alert">查無符合條件的寵物</div> : <div className="table-responsive"><table className="table align-middle"><thead><tr><th>名稱</th><th>種類</th><th>客戶</th><th>狀態</th><th className="text-end">操作</th></tr></thead><tbody>{pets.map((pet) => <tr key={pet.id}><td><button type="button" className="btn btn-link p-0 text-dark text-decoration-none fw-semibold" onClick={() => openPetDetail(pet)}>{pet.name}</button><small className="d-block text-muted">{pet.breed || '未填寫品種'}</small></td><td>{speciesLabels[pet.species] || pet.species}<small className="d-block text-muted">{genderLabels[pet.gender] || pet.gender}</small></td><td>{pet.customer_name || pet.primary_customer_name || '未指定'}</td><td><span className={`badge ${pet.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>{pet.status === 'ACTIVE' ? '啟用' : '停用'}</span></td><td className="text-end"><div className="btn-group btn-group-sm"><button type="button" className="btn btn-outline-dark" onClick={() => startEdit(pet)}>編輯</button><button type="button" className={`btn ${pet.status === 'ACTIVE' ? 'btn-outline-warning' : 'btn-outline-success'}`} onClick={() => handleStatusChange(pet, pet.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE')} disabled={saving}>{pet.status === 'ACTIVE' ? '停用' : '啟用'}</button><button type="button" className="btn btn-outline-danger" onClick={() => handleDelete(pet)} disabled={saving}>刪除</button></div></td></tr>)}</tbody></table></div>}
+            {loading ? <p className="text-muted mb-0">寵物載入中...</p> : pets.length === 0 ? <div className="alert alert-light border" role="alert">查無符合條件的寵物</div> : <div className="table-responsive"><table className="table align-middle"><thead><tr><th>名稱</th><th>種類</th><th>客戶</th><th>狀態</th><th className="text-end">操作</th></tr></thead><tbody>{pets.map((pet) => <tr key={pet.id}><td><button type="button" className="btn btn-link p-0 text-dark text-decoration-none fw-semibold" onClick={() => router.push(`/pets/${pet.id}`)}>{pet.name}</button><small className="d-block text-muted">{pet.breed || '未填寫品種'}</small></td><td>{speciesLabels[pet.species] || pet.species}<small className="d-block text-muted">{genderLabels[pet.gender] || pet.gender}</small></td><td>{pet.customer_name || pet.primary_customer_name || '未指定'}</td><td><span className={`badge ${pet.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>{pet.status === 'ACTIVE' ? '啟用' : '停用'}</span></td><td className="text-end"><div className="btn-group btn-group-sm"><button type="button" className="btn btn-outline-dark" onClick={() => startEdit(pet)}>編輯</button><button type="button" className={`btn ${pet.status === 'ACTIVE' ? 'btn-outline-warning' : 'btn-outline-success'}`} onClick={() => handleStatusChange(pet, pet.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE')} disabled={saving}>{pet.status === 'ACTIVE' ? '停用' : '啟用'}</button><button type="button" className="btn btn-outline-danger" onClick={() => handleDelete(pet)} disabled={saving}>刪除</button></div></td></tr>)}</tbody></table></div>}
           </div>
         </div>
       </div>
-
-      {selectedPetId ? (() => {
-        const selectedPet = pets.find((pet) => pet.id === selectedPetId) || null;
-        if (!selectedPet) return null;
-
-        return (
-          <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.35)' }}>
-            <div className="modal-dialog modal-dialog-centered modal-lg">
-              <div className="modal-content">
-                <div className="modal-header">
-                  <h5 className="modal-title">{selectedPet.name}</h5>
-                  <button type="button" className="btn-close" onClick={closePetDetail} aria-label="Close" />
-                </div>
-                <div className="modal-body">
-                  <div className="row g-3">
-                    <div className="col-md-6"><strong>所屬客戶</strong><div>{selectedPet.customer_name || selectedPet.primary_customer_name || '未指定'}</div></div>
-                    <div className="col-md-6"><strong>寵物名</strong><div>{selectedPet.name || '未填寫'}</div></div>
-                    <div className="col-md-6"><strong>種類</strong><div>{speciesLabels[selectedPet.species] || selectedPet.species || '未填寫'}</div></div>
-                    <div className="col-md-6"><strong>性別</strong><div>{genderLabels[selectedPet.gender] || selectedPet.gender || '未填寫'}</div></div>
-                    <div className="col-md-6"><strong>品種</strong><div>{selectedPet.breed || '未填寫'}</div></div>
-                    <div className="col-md-6"><strong>晶片號碼</strong><div>{selectedPet.chip_number || '未填寫'}</div></div>
-                    <div className="col-12"><strong>個性</strong>{renderTagList(selectedPet.personality, '無')}</div>
-                    <div className="col-12"><strong>病史</strong>{renderTagList(selectedPet.medical_history, '無')}</div>
-                    <div className="col-12"><strong>其他病史</strong><div>{selectedPet.other_history ? selectedPet.other_history : '無'}</div></div>
-                  </div>
-                </div>
-                <div className="modal-footer">
-                  <button type="button" className="btn btn-outline-secondary" onClick={closePetDetail}>關閉</button>
-                  <button type="button" className="btn btn-dark" onClick={() => { closePetDetail(); startEdit(selectedPet); }}>編輯</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })() : null}
     </main>
   );
 }
