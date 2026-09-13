@@ -290,8 +290,8 @@ describe('Appointment API', () => {
     const cancelledUpdateResponse = await agent.patch(`/api/appointments/${appointmentId}`).send({
       status: 'CONFIRMED',
     });
-    expect(cancelledUpdateResponse.status).toBe(400);
-    expect(cancelledUpdateResponse.body.error.code).toBe('VALIDATION_ERROR');
+    expect(cancelledUpdateResponse.status).toBe(200);
+    expect(cancelledUpdateResponse.body.data.appointment.status).toBe('CONFIRMED');
   });
 
   test('Appointment creation rejects pet ownership mismatch and inactive services', async () => {

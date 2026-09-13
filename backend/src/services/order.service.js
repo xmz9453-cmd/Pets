@@ -62,22 +62,42 @@ async function validateAppointmentServiceItems(appointmentId, items, connection)
 
   for (const item of serviceItems) {
     const serviceId = id(item.service_id);
-    const [completedRows] = await connection.query(
-      `SELECT 1
-       FROM appointment_pets ap
-       INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
-       INNER JOIN services s ON s.id = aps.service_id
-       LEFT JOIN daily_operations d ON d.appointment_id = ap.appointment_id
-       LEFT JOIN groomings g ON g.daily_operation_id = d.id AND g.pet_id = ap.pet_id
-       LEFT JOIN boardings b ON b.appointment_id = ap.appointment_id AND b.pet_id = ap.pet_id AND b.service_id = aps.service_id
-       WHERE ap.appointment_id = ? AND aps.service_id = ?
-         AND ((s.type = 'GROOMING' AND d.status = 'COMPLETED'
-               AND g.id IS NOT NULL AND g.before_condition IS NOT NULL
-               AND g.actual_grooming_content IS NOT NULL AND g.grooming_result IS NOT NULL)
-           OR (s.type = 'BOARDING' AND b.status = 'COMPLETED'))
-       LIMIT 1`,
-      [appointmentId, serviceId],
+    const [serviceRows] = await connection.query(
+      'SELECT id, type, status FROM services WHERE id = ? LIMIT 1',
+      [serviceId],
     );
+    const service = serviceRows[0];
+    if (!service || service.status !== 'ACTIVE') {
+      throw validation({ items: 'Service is invalid' });
+    }
+
+    let completedRows = [];
+    if (service.type === 'GROOMING') {
+      [completedRows] = await connection.query(
+        `SELECT 1
+         FROM daily_operations d
+         INNER JOIN groomings g ON g.daily_operation_id = d.id
+         WHERE d.appointment_id = ?
+           AND d.status = 'COMPLETED'
+           AND g.pet_id IN (SELECT pet_id FROM appointment_pets WHERE appointment_id = ?)
+           AND g.before_condition IS NOT NULL
+           AND g.actual_grooming_content IS NOT NULL
+           AND g.grooming_result IS NOT NULL
+         LIMIT 1`,
+        [appointmentId, appointmentId],
+      );
+    } else if (service.type === 'BOARDING') {
+      [completedRows] = await connection.query(
+        `SELECT 1
+         FROM boardings b
+         WHERE b.appointment_id = ? AND b.service_id = ? AND b.status = 'COMPLETED'
+         LIMIT 1`,
+        [appointmentId, serviceId],
+      );
+    } else {
+      throw validation({ items: 'Appointment source orders only support grooming or boarding services' });
+    }
+
     if (!completedRows.length) {
       throw validation({ items: 'Appointment service must be completed before billing' });
     }

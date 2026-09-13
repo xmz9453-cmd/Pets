@@ -18,8 +18,33 @@ async function createCustomer(agent) { customerSequence += 1; const suffix = `${
 
 describe('Order API', () => {
   beforeAll(async () => { await setup(); await getPool().query('DELETE FROM auth_sessions'); });
-    beforeEach(async () => { await getPool().query('DELETE FROM payments'); await getPool().query('DELETE FROM order_items'); await getPool().query('DELETE FROM orders'); await getPool().query('DELETE FROM products'); await getPool().query('DELETE FROM auth_sessions'); });
-    afterAll(async () => { await getPool().query("DELETE FROM payments WHERE order_id IN (SELECT o.id FROM orders o INNER JOIN customers c ON c.id = o.customer_id WHERE c.name LIKE 'Order Client %')"); await getPool().query("DELETE FROM order_items WHERE order_id IN (SELECT o.id FROM orders o INNER JOIN customers c ON c.id = o.customer_id WHERE c.name LIKE 'Order Client %')"); await getPool().query("DELETE FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE name LIKE 'Order Client %')"); await getPool().query("DELETE FROM appointments WHERE customer_id IN (SELECT id FROM customers WHERE name LIKE 'Order Client %')"); await closePool(); });
+    beforeEach(async () => {
+      await getPool().query('DELETE FROM payments');
+      await getPool().query('DELETE FROM order_items');
+      await getPool().query('DELETE FROM orders');
+      await getPool().query('DELETE FROM products');
+      await getPool().query('DELETE FROM groomings');
+      await getPool().query('DELETE FROM boardings');
+      await getPool().query('DELETE FROM daily_operations');
+      await getPool().query('DELETE FROM appointment_pet_services');
+      await getPool().query('DELETE FROM appointment_pets');
+      await getPool().query('DELETE FROM appointments');
+      await getPool().query('DELETE FROM auth_sessions');
+    });
+    afterAll(async () => {
+      await getPool().query('DELETE FROM payments');
+      await getPool().query('DELETE FROM order_items');
+      await getPool().query('DELETE FROM orders');
+      await getPool().query('DELETE FROM groomings');
+      await getPool().query('DELETE FROM boardings');
+      await getPool().query('DELETE FROM daily_operations');
+      await getPool().query('DELETE FROM appointment_pet_services');
+      await getPool().query('DELETE FROM appointment_pets');
+      await getPool().query('DELETE FROM appointments');
+      await getPool().query('DELETE FROM products');
+      await getPool().query('DELETE FROM auth_sessions');
+      await closePool();
+    });
 
   test('requires authentication and rejects empty orders', async () => {
     expect((await request(app).get('/api/orders')).status).toBe(401);
@@ -63,6 +88,49 @@ describe('Order API', () => {
     expect(invalidCustomer.status).toBe(400);
     const crossUnit = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ product_id: catProductId, transaction_price: 300, quantity: 1 }] });
     expect(crossUnit.status).toBe(400);
+  });
+
+  test('allows appointment-origin orders to bill a different completed grooming service', async () => {
+    const agent = await login(); const customerId = await createCustomer(agent);
+    const petResponse = await agent.post('/api/pets').send({ name: `Order Pet ${customerSequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
+    const petId = petResponse.body.data.pet.id;
+    const [serviceRows] = await getPool().query("SELECT id FROM services WHERE type = 'GROOMING' AND status = 'ACTIVE' ORDER BY id ASC");
+    expect(serviceRows.length).toBeGreaterThanOrEqual(2);
+    const [plannedService, actualService] = serviceRows;
+
+    const appointmentResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-09-15',
+      appointment_time: '10:00:00',
+      pets: [{ pet_id: petId, service_ids: [plannedService.id] }],
+    });
+    expect(appointmentResponse.status).toBe(201);
+    const appointmentId = appointmentResponse.body.data.appointment.id;
+
+    const [[operation]] = await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ? LIMIT 1', [appointmentId]);
+    expect(operation).toBeTruthy();
+    expect((await agent.post(`/api/operations/${operation.id}/check-in`)).status).toBe(200);
+
+    const groomingResponse = await agent.post('/api/groomings').send({
+      daily_operation_id: operation.id,
+      pet_id: petId,
+      before_condition: '良好',
+      actual_grooming_content: '洗澡與修剪',
+      grooming_result: '完成',
+    });
+    expect(groomingResponse.status).toBe(201);
+    expect((await agent.post(`/api/groomings/${groomingResponse.body.data.id}/complete`)).status).toBe(200);
+
+    const orderResponse = await agent.post('/api/orders').send({
+      customer_id: customerId,
+      source_type: 'APPOINTMENT',
+      appointment_id: appointmentId,
+      business_unit: 'DOG',
+      items: [{ service_id: actualService.id, transaction_price: 1, quantity: 1 }],
+    });
+    expect(orderResponse.status).toBe(201);
+    expect(orderResponse.body.data.order.appointment_id).toBe(appointmentId);
+    expect(orderResponse.body.data.order.items[0].service_id).toBe(actualService.id);
   });
 
   test('updates unpaid order and protects completed order', async () => {

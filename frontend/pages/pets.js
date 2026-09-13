@@ -8,6 +8,7 @@ const emptyForm = {
   species: 'DOG',
   breed: '',
   gender: 'UNKNOWN',
+  weight: '',
   chip_number: '',
   personality: [],
   medical_history: [],
@@ -140,6 +141,7 @@ export default function PetsPage() {
       species: pet.species || 'DOG',
       breed: pet.breed || '',
       gender: pet.gender || 'UNKNOWN',
+      weight: pet.weight !== null && pet.weight !== undefined ? String(pet.weight) : '',
       chip_number: pet.chip_number || '',
       personality: filterPersonalityOptions(pet.species || 'DOG', pet.personality || []),
       medical_history: toArray(pet.medical_history || []),
@@ -182,6 +184,8 @@ export default function PetsPage() {
         species: formData.species,
         breed: formData.breed.trim() || null,
         gender: formData.gender,
+        weight: formData.weight === '' ? null : Number(formData.weight),
+        weight_unit: 'KG',
         chip_number: formData.chip_number.trim() || null,
         personality: formData.personality,
         medical_history: formData.medical_history,
@@ -267,6 +271,16 @@ export default function PetsPage() {
               </div>
               <label className="form-label mt-3">品種</label>
               <input className="form-control" maxLength="100" value={formData.breed} onChange={(event) => updateField('breed', event.target.value)} />
+              <label className="form-label mt-3">體重</label>
+              <input
+                type="number"
+                min="0.1"
+                max="300"
+                step="0.1"
+                className="form-control"
+                value={formData.weight}
+                onChange={(event) => updateField('weight', event.target.value)}
+              />
               <label className="form-label mt-3">晶片號碼</label>
               <input className="form-control" maxLength="100" value={formData.chip_number} onChange={(event) => updateField('chip_number', event.target.value)} />
 

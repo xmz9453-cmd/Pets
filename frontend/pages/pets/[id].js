@@ -149,20 +149,8 @@ export default function PetDetailPage() {
                 <div className="foundation-status">{pet.chip_number || '未填寫'}</div>
               </div>
               <div className="col-md-6">
-                <div className="foundation-label">出生日期</div>
-                <div className="foundation-status">{pet.birth_date || pet.birthday || '未填寫'}</div>
-              </div>
-              <div className="col-md-6">
                 <div className="foundation-label">體重</div>
                 <div className="foundation-status">{pet.weight ? `${pet.weight} ${pet.weight_unit || ''}`.trim() : '未填寫'}</div>
-              </div>
-              <div className="col-md-6">
-                <div className="foundation-label">照片 URL</div>
-                <div className="foundation-status">{pet.photo_url || '未填寫'}</div>
-              </div>
-              <div className="col-12">
-                <div className="foundation-label">其他病史</div>
-                <div className="foundation-status">{pet.other_history || '無'}</div>
               </div>
               <div className="col-12">
                 <div className="foundation-label">備註</div>
@@ -179,9 +167,13 @@ export default function PetDetailPage() {
               <div className="foundation-label">個性</div>
               {renderTagList(pet.personality, '無')}
             </div>
-            <div>
+            <div className="mb-4">
               <div className="foundation-label">病史</div>
               {renderTagList(pet.medical_history, '無')}
+            </div>
+            <div>
+              <div className="foundation-label">其他病史</div>
+              <div className="foundation-status">{pet.other_history || '無'}</div>
             </div>
           </div>
         </div>

@@ -1,9 +1,11 @@
-ALTER TABLE customers
-  ADD COLUMN id_card_number VARCHAR(50) NULL AFTER line_id,
-  ADD COLUMN emergency_contact_name VARCHAR(100) NULL AFTER id_card_number,
-  ADD COLUMN emergency_contact_phone VARCHAR(30) NULL AFTER emergency_contact_name;
+-- This migration intentionally contains no schema changes.
+-- The customer and pet profile fields below were already created in
+-- 004_create_pet_management.sql and must not be added again.
+--
+-- customers.id_card_number
+-- customers.emergency_contact_name
+-- customers.emergency_contact_phone
+-- pets.personality
+-- pets.medical_history
+-- pets.other_history
 
-ALTER TABLE pets
-  ADD COLUMN personality VARCHAR(500) NULL AFTER notes,
-  ADD COLUMN medical_history TEXT NULL AFTER personality,
-  ADD COLUMN other_history TEXT NULL AFTER medical_history;

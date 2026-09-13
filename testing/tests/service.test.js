@@ -54,14 +54,15 @@ describe('Service API', () => {
 
   test('creates, reads, updates, filters, and deletes an unused service', async () => {
     const agent = await login();
-    const createResponse = await agent.post('/api/services').send({ name: 'Test Boarding', type: 'BOARDING', description: 'Overnight stay', price: 1200, unit: '天', species: 'DOG', duration_minutes: 1440, sort_order: 10 });
+    const createResponse = await agent.post('/api/services').send({ name: 'Test Boarding', type: 'BOARDING', description: 'Overnight stay', price: 1200, unit: '晚', species: 'DOG', sort_order: 10 });
     expect(createResponse.status).toBe(201);
     const serviceId = createResponse.body.data.service.id;
     expect((await agent.get(`/api/services/${serviceId}`)).body.data.service.type).toBe('BOARDING');
-    const updateResponse = await agent.put(`/api/services/${serviceId}`).send({ status: 'INACTIVE', duration_minutes: 1500 });
+    expect((await agent.get(`/api/services/${serviceId}`)).body.data.service.unit).toBe('晚');
+    const updateResponse = await agent.put(`/api/services/${serviceId}`).send({ status: 'INACTIVE', unit: '晚' });
     expect(updateResponse.status).toBe(200);
     expect(updateResponse.body.data.service.status).toBe('INACTIVE');
-    expect(updateResponse.body.data.service.duration_minutes).toBe(1500);
+    expect(updateResponse.body.data.service.unit).toBe('晚');
     expect((await agent.get('/api/services?status=INACTIVE')).body.data.services.some((service) => service.id === serviceId)).toBe(true);
     expect((await agent.delete(`/api/services/${serviceId}`)).status).toBe(200);
     expect((await agent.get(`/api/services/${serviceId}`)).status).toBe(404);
@@ -72,6 +73,11 @@ describe('Service API', () => {
     const invalid = await agent.post('/api/services').send({ name: '', type: 'INVALID', price: 0, unit: '', species: 'DOG', duration_minutes: 0, sort_order: -1 });
     expect(invalid.status).toBe(400);
     expect(invalid.body.error.code).toBe('VALIDATION_ERROR');
+
+    const boardingWithoutDuration = await agent.post('/api/services').send({ name: 'Boarding Stay', type: 'BOARDING', price: 800, unit: '晚', species: 'DOG' });
+    expect(boardingWithoutDuration.status).toBe(201);
+    expect(boardingWithoutDuration.body.data.service.unit).toBe('晚');
+
     const duplicate = await agent.post('/api/services').send({ name: 'Basic Grooming', type: 'GROOMING', price: 1, unit: '次', species: 'BOTH', duration_minutes: 1, sort_order: 1 });
     expect(duplicate.status).toBe(400);
     expect(duplicate.body.error.fields.name).toBeDefined();

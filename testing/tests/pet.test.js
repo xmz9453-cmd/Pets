@@ -83,7 +83,7 @@ describe('Pet API', () => {
     await closePool();
   });
 
-  test('POST /api/pets creates a pet with a primary customer relationship', async () => {
+  test('POST /api/pets creates a pet with a primary customer relationship and stores weight', async () => {
     const { agent } = await loginAsOwner();
     const customerId = await ensureCustomer('Alice Pet Owner', '0912000001');
 
@@ -103,10 +103,19 @@ describe('Pet API', () => {
       species: 'DOG',
       gender: 'MALE',
       status: 'ACTIVE',
+      weight: 12.5,
+      weight_unit: 'KG',
     });
 
-    const [petRows] = await getPool().query('SELECT id, status FROM pets WHERE name = ?', ['Milo']);
+    const [petRows] = await getPool().query('SELECT id, status, weight, weight_unit FROM pets WHERE name = ?', ['Milo']);
     expect(petRows).toHaveLength(1);
+    expect(Number(petRows[0].weight)).toBe(12.5);
+    expect(petRows[0].weight_unit).toBe('KG');
+
+    const detailResponse = await agent.get(`/api/pets/${petRows[0].id}`);
+    expect(detailResponse.status).toBe(200);
+    expect(detailResponse.body.data.pet.weight).toBe(12.5);
+    expect(detailResponse.body.data.pet.weight_unit).toBe('KG');
 
     const [relationshipRows] = await getPool().query(
       'SELECT pet_id, customer_id, is_primary FROM pet_customer_relationships WHERE pet_id = ?',

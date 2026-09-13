@@ -256,15 +256,25 @@ async function updateAppointment(appointmentId, payload = {}) {
     throw createNotFoundError('APPOINTMENT_NOT_FOUND', 'Appointment not found');
   }
 
-  if (existing.status === 'CANCELLED') {
-    if (payload.status && payload.status !== 'CANCELLED') {
-      throw createValidationError({ status: 'Cancelled appointments cannot be reactivated' });
-    }
-  }
+  const hasFullAppointmentUpdate = (
+    payload.customer_id !== undefined
+    || payload.appointment_date !== undefined
+    || payload.appointment_time !== undefined
+    || payload.note !== undefined
+    || payload.staff_id !== undefined
+    || payload.pets !== undefined
+  );
 
   const nextStatus = payload.status !== undefined ? payload.status : existing.status;
   if (!VALID_STATUSES.has(nextStatus)) {
     throw createValidationError({ status: 'Status must be PENDING, SCHEDULED, CONFIRMED, or CANCELLED' });
+  }
+
+  if (!hasFullAppointmentUpdate && Object.prototype.hasOwnProperty.call(payload, 'status')) {
+    return withTransaction(async (connection) => {
+      await appointmentRepository.updateAppointment(appointmentId, { status: nextStatus }, connection);
+      return { appointment: await appointmentRepository.getAppointmentById(appointmentId, connection) };
+    });
   }
 
   if (payload.customer_id !== undefined && payload.customer_id !== null && payload.customer_id !== '') {
@@ -335,7 +345,7 @@ async function updateAppointment(appointmentId, payload = {}) {
       status: finalStatus,
     };
 
-    const updated = await appointmentRepository.updateAppointment(appointmentId, patchValues, connection);
+    await appointmentRepository.updateAppointment(appointmentId, patchValues, connection);
     if (pets) {
       await appointmentRepository.replaceAppointmentPetRelations(appointmentId, pets, connection);
     }

@@ -27,6 +27,12 @@ function validatePayload(payload, partial = false) {
   if (payload.type !== undefined && !VALID_TYPES.has(payload.type)) errors.type = 'Type must be GROOMING or BOARDING';
   if (!partial && !String(payload.unit || '').trim()) errors.unit = 'Unit is required';
   if (payload.unit !== undefined && (!String(payload.unit).trim() || String(payload.unit).length > 20)) errors.unit = 'Unit must be 1-20 characters';
+  if (payload.type === 'GROOMING' && payload.unit !== undefined && String(payload.unit).trim() !== '次') {
+    errors.unit = 'GROOMING unit must be 次';
+  }
+  if (payload.type === 'BOARDING' && payload.unit !== undefined && String(payload.unit).trim() !== '晚') {
+    errors.unit = 'BOARDING unit must be 晚';
+  }
   if (!partial && !VALID_SPECIES.has(payload.species)) errors.species = 'Species must be DOG, CAT, or BOTH';
   if (payload.species !== undefined && !VALID_SPECIES.has(payload.species)) errors.species = 'Species must be DOG, CAT, or BOTH';
   if (payload.description !== undefined && payload.description !== null && String(payload.description).length > 500) errors.description = 'Description must be 500 characters or less';
@@ -34,11 +40,19 @@ function validatePayload(payload, partial = false) {
     const price = Number(payload.price);
     if (!Number.isFinite(price) || price <= 0) errors.price = 'Price must be greater than 0';
   }
-  if (!partial || payload.duration_minutes !== undefined) {
+  const hasDuration = payload.duration_minutes !== undefined && payload.duration_minutes !== null && payload.duration_minutes !== '';
+  if (payload.type === 'GROOMING') {
+    if (!partial && !hasDuration) {
+      errors.duration_minutes = 'Duration must be a positive integer';
+    } else if (hasDuration) {
+      const duration = Number(payload.duration_minutes);
+      if (!Number.isInteger(duration) || duration <= 0) errors.duration_minutes = 'Duration must be a positive integer';
+    }
+  } else if (payload.type === 'BOARDING' && hasDuration) {
     const duration = Number(payload.duration_minutes);
     if (!Number.isInteger(duration) || duration <= 0) errors.duration_minutes = 'Duration must be a positive integer';
   }
-  if (!partial || payload.sort_order !== undefined) {
+  if (payload.sort_order !== undefined) {
     if (!Number.isInteger(Number(payload.sort_order)) || Number(payload.sort_order) < 0) errors.sort_order = 'Sort order must be a non-negative integer';
   }
   if (payload.status !== undefined && !VALID_STATUSES.has(payload.status)) errors.status = 'Status must be ACTIVE or INACTIVE';
@@ -59,7 +73,15 @@ async function createService(payload = {}) {
   if (await serviceRepository.findByName(String(payload.name).trim())) {
     throw validation({ name: 'Service name already exists' });
   }
-  return { service: await serviceRepository.createService({ ...payload, name: String(payload.name).trim(), sort_order: Number(payload.sort_order) }) };
+  const normalizedPayload = {
+    ...payload,
+    name: String(payload.name).trim(),
+    sort_order: Number(payload.sort_order ?? 0),
+  };
+  if (normalizedPayload.type === 'BOARDING' && (normalizedPayload.duration_minutes === undefined || normalizedPayload.duration_minutes === null || normalizedPayload.duration_minutes === '')) {
+    normalizedPayload.duration_minutes = 60;
+  }
+  return { service: await serviceRepository.createService(normalizedPayload) };
 }
 
 async function updateService(id, payload = {}) {
