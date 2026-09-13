@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { getStaffAccounts } from '../api/client';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
 
@@ -85,6 +86,34 @@ export default function OperationsPage() {
 
     loadOperations(selectedDate);
   }, [router.isReady, selectedDate]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadStaffList() {
+      try {
+        const result = await getStaffAccounts();
+        const activeStaff = (result && result.staff ? result.staff : []).filter((staff) => {
+          const status = typeof staff?.status === 'string' ? staff.status.toUpperCase() : '';
+          return status === 'ACTIVE';
+        });
+
+        if (active) {
+          setStaffList(activeStaff);
+        }
+      } catch (error) {
+        if (active) {
+          setStaffList([]);
+        }
+      }
+    }
+
+    loadStaffList();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function loadOperations(dateValue = selectedDate) {
     try {
@@ -209,11 +238,12 @@ export default function OperationsPage() {
 
   async function saveStaffAssignment() {
     try {
+      const nextStaffId = tempStaffId === null || tempStaffId === undefined || tempStaffId === '' ? null : Number(tempStaffId);
       const res = await fetch(`${API_BASE_URL}/api/operations/${selectedOperation.id}/staff-assignment`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ responsible_staff_id: tempStaffId }),
+        body: JSON.stringify({ responsible_staff_id: nextStaffId }),
       });
 
       if (!res.ok) throw new Error('指派人員失敗');
@@ -582,10 +612,15 @@ export default function OperationsPage() {
                 <label className="form-label">選擇人員</label>
                 <select
                   className="form-select"
-                  value={tempStaffId || ''}
-                  onChange={(e) => setTempStaffId(e.target.value ? parseInt(e.target.value) : null)}
+                  value={tempStaffId === null || tempStaffId === undefined ? '' : String(tempStaffId)}
+                  onChange={(e) => setTempStaffId(e.target.value === '' ? null : Number(e.target.value))}
                 >
                   <option value="">無指派</option>
+                  {staffList.map((staff) => (
+                    <option key={staff.id} value={String(staff.id)}>
+                      {staff.display_name || staff.username}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div className="modal-footer">
