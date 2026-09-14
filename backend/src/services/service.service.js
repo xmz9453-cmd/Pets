@@ -70,12 +70,14 @@ async function getService(id) {
 async function createService(payload = {}) {
   const errors = validatePayload(payload);
   if (Object.keys(errors).length) throw validation(errors);
-  if (await serviceRepository.findByName(String(payload.name).trim())) {
+  const name = String(payload.name).trim();
+  const species = payload.species;
+  if (await serviceRepository.findByName(name, species)) {
     throw validation({ name: 'Service name already exists' });
   }
   const normalizedPayload = {
     ...payload,
-    name: String(payload.name).trim(),
+    name,
     sort_order: Number(payload.sort_order ?? 0),
   };
   if (normalizedPayload.type === 'BOARDING' && (normalizedPayload.duration_minutes === undefined || normalizedPayload.duration_minutes === null || normalizedPayload.duration_minutes === '')) {
@@ -89,7 +91,11 @@ async function updateService(id, payload = {}) {
   if (!existing) throw notFound();
   const errors = validatePayload(payload, true);
   if (Object.keys(errors).length) throw validation(errors);
-  if (payload.name !== undefined && await serviceRepository.findByName(String(payload.name).trim(), id)) throw validation({ name: 'Service name already exists' });
+  const nextName = payload.name !== undefined ? String(payload.name).trim() : existing.name;
+  const nextSpecies = payload.species !== undefined ? payload.species : existing.species;
+  if ((payload.name !== undefined || payload.species !== undefined) && await serviceRepository.findByName(nextName, nextSpecies, id)) {
+    throw validation({ name: 'Service name already exists' });
+  }
   const nextPayload = { ...payload };
   if (nextPayload.name !== undefined) nextPayload.name = String(nextPayload.name).trim();
   if (nextPayload.price !== undefined) nextPayload.price = Number(nextPayload.price);

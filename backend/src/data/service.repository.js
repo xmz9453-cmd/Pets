@@ -36,9 +36,9 @@ async function getServiceById(id, connection = getPool()) {
   return normalizeService(rows[0]);
 }
 
-async function findByName(name, excludeId = null) {
-  const params = [name];
-  let sql = 'SELECT * FROM services WHERE name = ?';
+async function findByName(name, species, excludeId = null) {
+  const params = [name, species];
+  let sql = 'SELECT * FROM services WHERE name = ? AND species = ?';
   if (excludeId !== null) {
     sql += ' AND id <> ?';
     params.push(excludeId);
