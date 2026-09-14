@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { getStaffAccounts } from '../api/client';
+import { getUserFacingErrorMessage } from '../utils/error-message';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
 
@@ -147,14 +148,15 @@ export default function OperationsPage() {
       });
 
       if (!res.ok) {
-        throw new Error('載入日常營運資料失敗');
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(getUserFacingErrorMessage(payload?.error || { message: '載入日常營運資料失敗' }, res.status, '載入日常營運資料失敗'));
       }
 
       const data = await res.json();
       setOperations(data.data || []);
       setError(null);
     } catch (err) {
-      setError(err.message);
+      setError(getUserFacingErrorMessage(err, 500, '載入日常營運資料失敗'));
     } finally {
       setLoading(false);
     }
@@ -167,10 +169,13 @@ export default function OperationsPage() {
         credentials: 'include',
       });
 
-      if (!res.ok) throw new Error('報到失敗');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(getUserFacingErrorMessage(payload?.error || { message: '報到失敗' }, res.status, '報到失敗'));
+      }
       await loadOperations();
     } catch (err) {
-      alert('錯誤：' + err.message);
+      alert('錯誤：' + getUserFacingErrorMessage(err, 500, '報到失敗'));
     }
   }
 
@@ -181,10 +186,13 @@ export default function OperationsPage() {
         credentials: 'include',
       });
 
-      if (!res.ok) throw new Error('取消報到失敗');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(getUserFacingErrorMessage(payload?.error || { message: '取消報到失敗' }, res.status, '取消報到失敗'));
+      }
       await loadOperations();
     } catch (err) {
-      alert('錯誤：' + err.message);
+      alert('錯誤：' + getUserFacingErrorMessage(err, 500, '取消報到失敗'));
     }
   }
 
@@ -195,10 +203,13 @@ export default function OperationsPage() {
         credentials: 'include',
       });
 
-      if (!res.ok) throw new Error('開始工作失敗');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(getUserFacingErrorMessage(payload?.error || { message: '開始工作失敗' }, res.status, '開始工作失敗'));
+      }
       await loadOperations();
     } catch (err) {
-      alert('錯誤：' + err.message);
+      alert('錯誤：' + getUserFacingErrorMessage(err, 500, '開始工作失敗'));
     }
   }
 
@@ -209,10 +220,13 @@ export default function OperationsPage() {
         credentials: 'include',
       });
 
-      if (!res.ok) throw new Error('完成工作失敗');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(getUserFacingErrorMessage(payload?.error || { message: '完成工作失敗' }, res.status, '完成工作失敗'));
+      }
       await loadOperations();
     } catch (err) {
-      alert('錯誤：' + err.message);
+      alert('錯誤：' + getUserFacingErrorMessage(err, 500, '完成工作失敗'));
     }
   }
 
@@ -223,10 +237,13 @@ export default function OperationsPage() {
         credentials: 'include',
       });
 
-      if (!res.ok) throw new Error('重新開啟失敗');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(getUserFacingErrorMessage(payload?.error || { message: '重新開啟失敗' }, res.status, '重新開啟失敗'));
+      }
       await loadOperations();
     } catch (err) {
-      alert('錯誤：' + err.message);
+      alert('錯誤：' + getUserFacingErrorMessage(err, 500, '重新開啟失敗'));
     }
   }
 
@@ -246,11 +263,14 @@ export default function OperationsPage() {
         body: JSON.stringify({ responsible_staff_id: nextStaffId }),
       });
 
-      if (!res.ok) throw new Error('指派人員失敗');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(getUserFacingErrorMessage(payload?.error || { message: '指派人員失敗' }, res.status, '指派人員失敗'));
+      }
       setStaffAssignmentModalOpen(false);
       await loadOperations();
     } catch (err) {
-      alert('錯誤：' + err.message);
+      alert('錯誤：' + getUserFacingErrorMessage(err, 500, '指派人員失敗'));
     }
   }
 
@@ -269,11 +289,14 @@ export default function OperationsPage() {
         body: JSON.stringify({ work_note: tempWorkNote }),
       });
 
-      if (!res.ok) throw new Error('更新工作備註失敗');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(getUserFacingErrorMessage(payload?.error || { message: '更新工作備註失敗' }, res.status, '更新工作備註失敗'));
+      }
       setWorkNoteModalOpen(false);
       await loadOperations();
     } catch (err) {
-      alert('錯誤：' + err.message);
+      alert('錯誤：' + getUserFacingErrorMessage(err, 500, '更新工作備註失敗'));
     }
   }
 

@@ -9,6 +9,7 @@ import {
   reactivateCustomer,
   updateCustomer,
 } from '../api/client';
+import { getUserFacingErrorMessage } from '../utils/error-message';
 
 const emptyForm = {
   name: '',
@@ -42,7 +43,7 @@ export default function CustomersPage() {
       setCustomers(result.customers || []);
       setError('');
     } catch (loadError) {
-      setError(loadError.message);
+      setError(getUserFacingErrorMessage(loadError, 500, '客戶資料載入失敗'));
     } finally {
       setLoading(false);
     }
@@ -110,7 +111,7 @@ export default function CustomersPage() {
       setEditingId(null);
       await refreshCustomers();
     } catch (submitError) {
-      setError(submitError.message);
+      setError(getUserFacingErrorMessage(submitError, 500, '客戶資料儲存失敗'));
     } finally {
       setSaving(false);
     }

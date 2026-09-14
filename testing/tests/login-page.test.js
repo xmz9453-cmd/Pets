@@ -26,6 +26,7 @@ const { setup } = require('../../database/scripts/setup');
 const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
 const { validateLoginForm, formatLoginError } = require('../../frontend/utils/login-form');
 const { getRoleLabel } = require('../../frontend/utils/staff-display');
+const { getUserFacingErrorMessage } = require('../../frontend/utils/error-message');
 
 const owner = getFoundationOwner();
 
@@ -63,9 +64,18 @@ describe('Login page validation and authentication flow', () => {
   });
 
   test('formatLoginError converts backend auth failures into the required UI message', () => {
-    expect(formatLoginError('Invalid username or password')).toBe('帳號或密碼錯誤');
+    expect(formatLoginError('Invalid username or password')).toBe('帳號或密碼錯誤。');
     expect(formatLoginError('Unauthorized')).toBe('尚未登入或登入狀態已失效');
     expect(formatLoginError('此帳號已停用，無法登入，請聯絡管理者。')).toBe('此帳號已停用，無法登入，請聯絡管理者。');
+  });
+
+  test('getUserFacingErrorMessage translates validation details and unknown English messages into Traditional Chinese', () => {
+    expect(getUserFacingErrorMessage({ code: 'VALIDATION_ERROR', fields: { name: 'Service name already exists' } }, 400)).toBe('服務名稱已存在');
+    expect(getUserFacingErrorMessage({ code: 'VALIDATION_ERROR', message: 'Custom validation error' }, 400)).toBe('請確認輸入資料。');
+    expect(getUserFacingErrorMessage({ message: 'Invalid username or password' }, 401)).toBe('帳號或密碼錯誤。');
+    expect(getUserFacingErrorMessage({ message: 'Unauthorized' }, 401)).toBe('請先登入。');
+    expect(getUserFacingErrorMessage({ message: 'Forbidden' }, 403)).toBe('您沒有權限執行此操作。');
+    expect(getUserFacingErrorMessage({ message: 'Something went wrong in the service layer' }, 500)).toBe('系統發生錯誤，請稍後再試。');
   });
 
   test('account management displays the frozen role labels and preserves unknown roles', () => {

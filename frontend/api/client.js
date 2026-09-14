@@ -14,7 +14,15 @@ async function request(path, options = {}) {
 
   if (!response.ok || body.success === false) {
     const apiError = body.error || {};
-    const error = new Error(getUserFacingErrorMessage(apiError, response.status));
+    const isLoginCredentialFailure = path === '/api/auth/login'
+      && response.status === 401
+      && apiError.message === 'Invalid username or password';
+
+    const errorMessage = isLoginCredentialFailure
+      ? apiError.message
+      : getUserFacingErrorMessage(apiError, response.status);
+
+    const error = new Error(errorMessage);
     error.code = apiError.code;
     error.statusCode = response.status;
     throw error;

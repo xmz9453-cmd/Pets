@@ -28,8 +28,8 @@ function validateLoginForm({ username, password }) {
 function formatLoginError(message) {
   const normalizedMessage = typeof message === 'string' ? message : '';
 
-  if (normalizedMessage === 'Invalid username or password') {
-    return '帳號或密碼錯誤';
+  if (normalizedMessage === 'Invalid username or password' || normalizedMessage === '帳號或密碼錯誤。') {
+    return '帳號或密碼錯誤。';
   }
 
   if (normalizedMessage === 'Unauthorized') {

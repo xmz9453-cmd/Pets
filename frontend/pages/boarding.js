@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
+import { getUserFacingErrorMessage } from '../utils/error-message';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
 const STATUS_LABELS = { PENDING: '待入住', IN_PROGRESS: '住宿中', COMPLETED: '已完成' };
@@ -61,7 +62,7 @@ export default function BoardingPage() {
             setOperation({ ...operationData, pets: appointment.pets || [], appointment_date: appointment.appointment_date, appointment_time: appointment.appointment_time });
           }
         }
-      } catch (loadError) { setError(loadError.message); } finally { setLoading(false); }
+      } catch (loadError) { setError(getUserFacingErrorMessage(loadError, 500, '無法載入住宿資料')); } finally { setLoading(false); }
     }
     loadData();
   }, [router.isReady, dailyOperationId, boardingId]);
@@ -78,7 +79,7 @@ export default function BoardingPage() {
       const body = await response.json();
       if (!response.ok || body.success === false) throw new Error(getBoardingErrorMessage(body, '住宿資料儲存失敗'));
       setBoarding(body.data); setForm({ before_condition: body.data.before_condition || '', actual_boarding_content: body.data.actual_boarding_content || '', boarding_result: body.data.boarding_result || '', note: body.data.note || '' }); setMessage('住宿資料已儲存');
-    } catch (saveError) { setError(saveError.message); } finally { setSubmitting(false); }
+    } catch (saveError) { setError(getUserFacingErrorMessage(saveError, 500, '住宿資料儲存失敗')); } finally { setSubmitting(false); }
   }
 
   async function changeLifecycle(action) {
@@ -90,7 +91,7 @@ export default function BoardingPage() {
       if (!response.ok || body.success === false) throw new Error(getBoardingErrorMessage(body, '住宿狀態更新失敗'));
       setBoarding(body.data); setMessage(action === 'check-in' ? '已完成入住' : '已完成退房');
       if (action === 'check-out') router.push('/operations');
-    } catch (lifecycleError) { setError(lifecycleError.message); } finally { setSubmitting(false); }
+    } catch (lifecycleError) { setError(getUserFacingErrorMessage(lifecycleError, 500, '住宿狀態更新失敗')); } finally { setSubmitting(false); }
   }
 
   if (!router.isReady || loading) return <div className="container mt-4"><div className="alert alert-info">載入中...</div></div>;

@@ -72,7 +72,7 @@ export default function GroomingPage() {
           });
         }
       } catch (loadError) {
-        setError(loadError.message);
+        setError(getUserFacingErrorMessage(loadError, 500, '無法載入美容資料'));
       } finally {
         setLoading(false);
       }
@@ -119,7 +119,7 @@ export default function GroomingPage() {
         note: saved.note || '',
       });
     } catch (saveError) {
-      setError(saveError.message);
+      setError(getUserFacingErrorMessage(saveError, 500, '美容資料保存失敗'));
     } finally {
       setSubmitting(false);
     }
@@ -144,7 +144,7 @@ export default function GroomingPage() {
       }
       router.push('/operations');
     } catch (completeError) {
-      setError(completeError.message);
+      setError(getUserFacingErrorMessage(completeError, 500, '美容完成失敗'));
       setSubmitting(false);
     }
   }
