@@ -275,17 +275,34 @@ async function updateAppointment(appointmentId, payload = {}) {
     });
   }
 
+  const targetCustomerId = payload.customer_id !== undefined && payload.customer_id !== null && payload.customer_id !== ''
+    ? Number(payload.customer_id)
+    : Number(existing.customer_id);
+
   if (payload.customer_id !== undefined && payload.customer_id !== null && payload.customer_id !== '') {
-    const customerId = Number(payload.customer_id);
-    const customer = await appointmentRepository.findCustomerById(customerId);
+    const customer = await appointmentRepository.findCustomerById(targetCustomerId);
     if (!customer) {
       throw createNotFoundError('CUSTOMER_NOT_FOUND', 'Customer not found');
     }
   }
 
   const pets = Array.isArray(payload.pets) ? payload.pets : null;
+  const existingPetEntries = pets ?? (await appointmentRepository.getAppointmentById(appointmentId))?.pets ?? [];
+  if (existingPetEntries.length) {
+    for (let index = 0; index < existingPetEntries.length; index += 1) {
+      const petId = Number(existingPetEntries[index].pet_id ?? existingPetEntries[index].id);
+      const [relationship] = await getPool().query(
+        'SELECT 1 FROM pet_customer_relationships WHERE pet_id = ? AND customer_id = ? LIMIT 1',
+        [petId, targetCustomerId],
+      );
+      if (!relationship.length) {
+        throw createValidationError({ pets: 'Appointment pets must belong to the selected customer' });
+      }
+    }
+  }
+
   if (pets) {
-    await validatePetEntries(Number(payload.customer_id || existing.customer_id), pets);
+    await validatePetEntries(targetCustomerId, pets);
   }
 
   const updatePayload = {};

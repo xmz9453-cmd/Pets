@@ -22,10 +22,11 @@ function errorHandler(error, req, res, next) {
     },
   };
 
-  if (error.code === 'VALIDATION_ERROR' && error.fields) {
+  if (error.code === 'VALIDATION_ERROR') {
     response.error = {
       code: 'VALIDATION_ERROR',
-      fields: error.fields,
+      ...(error.fields ? { fields: error.fields } : {}),
+      ...(error.message && error.message !== 'Validation failed' ? { message: error.message } : {}),
     };
   } else if (error.code) {
     response.error = {

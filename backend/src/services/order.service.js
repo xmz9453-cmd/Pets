@@ -126,15 +126,18 @@ async function saveOrder(payload, existing = null) {
   const connection = await getPool().getConnection();
   try {
     await connection.beginTransaction(); await validateCustomer(customerId, connection);
-    const source = existing
-      ? { sourceType: existing.source_type || 'WALK_IN', appointmentId: existing.appointment_id }
-      : await validateOrderSource(payload, customerId, connection);
+    const sourceType = payload.source_type ?? existing?.source_type ?? 'WALK_IN';
+    const appointmentId = id(payload.appointment_id ?? existing?.appointment_id);
+    const source = await validateOrderSource({
+      source_type: sourceType,
+      appointment_id: appointmentId,
+    }, customerId, connection);
     const itemResult = await validateItems(payload.items ?? existing?.items, businessUnit, connection, source.sourceType);
     if (!existing && source.sourceType === 'APPOINTMENT') {
       await validateAppointmentServiceItems(source.appointmentId, itemResult.items, connection);
     }
     const orderId = existing ? existing.id : await orderRepository.insertOrder({ customer_id: customerId, source_type: source.sourceType, appointment_id: source.appointmentId, business_unit: businessUnit, status, total_amount: itemResult.total }, connection);
-    if (existing) { await orderRepository.updateOrder(orderId, { customer_id: customerId, business_unit: businessUnit, status, total_amount: itemResult.total }, connection); await orderRepository.deleteItems(orderId, connection); }
+    if (existing) { await orderRepository.updateOrder(orderId, { customer_id: customerId, source_type: source.sourceType, appointment_id: source.appointmentId, business_unit: businessUnit, status, total_amount: itemResult.total }, connection); await orderRepository.deleteItems(orderId, connection); }
     for (const item of itemResult.items) await orderRepository.insertItem(orderId, item, connection);
     await connection.commit(); return orderId;
   } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }

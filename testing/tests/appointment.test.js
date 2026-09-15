@@ -392,6 +392,41 @@ describe('Appointment API', () => {
     expect(invalidTimeResponse.body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  test('PATCH /api/appointments/:id rejects customer switch when pets still belong to the original customer', async () => {
+    const { agent } = await loginAsOwner();
+
+    const customerAResponse = await createCustomer(agent, {
+      name: 'Customer A Switch',
+      phone: '0912-888-111',
+    });
+    const customerBResponse = await createCustomer(agent, {
+      name: 'Customer B Switch',
+      phone: '0912-888-222',
+    });
+
+    const petResponse = await createPet(agent, {
+      name: 'Switch Pet',
+      species: 'DOG',
+      gender: 'MALE',
+      customer_id: customerAResponse.body.data.customer.id,
+    });
+
+    const [serviceId] = await getServiceIds();
+    const createResponse = await agent.post('/api/appointments').send({
+      customer_id: customerAResponse.body.data.customer.id,
+      appointment_date: '2026-12-10',
+      appointment_time: '15:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceId] }],
+    });
+
+    const updateResponse = await agent.patch(`/api/appointments/${createResponse.body.data.appointment.id}`).send({
+      customer_id: customerBResponse.body.data.customer.id,
+    });
+
+    expect(updateResponse.status).toBe(400);
+    expect(updateResponse.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
   test('DELETE /api/appointments/:id removes an untouched appointment and its initial daily operation', async () => {
     const { agent } = await loginAsOwner();
     const customerResponse = await createCustomer(agent, { name: 'Protected Appointment Customer', phone: '0912-777-888' });
