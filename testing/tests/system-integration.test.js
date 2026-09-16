@@ -64,23 +64,23 @@ describe('TASK-0017 system integration', () => {
     expect(operations.status).toBe(200);
     expect(operations.body.data.find((operation) => operation.appointment_id === appointmentId).can_create_appointment_order).toBe(true);
 
-    const blocked = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: service.id, transaction_price: 1, quantity: 1 }] });
+    const blocked = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: service.id, pet_id: petId, transaction_price: 1, quantity: 1 }] });
     expect(blocked.status).toBe(201);
     expect(blocked.body.data.order.source_type).toBe('APPOINTMENT');
     expect(blocked.body.data.order.appointment_id).toBe(appointmentId);
-    expect(blocked.body.data.order.items[0].transaction_price).toBe(Number(service.price));
+    expect(blocked.body.data.order.items[0].transaction_price).toBe(1);
 
     const orderId = blocked.body.data.order.id;
-    const duplicate = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: service.id, transaction_price: 1, quantity: 1 }] });
+    const duplicate = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: service.id, pet_id: petId, transaction_price: 1, quantity: 1 }] });
     expect(duplicate.status).toBe(409);
-    const payment = await agent.post(`/api/orders/${orderId}/payments`).send({ amount: Number(service.price), payment_method: 'CASH' });
+    const payment = await agent.post(`/api/orders/${orderId}/payments`).send({ amount: 1, payment_method: 'CASH' });
     expect(payment.status).toBe(201);
     await getPool().query('UPDATE payments SET paid_at = ? WHERE id = ?', ['2026-09-03 12:00:00', payment.body.data.payment.id]);
     const detail = await agent.get(`/api/orders/${orderId}`);
     expect(detail.body.data.order.status).toBe('PAID');
     const report = await agent.get('/api/reports?start_date=2026-09-03&end_date=2026-09-03');
     expect(report.status).toBe(200);
-    expect(report.body.data.summary.actual_revenue).toBe(Number(service.price));
+    expect(report.body.data.summary.actual_revenue).toBe(1);
   });
 
   test('rejects appointment orders before service completion and accepts walk-in source', async () => {
@@ -110,7 +110,7 @@ describe('TASK-0017 system integration', () => {
     expect((await agent.post(`/api/boardings/${boarding.body.data.id}/check-in`)).status).toBe(200);
     const checkout = await agent.post(`/api/boardings/${boarding.body.data.id}/check-out`);
     expect(checkout.status).toBe(200);
-    const order = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: service.id, transaction_price: 1 }] });
+    const order = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: service.id, pet_id: petId, transaction_price: 1 }] });
     expect(order.status).toBe(201);
     expect(order.body.data.order.appointment_id).toBe(appointmentId);
   });

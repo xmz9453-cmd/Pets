@@ -1,7 +1,7 @@
 const { getPool } = require('../config/database');
 
 function normalizeItem(row) {
-  return { ...row, id: Number(row.id), order_id: Number(row.order_id), service_id: row.service_id ? Number(row.service_id) : null, product_id: row.product_id ? Number(row.product_id) : null, transaction_price: Number(row.transaction_price), quantity: Number(row.quantity), item_amount: Number(row.item_amount) };
+  return { ...row, id: Number(row.id), order_id: Number(row.order_id), service_id: row.service_id ? Number(row.service_id) : null, product_id: row.product_id ? Number(row.product_id) : null, pet_id: row.pet_id ? Number(row.pet_id) : null, transaction_price: Number(row.transaction_price), quantity: Number(row.quantity), item_amount: Number(row.item_amount) };
 }
 
 function normalizeOrder(row, items = []) {
@@ -9,9 +9,9 @@ function normalizeOrder(row, items = []) {
   return { ...row, id: Number(row.id), customer_id: Number(row.customer_id), appointment_id: row.appointment_id == null ? null : Number(row.appointment_id), total_amount: Number(row.total_amount), items };
 }
 
-async function getOrderById(id, connection = getPool()) {
+async function getOrderById(id, connection = getPool(), forUpdate = false) {
   const [orders] = await connection.query(`SELECT o.*, c.name AS customer_name, c.phone AS customer_phone
-    FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ? LIMIT 1`, [id]);
+    FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ? LIMIT 1${forUpdate ? ' FOR UPDATE' : ''}`, [id]);
   if (!orders[0]) return null;
   const [items] = await connection.query(`SELECT oi.*, s.name AS service_name, p.name AS product_name
     FROM order_items oi LEFT JOIN services s ON s.id = oi.service_id LEFT JOIN products p ON p.id = oi.product_id
@@ -35,13 +35,13 @@ async function insertOrder(payload, connection) {
 }
 
 async function insertItem(orderId, item, connection) {
-  await connection.query(`INSERT INTO order_items (order_id, item_type, service_id, product_id, name, transaction_price, quantity, item_amount)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [orderId, item.item_type, item.service_id, item.product_id, item.name, item.transaction_price, item.quantity, item.item_amount]);
+  await connection.query(`INSERT INTO order_items (order_id, item_type, service_id, product_id, pet_id, name, transaction_price, quantity, item_amount)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [orderId, item.item_type, item.service_id, item.product_id, item.pet_id, item.name, item.transaction_price, item.quantity, item.item_amount]);
 }
 
 async function updateOrder(id, payload, connection) {
   const fields = []; const values = [];
-  for (const key of ['customer_id', 'business_unit', 'status', 'total_amount']) { if (payload[key] !== undefined) { fields.push(`${key} = ?`); values.push(payload[key]); } }
+  for (const key of ['customer_id', 'source_type', 'appointment_id', 'business_unit', 'status', 'total_amount']) { if (payload[key] !== undefined) { fields.push(`${key} = ?`); values.push(payload[key]); } }
   if (fields.length) { values.push(id); await connection.query(`UPDATE orders SET ${fields.join(', ')} WHERE id = ?`, values); }
 }
 

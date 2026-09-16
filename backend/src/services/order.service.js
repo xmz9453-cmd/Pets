@@ -17,16 +17,18 @@ async function validateItems(items, businessUnit, connection, sourceType = 'WALK
   if (!Array.isArray(items) || items.length === 0) throw validation({ items: 'Order must contain at least one item' });
   const errors = {}; const normalized = []; let total = 0;
   for (let index = 0; index < items.length; index += 1) {
-    const item = items[index] || {}; const serviceId = id(item.service_id); const productId = id(item.product_id);
+    const item = items[index] || {}; const serviceId = id(item.service_id); const productId = id(item.product_id); const petId = id(item.pet_id);
     if ((serviceId && productId) || (!serviceId && !productId)) { errors[`items[${index}]`] = 'Each item must reference one service or product'; continue; }
+    if (sourceType === 'APPOINTMENT' && serviceId && !petId) { errors[`items[${index}].pet_id`] = 'Pet is required for appointment service items'; continue; }
+    if (petId && (!serviceId || sourceType !== 'APPOINTMENT')) { errors[`items[${index}].pet_id`] = 'Pet is only valid for appointment service items'; continue; }
     const quantity = Number(item.quantity === undefined ? 1 : item.quantity); const price = Number(item.transaction_price);
     if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price < 0) { errors[`items[${index}]`] = 'Quantity and transaction price must be valid'; continue; }
     const master = serviceId ? await serviceRepository.getServiceById(serviceId, connection) : await productRepository.getProductById(productId, connection);
     if (!master || master.status !== 'ACTIVE') { errors[`items[${index}]`] = serviceId ? 'Service is invalid' : 'Product is invalid'; continue; }
     if (master.species !== 'BOTH' && master.species !== businessUnit) { errors[`items[${index}]`] = 'Item does not match order business unit'; continue; }
-    const transactionPrice = productId || sourceType === 'APPOINTMENT' ? Number(master.price) : price;
+    const transactionPrice = productId ? Number(master.price) : price;
     const amount = Math.round(transactionPrice * quantity * 100) / 100;
-    normalized.push({ item_type: serviceId ? 'SERVICE' : 'PRODUCT', service_id: serviceId, product_id: productId, name: master.name, transaction_price: transactionPrice, quantity, item_amount: amount });
+    normalized.push({ item_type: serviceId ? 'SERVICE' : 'PRODUCT', service_id: serviceId, product_id: productId, pet_id: petId, name: master.name, transaction_price: transactionPrice, quantity, item_amount: amount });
     total += amount;
   }
   if (Object.keys(errors).length) throw validation(errors);
@@ -58,41 +60,65 @@ async function validateOrderSource(payload, customerId, connection) {
 
 async function validateAppointmentServiceItems(appointmentId, items, connection) {
   const serviceItems = (items || []).filter((item) => id(item?.service_id));
+
+  const [operationRows] = await connection.query(
+    "SELECT id FROM daily_operations WHERE appointment_id = ? AND status = 'COMPLETED' LIMIT 1",
+    [appointmentId],
+  );
+  if (!operationRows.length) {
+    throw validation({ items: 'Daily operation must be completed before billing' });
+  }
   if (serviceItems.length === 0) return;
 
   for (const item of serviceItems) {
     const serviceId = id(item.service_id);
+    const petId = id(item.pet_id);
+    if (!petId) throw validation({ items: 'Pet is required for appointment service items' });
+    const [petRows] = await connection.query(
+      `SELECT p.species
+       FROM appointment_pets ap
+       INNER JOIN pets p ON p.id = ap.pet_id
+       WHERE ap.appointment_id = ? AND ap.pet_id = ?
+       LIMIT 1`,
+      [appointmentId, petId],
+    );
+    if (!petRows.length) throw validation({ items: 'Pet is not linked to this appointment' });
     const [serviceRows] = await connection.query(
-      'SELECT id, type, status FROM services WHERE id = ? LIMIT 1',
+      'SELECT id, type, status, species FROM services WHERE id = ? LIMIT 1',
       [serviceId],
     );
     const service = serviceRows[0];
     if (!service || service.status !== 'ACTIVE') {
       throw validation({ items: 'Service is invalid' });
     }
+    if (service.species !== 'BOTH' && service.species !== petRows[0].species) {
+      throw validation({ items: 'Service is not compatible with appointment pet' });
+    }
 
     let completedRows = [];
     if (service.type === 'GROOMING') {
       [completedRows] = await connection.query(
         `SELECT 1
-         FROM daily_operations d
-         INNER JOIN groomings g ON g.daily_operation_id = d.id
-         WHERE d.appointment_id = ?
+         FROM appointment_pets ap
+         INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
+         INNER JOIN daily_operations d ON d.appointment_id = ap.appointment_id
+         INNER JOIN groomings g ON g.daily_operation_id = d.id AND g.pet_id = ap.pet_id
+         WHERE ap.appointment_id = ?
+           AND ap.pet_id = ?
            AND d.status = 'COMPLETED'
-           AND g.pet_id IN (SELECT pet_id FROM appointment_pets WHERE appointment_id = ?)
            AND g.before_condition IS NOT NULL
            AND g.actual_grooming_content IS NOT NULL
            AND g.grooming_result IS NOT NULL
          LIMIT 1`,
-        [appointmentId, appointmentId],
+        [appointmentId, petId],
       );
     } else if (service.type === 'BOARDING') {
       [completedRows] = await connection.query(
         `SELECT 1
          FROM boardings b
-         WHERE b.appointment_id = ? AND b.service_id = ? AND b.status = 'COMPLETED'
+         WHERE b.appointment_id = ? AND b.pet_id = ? AND b.status = 'COMPLETED'
          LIMIT 1`,
-        [appointmentId, serviceId],
+        [appointmentId, petId],
       );
     } else {
       throw validation({ items: 'Appointment source orders only support grooming or boarding services' });
@@ -107,9 +133,9 @@ async function validateAppointmentServiceItems(appointmentId, items, connection)
        FROM order_items oi
        INNER JOIN orders o ON o.id = oi.order_id
        WHERE o.appointment_id = ? AND o.source_type = 'APPOINTMENT'
-         AND oi.service_id = ? AND oi.item_type = 'SERVICE'
+         AND oi.service_id = ? AND oi.pet_id = ? AND oi.item_type = 'SERVICE'
        LIMIT 1`,
-      [appointmentId, serviceId],
+      [appointmentId, serviceId, petId],
     );
     if (billedRows.length) {
       throw conflict('SERVICE_ALREADY_BILLED', 'Completed appointment service has already been billed');
@@ -117,15 +143,18 @@ async function validateAppointmentServiceItems(appointmentId, items, connection)
   }
 }
 
-async function saveOrder(payload, existing = null) {
+async function saveOrder(payload, existing = null, transactionConnection = null) {
   const customerId = id(payload.customer_id ?? existing?.customer_id); const businessUnit = payload.business_unit || existing?.business_unit;
   if (!customerId) throw validation({ customer_id: 'Customer is required' });
   if (!VALID_BU.has(businessUnit)) throw validation({ business_unit: 'Business unit must be DOG or CAT' });
   const status = payload.status || existing?.status || 'UNPAID';
   if (!VALID_STATUS.has(status)) throw validation({ status: 'Order status is invalid' });
-  const connection = await getPool().getConnection();
+  if (payload.status === 'PAID') throw validation({ status: 'Order can only be marked PAID through payment' });
+  const connection = transactionConnection || await getPool().getConnection();
+  const ownsTransaction = !transactionConnection;
   try {
-    await connection.beginTransaction(); await validateCustomer(customerId, connection);
+    if (ownsTransaction) await connection.beginTransaction();
+    await validateCustomer(customerId, connection);
     const sourceType = payload.source_type ?? existing?.source_type ?? 'WALK_IN';
     const appointmentId = id(payload.appointment_id ?? existing?.appointment_id);
     const source = await validateOrderSource({
@@ -133,23 +162,30 @@ async function saveOrder(payload, existing = null) {
       appointment_id: appointmentId,
     }, customerId, connection);
     const itemResult = await validateItems(payload.items ?? existing?.items, businessUnit, connection, source.sourceType);
-    if (!existing && source.sourceType === 'APPOINTMENT') {
+    if (source.sourceType === 'APPOINTMENT') {
       await validateAppointmentServiceItems(source.appointmentId, itemResult.items, connection);
     }
     const orderId = existing ? existing.id : await orderRepository.insertOrder({ customer_id: customerId, source_type: source.sourceType, appointment_id: source.appointmentId, business_unit: businessUnit, status, total_amount: itemResult.total }, connection);
     if (existing) { await orderRepository.updateOrder(orderId, { customer_id: customerId, source_type: source.sourceType, appointment_id: source.appointmentId, business_unit: businessUnit, status, total_amount: itemResult.total }, connection); await orderRepository.deleteItems(orderId, connection); }
     for (const item of itemResult.items) await orderRepository.insertItem(orderId, item, connection);
-    await connection.commit(); return orderId;
-  } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+    if (ownsTransaction) await connection.commit(); return orderId;
+  } catch (error) { if (ownsTransaction) await connection.rollback(); throw error; } finally { if (ownsTransaction) connection.release(); }
 }
 
 async function listOrders(filters) { return orderRepository.listOrders(filters); }
 async function getOrder(orderId) { const order = await orderRepository.getOrderById(orderId); if (!order) throw notFound(); return { order }; }
 async function createOrder(payload = {}) { const orderId = await saveOrder(payload); return getOrder(orderId); }
 async function updateOrder(orderId, payload = {}) {
-  const existing = await orderRepository.getOrderById(orderId); if (!existing) throw notFound();
-  if (existing.status !== 'UNPAID') throw conflict('ORDER_READ_ONLY', 'Completed or cancelled orders cannot be edited');
-  const orderIdResult = await saveOrder(payload, existing); return getOrder(orderIdResult);
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const existing = await orderRepository.getOrderById(orderId, connection, true);
+    if (!existing) throw notFound();
+    if (existing.status !== 'UNPAID') throw conflict('ORDER_READ_ONLY', 'Completed or cancelled orders cannot be edited');
+    const orderIdResult = await saveOrder(payload, existing, connection);
+    await connection.commit();
+    return getOrder(orderIdResult);
+  } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
 }
 
 async function deleteOrder(orderId) {

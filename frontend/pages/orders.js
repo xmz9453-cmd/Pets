@@ -16,16 +16,19 @@ export default function OrdersPage() {
   const [businessUnit, setBusinessUnit] = useState('DOG');
   const [itemType, setItemType] = useState('SERVICE');
   const [itemId, setItemId] = useState('');
+  const [selectedPetId, setSelectedPetId] = useState('');
   const [quantity, setQuantity] = useState(1);
   const [price, setPrice] = useState('');
   const [items, setItems] = useState([]);
+  const [editingItemIndex, setEditingItemIndex] = useState(null);
+  const [editingItem, setEditingItem] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deletingOrderId, setDeletingOrderId] = useState(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  async function load() {
+  async function load({ initializeAppointmentItems = false } = {}) {
     try {
       setLoading(true);
       const [customerData, serviceData, productData, orderData] = await Promise.all([
@@ -43,9 +46,24 @@ export default function OrdersPage() {
         setSourceType('APPOINTMENT');
         setAppointment(result.appointment);
         setCustomerId(String(result.appointment.customer_id));
+        const appointmentPets = result.appointment.pets || [];
+        setBusinessUnit(appointmentPets[0]?.species || 'DOG');
+        if (initializeAppointmentItems) {
+          setItems(appointmentPets.flatMap((pet) => (pet.services || []).map((service) => ({
+            itemType: 'SERVICE',
+            itemId: service.id,
+            pet_id: Number(pet.pet_id),
+            petName: pet.name,
+            name: service.name,
+            transaction_price: Number(service.price),
+            quantity: 1,
+            item_amount: Number(service.price),
+          }))));
+        }
       } else {
         setSourceType('WALK_IN');
         setAppointment(null);
+        setItems([]);
       }
       setError('');
     } catch (loadError) {
@@ -57,37 +75,117 @@ export default function OrdersPage() {
 
   useEffect(() => {
     if (router.isReady) {
-      getCurrentStaff().then(load).catch(() => router.replace('/login'));
+      getCurrentStaff().then(() => load({ initializeAppointmentItems: true })).catch(() => router.replace('/login'));
     }
   }, [router.isReady]);
 
   const available = itemType === 'SERVICE' ? services : products;
 
+  function getAppointmentPetForService(service) {
+    if (sourceType !== 'APPOINTMENT' || !service) return null;
+    return (appointment?.pets || []).find((pet) => service.species === 'BOTH' || service.species === pet.species) || null;
+  }
+
+  function getServicesForItem(item) {
+    const pet = (appointment?.pets || []).find((appointmentPet) => Number(appointmentPet.pet_id) === Number(item.pet_id));
+    return services.filter((service) => !pet || service.species === 'BOTH' || service.species === pet.species);
+  }
+
   function selectItem(value) {
     setItemId(value);
     const selected = available.find((item) => String(item.id) === value);
     setPrice(selected ? selected.price : '');
+    const appointmentPet = getAppointmentPetForService(selected);
+    setSelectedPetId(appointmentPet ? String(appointmentPet.pet_id) : '');
   }
 
   function addItem() {
     const selected = available.find((item) => String(item.id) === itemId);
     const count = Number(quantity);
     const unitPrice = Number(price);
+    const appointmentPet = getAppointmentPetForService(selected);
     if (!selected || !Number.isFinite(count) || count <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
       setError('請選擇有效的項目、數量與單價');
       return;
     }
+    if (sourceType === 'APPOINTMENT' && itemType === 'SERVICE' && !appointmentPet) {
+      setError('所選服務沒有符合預約寵物的項目');
+      return;
+    }
+    const petId = sourceType === 'APPOINTMENT' && itemType === 'SERVICE' ? Number(selectedPetId) : null;
     setItems([...items, {
       itemType,
       itemId: selected.id,
+      ...(petId ? { pet_id: petId, petName: appointmentPet.name } : {}),
       name: selected.name,
       transaction_price: unitPrice,
       quantity: count,
       item_amount: Math.round(unitPrice * count * 100) / 100,
     }]);
     setItemId('');
+    setSelectedPetId('');
     setPrice('');
     setQuantity(1);
+    setError('');
+  }
+
+  function updateItem(index, field, value) {
+    setItems((current) => current.map((item, itemIndex) => {
+      if (itemIndex !== index) return item;
+      const next = { ...item, [field]: field === 'itemId' ? Number(value) : Number(value) };
+      if (field === 'itemId') {
+        const selected = services.find((service) => Number(service.id) === Number(value));
+        next.name = selected?.name || item.name;
+        if (selected) next.transaction_price = Number(selected.price);
+      }
+      next.item_amount = Math.round(Number(next.transaction_price) * Number(next.quantity) * 100) / 100;
+      return next;
+    }));
+  }
+
+  function removeItem(index) {
+    setItems((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function startEditingItem(index) {
+    setEditingItemIndex(index);
+    setEditingItem({ ...items[index] });
+    setError('');
+  }
+
+  function cancelEditingItem() {
+    setEditingItemIndex(null);
+    setEditingItem(null);
+  }
+
+  function updateEditingItem(field, value) {
+    setEditingItem((current) => ({ ...current, [field]: value }));
+  }
+
+  function selectEditingService(value) {
+    const selected = getServicesForItem(editingItem).find((service) => String(service.id) === value);
+    setEditingItem((current) => ({
+      ...current,
+      itemId: Number(value),
+      name: selected?.name || current.name,
+      transaction_price: selected ? Number(selected.price) : current.transaction_price,
+    }));
+  }
+
+  function confirmEditingItem() {
+    const count = Number(editingItem.quantity);
+    const unitPrice = Number(editingItem.transaction_price);
+    if (!Number.isFinite(count) || count <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
+      setError('請輸入有效的數量與單價');
+      return;
+    }
+    setItems((current) => current.map((item, index) => index === editingItemIndex ? {
+      ...editingItem,
+      quantity: count,
+      transaction_price: unitPrice,
+      item_amount: Math.round(unitPrice * count * 100) / 100,
+    } : item));
+    cancelEditingItem();
     setError('');
   }
 
@@ -107,6 +205,7 @@ export default function OrdersPage() {
         business_unit: businessUnit,
         items: items.map((item) => ({
           [item.itemType === 'SERVICE' ? 'service_id' : 'product_id']: item.itemId,
+          ...(sourceType === 'APPOINTMENT' && item.itemType === 'SERVICE' ? { pet_id: item.pet_id } : {}),
           transaction_price: item.transaction_price,
           quantity: item.quantity,
         })),
@@ -207,7 +306,42 @@ export default function OrdersPage() {
               <button type="button" className="btn btn-outline-primary mt-3" onClick={addItem}>加入項目</button>
               <hr />
               <h3 className="h6">訂單項目</h3>
-              {items.length === 0 ? <p className="text-muted">尚未加入訂單項目</p> : <ul className="list-group mb-3">{items.map((item, index) => <li className="list-group-item d-flex justify-content-between" key={`${item.itemId}-${index}`}><span>{item.name} x {item.quantity}</span><span>{item.item_amount.toFixed(2)}</span></li>)}</ul>}
+              {items.length === 0 ? <p className="text-muted">尚未加入訂單項目</p> : <ul className="list-group mb-3">{items.map((item, index) => <li className="list-group-item" key={`${item.itemId}-${index}`}>
+                {editingItemIndex === index ? (
+                  <div>
+                    <div className="row g-2 align-items-end">
+                      <div className="col-md-4">
+                        <label className="form-label">服務</label>
+                        {item.itemType === 'SERVICE' ? <select className="form-select form-select-sm" value={editingItem.itemId} onChange={(event) => selectEditingService(event.target.value)}>{getServicesForItem(item).map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}</select> : <div>{item.name}</div>}
+                      </div>
+                      <div className="col-md-2">
+                        <label className="form-label">數量</label>
+                        <input className="form-control form-control-sm" type="number" min="0.01" step="0.01" value={editingItem.quantity} onChange={(event) => updateEditingItem('quantity', event.target.value)} />
+                      </div>
+                      <div className="col-md-2">
+                        <label className="form-label">單價</label>
+                        <input className="form-control form-control-sm" type="number" min="0" step="0.01" value={editingItem.transaction_price} onChange={(event) => updateEditingItem('transaction_price', event.target.value)} />
+                      </div>
+                      <div className="col-md-2"><span className="d-block small text-muted">小計</span>{(Number(editingItem.transaction_price) * Number(editingItem.quantity)).toFixed(2)}</div>
+                      <div className="col-md-2 d-flex gap-2">
+                        <button type="button" className="btn btn-sm btn-primary" onClick={confirmEditingItem}>確認</button>
+                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={cancelEditingItem}>取消</button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="row g-2 align-items-center">
+                    <div className="col-4">{item.name}</div>
+                    <div className="col-2">{item.quantity}</div>
+                    <div className="col-2">{Number(item.transaction_price).toFixed(2)}</div>
+                    <div className="col-2">{item.item_amount.toFixed(2)}</div>
+                    <div className="col-2 d-flex gap-2 justify-content-end">
+                      <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => startEditingItem(index)}>編輯</button>
+                      <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => removeItem(index)}>移除</button>
+                    </div>
+                  </div>
+                )}
+              </li>)}</ul>}
               <div className="d-flex justify-content-between mb-3"><strong>總額</strong><strong>{total.toFixed(2)}</strong></div>
               <button type="submit" className="btn btn-primary" disabled={saving || loading}>{saving ? '處理中...' : '建立訂單'}</button>
             </form>

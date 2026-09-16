@@ -62,6 +62,11 @@ describe('Order API', () => {
     expect(response.status).toBe(201); expect(response.body.data.order.total_amount).toBe(1200); expect(response.body.data.order.items).toHaveLength(2);
     const orderId = response.body.data.order.id; const detail = await agent.get(`/api/orders/${orderId}`);
     expect(detail.status).toBe(200); expect(detail.body.data.order.items[0].transaction_price).toBe(800); expect(detail.body.data.order.status).toBe('UNPAID');
+    expect(detail.body.data.order.items[0].pet_id).toBeNull();
+    expect(detail.body.data.order.items[1].pet_id).toBeNull();
+    const [storedItems] = await getPool().query('SELECT pet_id FROM order_items WHERE order_id = ? ORDER BY id ASC', [orderId]);
+    const [storedServiceItem, storedProductItem] = storedItems;
+    expect(storedServiceItem.pet_id).toBeNull(); expect(storedProductItem.pet_id).toBeNull();
     await getPool().query('UPDATE products SET price = 999 WHERE id = ?', [productId]);
     const historical = await agent.get(`/api/orders/${orderId}`);
     expect(historical.body.data.order.items[1].transaction_price).toBe(200); expect(historical.body.data.order.total_amount).toBe(1200);
@@ -90,54 +95,93 @@ describe('Order API', () => {
     expect(crossUnit.status).toBe(400);
   });
 
-  test('allows appointment-origin orders to bill a different completed grooming service', async () => {
+  test('rejects client-supplied PAID status when creating an order', async () => {
     const agent = await login(); const customerId = await createCustomer(agent);
-    const petResponse = await agent.post('/api/pets').send({ name: `Order Pet ${customerSequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
-    const petId = petResponse.body.data.pet.id;
+    const [serviceRows] = await getPool().query("SELECT id FROM services WHERE status = 'ACTIVE' LIMIT 1");
+    const response = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', status: 'PAID', items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }] });
+    expect(response.status).toBe(400); expect(response.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  test('binds appointment grooming validation to the selected pet while allowing a different service', async () => {
+    const agent = await login(); const customerId = await createCustomer(agent);
+    const petAResponse = await agent.post('/api/pets').send({ name: `Order Pet A ${customerSequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
+    const petBResponse = await agent.post('/api/pets').send({ name: `Order Pet B ${customerSequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
+    const petAId = petAResponse.body.data.pet.id; const petBId = petBResponse.body.data.pet.id;
     const [serviceRows] = await getPool().query("SELECT id FROM services WHERE type = 'GROOMING' AND status = 'ACTIVE' ORDER BY id ASC");
     expect(serviceRows.length).toBeGreaterThanOrEqual(2);
-    const [plannedService, actualService] = serviceRows;
-
+    const serviceId = serviceRows[0].id; const unrelatedServiceId = serviceRows[1].id;
+    const petCResponse = await agent.post('/api/pets').send({ name: `Order Pet C ${customerSequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
+    const petCId = petCResponse.body.data.pet.id;
     const appointmentResponse = await agent.post('/api/appointments').send({
       customer_id: customerId,
       appointment_date: '2026-09-15',
       appointment_time: '10:00:00',
-      pets: [{ pet_id: petId, service_ids: [plannedService.id] }],
+      pets: [{ pet_id: petAId, service_ids: [serviceId] }, { pet_id: petBId, service_ids: [serviceId] }],
     });
     expect(appointmentResponse.status).toBe(201);
     const appointmentId = appointmentResponse.body.data.appointment.id;
-
     const [[operation]] = await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ? LIMIT 1', [appointmentId]);
-    expect(operation).toBeTruthy();
     expect((await agent.post(`/api/operations/${operation.id}/check-in`)).status).toBe(200);
-
-    const groomingResponse = await agent.post('/api/groomings').send({
-      daily_operation_id: operation.id,
-      pet_id: petId,
-      before_condition: '良好',
-      actual_grooming_content: '洗澡與修剪',
-      grooming_result: '完成',
-    });
+    const groomingResponse = await agent.post('/api/groomings').send({ daily_operation_id: operation.id, pet_id: petAId, before_condition: '良好', actual_grooming_content: '洗澡與修剪', grooming_result: '完成' });
     expect(groomingResponse.status).toBe(201);
     expect((await agent.post(`/api/groomings/${groomingResponse.body.data.id}/complete`)).status).toBe(200);
 
-    const orderResponse = await agent.post('/api/orders').send({
+    const wrongPetResponse = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: serviceId, pet_id: petBId, transaction_price: 1, quantity: 1 }] });
+    expect(wrongPetResponse.status).toBe(400);
+    const unrelatedPetResponse = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: serviceId, pet_id: petCId, transaction_price: 1, quantity: 1 }] });
+    expect(unrelatedPetResponse.status).toBe(400);
+    const wrongServiceResponse = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: unrelatedServiceId, pet_id: petAId, transaction_price: 1, quantity: 1 }] });
+    expect(wrongServiceResponse.status).toBe(201);
+    expect(wrongServiceResponse.body.data.order.items[0].transaction_price).toBe(1);
+    const validResponse = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: serviceId, pet_id: petAId, transaction_price: 1, quantity: 1 }] });
+    expect(validResponse.status).toBe(201);
+    expect(validResponse.body.data.order.items[0].pet_id).toBe(petAId);
+    const [[storedItem]] = await getPool().query('SELECT pet_id FROM order_items WHERE order_id = ?', [validResponse.body.data.order.id]);
+    expect(Number(storedItem.pet_id)).toBe(petAId);
+  });
+
+  test('preserves appointment service transaction values and keeps product items unassigned to pets', async () => {
+    const agent = await login(); const customerId = await createCustomer(agent);
+    const petResponse = await agent.post('/api/pets').send({ name: `Order Mixed Pet ${customerSequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
+    const petId = petResponse.body.data.pet.id;
+    const [serviceRows] = await getPool().query("SELECT id FROM services WHERE type = 'GROOMING' AND status = 'ACTIVE' ORDER BY id ASC");
+    const productResponse = await agent.post('/api/products').send({ name: `Order Mixed Product ${customerSequence}`, price: 200, unit: '件', species: 'DOG' });
+    const appointmentResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-09-16',
+      appointment_time: '10:00:00',
+      pets: [{ pet_id: petId, service_ids: [serviceRows[0].id] }],
+    });
+    const appointmentId = appointmentResponse.body.data.appointment.id;
+    const [[operation]] = await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ? LIMIT 1', [appointmentId]);
+    await agent.post(`/api/operations/${operation.id}/check-in`);
+    const groomingResponse = await agent.post('/api/groomings').send({ daily_operation_id: operation.id, pet_id: petId, before_condition: '良好', actual_grooming_content: '完成', grooming_result: '完成' });
+    await agent.post(`/api/groomings/${groomingResponse.body.data.id}/complete`);
+
+    const response = await agent.post('/api/orders').send({
       customer_id: customerId,
       source_type: 'APPOINTMENT',
       appointment_id: appointmentId,
       business_unit: 'DOG',
-      items: [{ service_id: actualService.id, transaction_price: 1, quantity: 1 }],
+      items: [
+        { service_id: serviceRows[1].id, pet_id: petId, transaction_price: 1100, quantity: 2 },
+        { product_id: productResponse.body.data.product.id, transaction_price: 1, quantity: 2 },
+      ],
     });
-    expect(orderResponse.status).toBe(201);
-    expect(orderResponse.body.data.order.appointment_id).toBe(appointmentId);
-    expect(orderResponse.body.data.order.items[0].service_id).toBe(actualService.id);
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.order.total_amount).toBe(2600);
+    expect(response.body.data.order.items[0]).toEqual(expect.objectContaining({ transaction_price: 1100, quantity: 2, pet_id: petId }));
+    expect(response.body.data.order.items[1]).toEqual(expect.objectContaining({ transaction_price: 200, quantity: 2, pet_id: null }));
   });
 
-  test('updates unpaid order and protects completed order', async () => {
+  test('rejects direct PAID updates and protects completed order', async () => {
     const agent = await login(); const customerId = await createCustomer(agent); const [serviceRows] = await getPool().query("SELECT id FROM services WHERE status = 'ACTIVE' LIMIT 1");
     const created = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }] });
     const orderId = created.body.data.order.id; const updated = await agent.patch(`/api/orders/${orderId}`).send({ status: 'PAID', customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }] });
-    expect(updated.status).toBe(200); expect(updated.body.data.order.status).toBe('PAID');
+    expect(updated.status).toBe(400); expect(updated.body.error.code).toBe('VALIDATION_ERROR');
+    const payment = await agent.post(`/api/orders/${orderId}/payments`).send({ amount: 100, payment_method: 'CASH' });
+    expect(payment.status).toBe(201); expect(payment.body.data.summary.payment_status).toBe('PAID');
     const blocked = await agent.patch(`/api/orders/${orderId}`).send({ status: 'UNPAID', customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, transaction_price: 1, quantity: 1 }] });
     expect(blocked.status).toBe(409); expect(blocked.body.error.code).toBe('ORDER_READ_ONLY');
   });
@@ -175,7 +219,7 @@ describe('Order API', () => {
       source_type: 'APPOINTMENT',
       appointment_id: appointmentResponse.body.data.appointment.id,
       business_unit: 'DOG',
-      items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }],
+      items: [{ service_id: serviceRows[0].id, pet_id: petResponse.body.data.pet.id, transaction_price: 100, quantity: 1 }],
     });
 
     const updateResponse = await agent.patch(`/api/orders/${orderResponse.body.data.order.id}`).send({
@@ -183,11 +227,59 @@ describe('Order API', () => {
       business_unit: 'DOG',
       source_type: 'APPOINTMENT',
       appointment_id: appointmentResponse.body.data.appointment.id,
-      items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }],
+      items: [{ service_id: serviceRows[0].id, pet_id: petResponse.body.data.pet.id, transaction_price: 100, quantity: 1 }],
     });
 
     expect(updateResponse.status).toBe(400);
     expect(updateResponse.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  test('validates appointment completion when updating a walk-in order to appointment source', async () => {
+    const agent = await login(); const customerId = await createCustomer(agent);
+    const petResponse = await agent.post('/api/pets').send({ name: 'Order Pending Pet', species: 'DOG', gender: 'MALE', customer_id: customerId });
+    const [serviceRows] = await getPool().query("SELECT id FROM services WHERE type = 'GROOMING' AND status = 'ACTIVE' LIMIT 1");
+    const appointmentResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-09-26',
+      appointment_time: '09:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceRows[0].id] }],
+    });
+    const created = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }] });
+    const updateResponse = await agent.patch(`/api/orders/${created.body.data.order.id}`).send({
+      source_type: 'APPOINTMENT',
+      appointment_id: appointmentResponse.body.data.appointment.id,
+      customer_id: customerId,
+      business_unit: 'DOG',
+      items: [{ service_id: serviceRows[0].id, pet_id: petResponse.body.data.pet.id, transaction_price: 100, quantity: 1 }],
+    });
+    expect(updateResponse.status).toBe(400); expect(updateResponse.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  test('persists source fields when updating a walk-in order to a valid appointment order', async () => {
+    const agent = await login(); const customerId = await createCustomer(agent);
+    const petResponse = await agent.post('/api/pets').send({ name: 'Order Source Pet', species: 'DOG', gender: 'MALE', customer_id: customerId });
+    const secondPetResponse = await agent.post('/api/pets').send({ name: 'Order Source Second Pet', species: 'DOG', gender: 'MALE', customer_id: customerId });
+    const [serviceRows] = await getPool().query("SELECT id FROM services WHERE type = 'GROOMING' AND status = 'ACTIVE' LIMIT 1");
+    const appointmentResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2026-09-27',
+      appointment_time: '09:00:00',
+      pets: [{ pet_id: petResponse.body.data.pet.id, service_ids: [serviceRows[0].id] }, { pet_id: secondPetResponse.body.data.pet.id, service_ids: [serviceRows[0].id] }],
+    });
+    const appointmentId = appointmentResponse.body.data.appointment.id;
+    const [[operation]] = await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ? LIMIT 1', [appointmentId]);
+    await agent.post(`/api/operations/${operation.id}/check-in`);
+    const groomingResponse = await agent.post('/api/groomings').send({ daily_operation_id: operation.id, pet_id: petResponse.body.data.pet.id, before_condition: '良好', actual_grooming_content: '洗澡', grooming_result: '完成' });
+    await agent.post(`/api/groomings/${groomingResponse.body.data.id}/complete`);
+    const created = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }] });
+    const updateResponse = await agent.patch(`/api/orders/${created.body.data.order.id}`).send({ source_type: 'APPOINTMENT', appointment_id: appointmentId, customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, pet_id: petResponse.body.data.pet.id, transaction_price: 100, quantity: 1 }] });
+    expect(updateResponse.status).toBe(200);
+    expect(updateResponse.body.data.order.source_type).toBe('APPOINTMENT');
+    expect(updateResponse.body.data.order.appointment_id).toBe(appointmentId);
+    const [[stored]] = await getPool().query('SELECT source_type, appointment_id FROM orders WHERE id = ?', [created.body.data.order.id]);
+    expect(stored.source_type).toBe('APPOINTMENT'); expect(Number(stored.appointment_id)).toBe(appointmentId);
+    const invalidPetUpdate = await agent.patch(`/api/orders/${created.body.data.order.id}`).send({ source_type: 'APPOINTMENT', appointment_id: appointmentId, customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, pet_id: secondPetResponse.body.data.pet.id, transaction_price: 100, quantity: 1 }] });
+    expect(invalidPetUpdate.status).toBe(400);
   });
 
   test('deletes a pure unpaid walk-in order without deleting its customer', async () => {
