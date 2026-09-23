@@ -24,6 +24,7 @@ const app = require('../../backend/src/app');
 const { getPool, closePool } = require('../../backend/src/config/database');
 const { setup } = require('../../database/scripts/setup');
 const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
+const { seedStaffAuthentication } = require('../../database/seeds/staff-authentication-seed');
 const { hashSessionToken, createSessionToken } = require('../../backend/src/utils/session-token');
 const { hashPassword } = require('../../backend/src/utils/password');
 
@@ -53,6 +54,16 @@ async function createRoleStaff(roleCode) {
   await getPool().query('INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)', [staffResult.insertId, roleRows[0].id]);
   createdStaffIds.push(staffResult.insertId);
   return { id: staffResult.insertId, username, password: 'status-pass-123' };
+}
+
+async function clearStaffForRegistrationTest() {
+  await getPool().query('DELETE FROM auth_sessions');
+  await getPool().query('DELETE FROM staff_roles');
+  await getPool().query('DELETE FROM staff');
+}
+
+async function restoreFoundationStaff() {
+  await seedStaffAuthentication();
 }
 
 describe('Staff authentication API', () => {
@@ -93,6 +104,122 @@ describe('Staff authentication API', () => {
 
     const [rows] = await getPool().query('SELECT id FROM auth_sessions');
     expect(rows).toHaveLength(1);
+  });
+
+  test('first registration creates exactly one OWNER', async () => {
+    await clearStaffForRegistrationTest();
+    try {
+      const response = await request(app).post('/api/auth/register').send({
+        username: 'registration-first-owner',
+        password: 'registration-pass-123',
+        display_name: 'Registration First Owner',
+      });
+
+      expect(response.status).toBe(201);
+      const [[staffCount]] = await getPool().query('SELECT COUNT(*) AS count FROM staff');
+      const [[ownerCount]] = await getPool().query(
+        `SELECT COUNT(*) AS count
+         FROM staff_roles sr
+         INNER JOIN roles r ON r.id = sr.role_id
+         WHERE r.code = 'OWNER'`,
+      );
+      expect(Number(staffCount.count)).toBe(1);
+      expect(Number(ownerCount.count)).toBe(1);
+      expect(response.body.data.staff.roles).toEqual(['OWNER']);
+    } finally {
+      await restoreFoundationStaff();
+    }
+  });
+
+  test('first registration rolls back when OWNER role definition is missing', async () => {
+    await clearStaffForRegistrationTest();
+    const [[ownerRole]] = await getPool().query('SELECT code, name FROM roles WHERE code = \'OWNER\' LIMIT 1');
+    await getPool().query('DELETE FROM roles WHERE code = \'OWNER\'');
+
+    try {
+      const response = await request(app).post('/api/auth/register').send({
+        username: 'registration-missing-owner-role',
+        password: 'registration-pass-123',
+        display_name: 'Missing Owner Role',
+      });
+
+      expect(response.status).not.toBe(201);
+      expect(response.body.success).not.toBe(true);
+      expect(JSON.stringify(response.body)).not.toContain('"OWNER"');
+
+      const [[staffCount]] = await getPool().query(
+        'SELECT COUNT(*) AS count FROM staff WHERE username = \'registration-missing-owner-role\'',
+      );
+      const [[totalStaffCount]] = await getPool().query('SELECT COUNT(*) AS count FROM staff');
+      const [[staffRoleCount]] = await getPool().query('SELECT COUNT(*) AS count FROM staff_roles');
+      expect(Number(staffCount.count)).toBe(0);
+      expect(Number(totalStaffCount.count)).toBe(0);
+      expect(Number(staffRoleCount.count)).toBe(0);
+    } finally {
+      if (ownerRole) {
+        await getPool().query(
+          `INSERT INTO roles (code, name)
+           VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE name = VALUES(name)`,
+          [ownerRole.code, ownerRole.name],
+        );
+      }
+      await restoreFoundationStaff();
+    }
+  });
+  test('concurrent first registrations cannot create two OWNER accounts', async () => {
+    await clearStaffForRegistrationTest();
+    try {
+      const requests = ['registration-concurrent-a', 'registration-concurrent-b'].map((username) => request(app)
+        .post('/api/auth/register')
+        .send({ username, password: 'registration-pass-123', display_name: username }));
+      const responses = await Promise.all(requests);
+
+      expect(responses.every((response) => response.status === 201)).toBe(true);
+      const [[staffCount]] = await getPool().query('SELECT COUNT(*) AS count FROM staff');
+      const [[ownerCount]] = await getPool().query(
+        `SELECT COUNT(*) AS count
+         FROM staff_roles sr
+         INNER JOIN roles r ON r.id = sr.role_id
+         WHERE r.code = 'OWNER'`,
+      );
+      expect(Number(staffCount.count)).toBe(2);
+      expect(Number(ownerCount.count)).toBe(1);
+      expect(responses.filter((response) => response.body.data.staff.roles.includes('OWNER'))).toHaveLength(1);
+      expect(responses.filter((response) => response.body.data.staff.roles.length === 0)).toHaveLength(1);
+    } finally {
+      await restoreFoundationStaff();
+    }
+  });
+
+  test('registration after an OWNER exists does not create another OWNER', async () => {
+    await clearStaffForRegistrationTest();
+    try {
+      const first = await request(app).post('/api/auth/register').send({
+        username: 'registration-existing-owner',
+        password: 'registration-pass-123',
+        display_name: 'Existing Owner',
+      });
+      const second = await request(app).post('/api/auth/register').send({
+        username: 'registration-second-user',
+        password: 'registration-pass-123',
+        display_name: 'Second User',
+      });
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(first.body.data.staff.roles).toEqual(['OWNER']);
+      expect(second.body.data.staff.roles).toEqual([]);
+      const [[ownerCount]] = await getPool().query(
+        `SELECT COUNT(*) AS count
+         FROM staff_roles sr
+         INNER JOIN roles r ON r.id = sr.role_id
+         WHERE r.code = 'OWNER'`,
+      );
+      expect(Number(ownerCount.count)).toBe(1);
+    } finally {
+      await restoreFoundationStaff();
+    }
   });
 
   test('POST /api/auth/login rejects wrong password with a uniform message', async () => {

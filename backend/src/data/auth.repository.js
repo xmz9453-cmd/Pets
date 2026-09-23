@@ -1,5 +1,28 @@
 const { getPool } = require('../config/database');
 
+const REGISTRATION_LOCK_NAME = 'psop:first-owner-registration';
+const REGISTRATION_LOCK_TIMEOUT_SECONDS = 10;
+
+async function acquireRegistrationLock(connection) {
+  const [rows] = await connection.query('SELECT GET_LOCK(?, ?) AS acquired', [REGISTRATION_LOCK_NAME, REGISTRATION_LOCK_TIMEOUT_SECONDS]);
+  if (Number(rows[0]?.acquired) !== 1) {
+    const error = new Error('Registration is busy, please try again');
+    error.statusCode = 503;
+    error.code = 'REGISTRATION_BUSY';
+    throw error;
+  }
+}
+
+async function releaseRegistrationLock(connection) {
+  const [rows] = await connection.query('SELECT RELEASE_LOCK(?) AS released', [REGISTRATION_LOCK_NAME]);
+  if (Number(rows[0]?.released) !== 1) {
+    const error = new Error('Registration lock release failed');
+    error.statusCode = 503;
+    error.code = 'REGISTRATION_LOCK_RELEASE_FAILED';
+    throw error;
+  }
+}
+
 async function countStaff(connection = getPool()) {
   const [rows] = await connection.query('SELECT COUNT(*) AS count FROM staff');
   return Number(rows[0].count);
@@ -92,9 +115,17 @@ async function replaceRolesForStaff(staffId, roleCodes, connection = getPool()) 
   }
 
   const [roles] = await connection.query(
-    'SELECT id FROM roles WHERE code IN (?)',
+    'SELECT id, code FROM roles WHERE code IN (?)',
     [roleCodes],
   );
+  const foundRoleCodes = new Set(roles.map((role) => role.code));
+  const missingRoleCodes = [...new Set(roleCodes)].filter((roleCode) => !foundRoleCodes.has(roleCode));
+  if (missingRoleCodes.length) {
+    const error = new Error(`Missing role definition: ${missingRoleCodes.join(', ')}`);
+    error.code = 'ROLE_DEFINITION_MISSING';
+    throw error;
+  }
+
   for (const role of roles) {
     await connection.query(
       'INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)',
@@ -154,6 +185,7 @@ async function deleteSessionByTokenHash(tokenHash) {
 }
 
 module.exports = {
+  acquireRegistrationLock,
   countStaff,
   createStaff,
   createSession,
@@ -168,6 +200,7 @@ module.exports = {
   listStaffWithRoles,
   listRolesForStaff,
   replaceRolesForStaff,
+  releaseRegistrationLock,
   updateStaffStatus,
   updateStaffPassword,
 };

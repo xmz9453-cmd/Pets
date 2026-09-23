@@ -71,8 +71,11 @@ async function register(payload) {
   if (Object.keys(fields).length) throw createValidationError(fields);
 
   const connection = await authRepository.getPool().getConnection();
+  let registrationLockAcquired = false;
   try {
     await connection.beginTransaction();
+    await authRepository.acquireRegistrationLock(connection);
+    registrationLockAcquired = true;
     const isFirstUser = (await authRepository.countStaff(connection)) === 0;
     const staffId = await authRepository.createStaff({
       username: values.username,
@@ -101,7 +104,13 @@ async function register(payload) {
     }
     throw error;
   } finally {
-    connection.release();
+    try {
+      if (registrationLockAcquired) {
+        await authRepository.releaseRegistrationLock(connection);
+      }
+    } finally {
+      connection.release();
+    }
   }
 }
 
