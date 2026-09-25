@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { getUserFacingErrorMessage } from '../utils/error-message';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
+import { API_BASE_URL } from '../api/client';
 const SPECIES_LABELS = { DOG: '狗', CAT: '貓' };
 
 export default function GroomingPage() {

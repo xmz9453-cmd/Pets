@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { getUserFacingErrorMessage } from '../utils/error-message';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
+import { API_BASE_URL } from '../api/client';
 const STATUS_LABELS = { PENDING: '待入住', IN_PROGRESS: '住宿中', COMPLETED: '已完成' };
 const ERROR_MESSAGES = {
   ACTIVE_BOARDING_EXISTS: '寵物目前已有進行中的住宿',

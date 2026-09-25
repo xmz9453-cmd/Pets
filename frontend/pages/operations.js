@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { getStaffAccounts } from '../api/client';
+import { getStaffAccounts, API_BASE_URL } from '../api/client';
 import { getUserFacingErrorMessage } from '../utils/error-message';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
 
 function localDateInputValue(date = new Date()) {
   const year = date.getFullYear();
