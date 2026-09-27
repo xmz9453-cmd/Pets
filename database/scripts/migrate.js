@@ -1,4 +1,5 @@
 const {
+  assertMigrationSafetyGuard,
   closeDatabase,
   ensureMigrationTable,
   executeSqlFile,
@@ -8,8 +9,10 @@ const {
 } = require('./helpers');
 
 async function migrate() {
+  assertMigrationSafetyGuard();
   await ensureMigrationTable();
   const migrations = await listMigrationFiles();
+  let executedCount = 0;
 
   for (const migration of migrations) {
     const alreadyRun = await hasMigrationRun(migration.filename);
@@ -17,9 +20,13 @@ async function migrate() {
       continue;
     }
 
+    console.log(`Executing migration: ${migration.filename}`);
     await executeSqlFile(migration.path);
     await recordMigration(migration.filename);
+    executedCount++;
   }
+
+  console.log(`Migration complete. Executed ${executedCount} new migration(s).`);
 }
 
 if (require.main === module) {

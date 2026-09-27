@@ -83,12 +83,44 @@ async function recordMigration(filename) {
   await getPool().query('INSERT IGNORE INTO schema_migrations (filename) VALUES (?)', [filename]);
 }
 
+function assertMigrationSafetyGuard() {
+  const dbHost = config.database.host;
+  const dbName = getDatabaseName();
+  const envMode = process.env.NODE_ENV || 'development';
+  const allowedHosts = new Set(['localhost', '127.0.0.1']);
+
+  const hostWithoutPort = (dbHost || '').split(':')[0];
+  if (!dbHost || !allowedHosts.has(hostWithoutPort)) {
+    throw new Error(`[Migration Safety Guard FAIL] Refusing migration on non-local DB host: ${dbHost}`);
+  }
+
+  if (!dbName || typeof dbName !== 'string' || dbName.trim() === '') {
+    throw new Error('[Migration Safety Guard FAIL] Refusing migration because DB name is missing or empty');
+  }
+
+  const allowedProductionDatabases = new Set(['psop_one']);
+  const allowedNonProductionDatabases = new Set(['psop_dev', 'psop_test', 'psop_one']);
+
+  if (envMode === 'production') {
+    if (!allowedProductionDatabases.has(dbName)) {
+      throw new Error(`[Migration Safety Guard FAIL] Production environment requires target DB 'psop_one', got '${dbName}'`);
+    }
+  } else {
+    if (!allowedNonProductionDatabases.has(dbName)) {
+      throw new Error(`[Migration Safety Guard FAIL] Refusing migration on unrecognized database '${dbName}' in ${envMode} environment`);
+    }
+  }
+
+  console.log(`[Migration Safety Guard PASS] Host: ${dbHost}, Target DB: ${dbName}, Environment: ${envMode}`);
+}
+
 async function closeDatabase() {
   await closePool();
 }
 
 module.exports = {
   assertDatabaseName,
+  assertMigrationSafetyGuard,
   closeDatabase,
   ensureMigrationTable,
   executeSqlFile,
