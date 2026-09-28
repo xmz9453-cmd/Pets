@@ -179,9 +179,25 @@ echo "[Step 7/11 PASS] Database Backup completed: ${BACKUP_FILE_PATH}"
 
 # 11. Pending Migrations (with Safety Guard)
 echo "[Step 8/11] Running Database Pending Migrations..."
-(cd "${PROJECT_ROOT}" && node database/scripts/migrate.js)
+(cd "${PROJECT_ROOT}" && NODE_ENV=production node database/scripts/migrate.js)
 check_target_sha
 echo "[Step 8/11 PASS] Database Migrations executed successfully."
+
+# Helper for HTTP health check readiness retry (up to 15 retries, 1s interval)
+check_http_with_retry() {
+  local url="$1"
+  local max_retries=15
+  local count=0
+
+  while [ "${count}" -lt "${max_retries}" ]; do
+    if curl -sf "${url}" >/dev/null 2>&1; then
+      return 0
+    fi
+    count=$((count + 1))
+    sleep 1
+  done
+  return 1
+}
 
 # 12. Service Restart
 echo "[Step 9/11] Restarting Application Services (pets-backend & pets-frontend)..."
@@ -199,11 +215,11 @@ if ! systemctl is-active --quiet pets-backend.service; then
 fi
 
 echo " 2/5 Checking Backend HTTP Health Endpoint (/api/health & /api/health/database)..."
-if ! curl -sf http://127.0.0.1:3001/api/health >/dev/null; then
+if ! check_http_with_retry "http://127.0.0.1:3001/api/health"; then
   echo "[deploy.sh ERROR] Backend HTTP /api/health check failed!" >&2
   exit 1
 fi
-if ! curl -sf http://127.0.0.1:3001/api/health/database >/dev/null; then
+if ! check_http_with_retry "http://127.0.0.1:3001/api/health/database"; then
   echo "[deploy.sh ERROR] Backend Database HTTP /api/health/database check failed!" >&2
   exit 1
 fi
@@ -215,13 +231,13 @@ if ! systemctl is-active --quiet pets-frontend.service; then
 fi
 
 echo " 4/5 Checking Frontend HTTP Response (http://127.0.0.1:3000/)..."
-if ! curl -sf http://127.0.0.1:3000/ >/dev/null; then
+if ! check_http_with_retry "http://127.0.0.1:3000/"; then
   echo "[deploy.sh ERROR] Frontend direct HTTP check (http://127.0.0.1:3000/) failed!" >&2
   exit 1
 fi
 
 echo " 5/5 Checking Nginx Reverse Proxy HTTP Endpoint (http://127.0.0.1/)..."
-if ! curl -sf http://127.0.0.1/ >/dev/null; then
+if ! check_http_with_retry "http://127.0.0.1/"; then
   echo "[deploy.sh ERROR] Nginx Reverse Proxy HTTP check (http://127.0.0.1/) failed!" >&2
   exit 1
 fi
