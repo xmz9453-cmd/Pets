@@ -256,6 +256,36 @@ export async function resetOperationalData() {
   });
 }
 
+export async function getContractVersions() {
+  return request('/api/contract-versions');
+}
+
+export async function createContractVersion(payload) {
+  return request('/api/contract-versions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateContractVersion(versionId, payload) {
+  return request(`/api/contract-versions/${versionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function publishContractVersion(versionId) {
+  return request(`/api/contract-versions/${versionId}/publish`, {
+    method: 'POST',
+  });
+}
+
+export async function setCurrentContractVersion(versionId) {
+  return request(`/api/contract-versions/${versionId}/current`, {
+    method: 'POST',
+  });
+}
+
 export async function getServices(params = {}) {
   const search = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {

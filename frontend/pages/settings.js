@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { changeOwnPassword, getCurrentStaff, getShopSettings, getStaffAccounts, resetOperationalData, resetStaffPassword, updateShopSettings, updateStaffRoles, updateStaffStatus } from '../api/client';
+import { changeOwnPassword, createContractVersion, getContractVersions, getCurrentStaff, getShopSettings, getStaffAccounts, publishContractVersion, resetOperationalData, resetStaffPassword, setCurrentContractVersion, updateContractVersion, updateShopSettings, updateStaffRoles, updateStaffStatus } from '../api/client';
 import { getRoleLabel } from '../utils/staff-display';
 
 const WEEKDAY_ORDER = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -67,6 +67,27 @@ function normalizeSavedSettings(data) {
   return normalized;
 }
 
+function hasContractPdfMetadata(version) {
+  return ['file_name', 'mime_type', 'file_size', 'storage_path', 'file_hash'].some((field) => {
+    const value = version[field];
+    return value !== null && value !== undefined && value !== '';
+  });
+}
+
+function hasCompleteContractPdfMetadata(version) {
+  return Boolean(
+    version.file_name
+    && version.mime_type === 'application/pdf'
+    && Number(version.file_size) > 0
+    && version.storage_path
+    && /^[a-f0-9]{64}$/i.test(version.file_hash || ''),
+  );
+}
+
+function displayTimestamp(value) {
+  return value ? String(value).replace('T', ' ').replace(/\.\d{3}Z$/, '') : '—';
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const [staff, setStaff] = useState(null);
@@ -84,8 +105,37 @@ export default function SettingsPage() {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [resetModal, setResetModal] = useState(null);
   const [resetting, setResetting] = useState(false);
+  const [contractVersions, setContractVersions] = useState([]);
+  const [contractVersionsLoading, setContractVersionsLoading] = useState(true);
+  const [contractVersionsError, setContractVersionsError] = useState('');
+  const [contractVersionsSuccess, setContractVersionsSuccess] = useState('');
+  const [contractVersionLabel, setContractVersionLabel] = useState('');
+  const [creatingContractVersion, setCreatingContractVersion] = useState(false);
+  const [editingContractVersionId, setEditingContractVersionId] = useState(null);
+  const [editingContractVersionLabel, setEditingContractVersionLabel] = useState('');
+  const [savingContractVersion, setSavingContractVersion] = useState(false);
+  const [contractVersionActionId, setContractVersionActionId] = useState(null);
 
   const canEdit = staff && staff.roles && staff.roles.includes('OWNER');
+
+  async function loadContractVersions(isActive = () => true) {
+    setContractVersionsLoading(true);
+    setContractVersionsError('');
+    try {
+      const result = await getContractVersions();
+      if (isActive()) {
+        setContractVersions(result.contract_versions || []);
+      }
+    } catch (loadError) {
+      if (isActive()) {
+        setContractVersionsError(loadError.message || '電子契約版本載入失敗');
+      }
+    } finally {
+      if (isActive()) {
+        setContractVersionsLoading(false);
+      }
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -117,6 +167,7 @@ export default function SettingsPage() {
           if (active) {
             setStaffAccounts(staffResult.staff || []);
           }
+          await loadContractVersions(() => active);
         }
       } catch (loadError) {
         if (active) {
@@ -209,6 +260,103 @@ export default function SettingsPage() {
       setError(saveError.message || '無法儲存店家設定。');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleCreateContractVersion(event) {
+    event.preventDefault();
+    if (!canEdit) {
+      return;
+    }
+    if (!contractVersionLabel.trim()) {
+      setContractVersionsError('版本名稱為必填');
+      return;
+    }
+
+    setCreatingContractVersion(true);
+    setContractVersionsError('');
+    setContractVersionsSuccess('');
+    try {
+      await createContractVersion({ version_label: contractVersionLabel.trim() });
+      setContractVersionLabel('');
+      setContractVersionsSuccess('草稿已建立。');
+      await loadContractVersions();
+    } catch (createError) {
+      setContractVersionsError(createError.message || '草稿建立失敗');
+    } finally {
+      setCreatingContractVersion(false);
+    }
+  }
+
+  function startEditingContractVersion(version) {
+    setEditingContractVersionId(version.id);
+    setEditingContractVersionLabel(version.version_label);
+    setContractVersionsError('');
+    setContractVersionsSuccess('');
+  }
+
+  function cancelEditingContractVersion() {
+    setEditingContractVersionId(null);
+    setEditingContractVersionLabel('');
+  }
+
+  async function handleUpdateContractVersion(versionId) {
+    const versionLabel = editingContractVersionLabel.trim();
+    if (!canEdit || !versionLabel) {
+      setContractVersionsError('版本名稱為必填');
+      return;
+    }
+
+    setSavingContractVersion(true);
+    setContractVersionsError('');
+    setContractVersionsSuccess('');
+    try {
+      await updateContractVersion(versionId, { version_label: versionLabel });
+      cancelEditingContractVersion();
+      setContractVersionsSuccess('草稿已更新。');
+      await loadContractVersions();
+    } catch (updateError) {
+      setContractVersionsError(updateError.message || '草稿更新失敗');
+    } finally {
+      setSavingContractVersion(false);
+    }
+  }
+
+  async function handlePublishContractVersion(versionId) {
+    if (!canEdit) {
+      return;
+    }
+
+    setContractVersionActionId(versionId);
+    setContractVersionsError('');
+    setContractVersionsSuccess('');
+    try {
+      await publishContractVersion(versionId);
+      setContractVersionsSuccess('契約版本已發布。');
+      await loadContractVersions();
+    } catch (publishError) {
+      setContractVersionsError(publishError.message || '契約版本發布失敗');
+    } finally {
+      setContractVersionActionId(null);
+    }
+  }
+
+  async function handleSetCurrentContractVersion(versionId) {
+    if (!canEdit) {
+      return;
+    }
+
+    setContractVersionActionId(versionId);
+    setContractVersionsError('');
+    setContractVersionsSuccess('');
+    try {
+      await setCurrentContractVersion(versionId);
+      setContractVersionsSuccess('目前使用的契約版本已更新。');
+      await loadContractVersions();
+    } catch (currentError) {
+      setContractVersionsError(currentError.message || '目前契約版本更新失敗');
+    } finally {
+      setContractVersionActionId(null);
     }
   }
 
@@ -426,6 +574,143 @@ export default function SettingsPage() {
           </button>
         </div>
       </form>
+
+      {canEdit ? (
+        <section className="card shadow-sm mt-4">
+          <div className="card-body">
+            <h2 className="h5 mb-1">電子契約版本</h2>
+            <p className="text-muted mb-3">管理契約版本。新版本會先建立為草稿；已發布版本不可編輯。</p>
+
+            {contractVersionsError ? <div className="alert alert-danger" role="alert">{contractVersionsError}</div> : null}
+            {contractVersionsSuccess ? <div className="alert alert-success" role="status">{contractVersionsSuccess}</div> : null}
+
+            <form className="row g-2 align-items-end mb-4" onSubmit={handleCreateContractVersion}>
+              <div className="col-md-8">
+                <label className="form-label" htmlFor="contract-version-label">版本名稱</label>
+                <input
+                  id="contract-version-label"
+                  className="form-control"
+                  value={contractVersionLabel}
+                  onChange={(event) => setContractVersionLabel(event.target.value)}
+                  maxLength="50"
+                  required
+                />
+              </div>
+              <div className="col-md-4">
+                <button type="submit" className="btn btn-dark" disabled={creatingContractVersion}>
+                  {creatingContractVersion ? '建立中...' : '建立草稿'}
+                </button>
+              </div>
+            </form>
+
+            {contractVersionsLoading ? (
+              <div className="alert alert-light border mb-0" role="status">載入中...</div>
+            ) : contractVersionsError ? null : contractVersions.length === 0 ? (
+              <div className="alert alert-light border mb-0" role="status">目前尚無電子契約版本</div>
+            ) : (
+              <div className="table-responsive">
+                <table className="table align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th>版本</th>
+                      <th>狀態</th>
+                      <th>Current</th>
+                      <th>PDF</th>
+                      <th>建立時間</th>
+                      <th>更新時間</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {contractVersions.map((version) => {
+                      const pdfMetadataExists = hasContractPdfMetadata(version);
+                      const pdfMetadataComplete = hasCompleteContractPdfMetadata(version);
+                      const isEditing = editingContractVersionId === version.id;
+                      const isActionPending = contractVersionActionId === version.id;
+
+                      return (
+                        <tr key={version.id}>
+                          <td>
+                            {isEditing ? (
+                              <input
+                                className="form-control form-control-sm"
+                                aria-label={`編輯 ${version.version_label} 版本名稱`}
+                                value={editingContractVersionLabel}
+                                onChange={(event) => setEditingContractVersionLabel(event.target.value)}
+                                maxLength="50"
+                                required
+                              />
+                            ) : version.version_label}
+                          </td>
+                          <td>
+                            <span className={`badge ${version.status === 'PUBLISHED' ? 'bg-success' : 'bg-secondary'}`}>
+                              {version.status === 'DRAFT' ? '草稿' : '已發布'}
+                            </span>
+                          </td>
+                          <td>{version.is_current ? <span className="badge bg-primary">目前版本</span> : '—'}</td>
+                          <td>
+                            {pdfMetadataComplete ? '已設定' : pdfMetadataExists ? 'PDF 資料不完整' : '尚未設定 PDF'}
+                          </td>
+                          <td>{displayTimestamp(version.created_at)}</td>
+                          <td>{displayTimestamp(version.updated_at)}</td>
+                          <td>
+                            <div className="d-flex gap-2 flex-wrap">
+                              {version.status === 'DRAFT' && !isEditing ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-outline-dark"
+                                    onClick={() => startEditingContractVersion(version)}
+                                    disabled={savingContractVersion || isActionPending}
+                                  >編輯</button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-dark"
+                                    onClick={() => handlePublishContractVersion(version.id)}
+                                    disabled={!pdfMetadataComplete || isActionPending}
+                                    title={!pdfMetadataComplete ? '尚未設定 PDF，暫時無法發布' : undefined}
+                                  >發布</button>
+                                </>
+                              ) : null}
+                              {version.status === 'PUBLISHED' && !version.is_current ? (
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-dark"
+                                  onClick={() => handleSetCurrentContractVersion(version.id)}
+                                  disabled={isActionPending}
+                                >{isActionPending ? '更新中...' : '設為目前版本'}</button>
+                              ) : null}
+                              {isEditing ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-dark"
+                                    onClick={() => handleUpdateContractVersion(version.id)}
+                                    disabled={savingContractVersion}
+                                  >{savingContractVersion ? '儲存中...' : '儲存'}</button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-outline-secondary"
+                                    onClick={cancelEditingContractVersion}
+                                    disabled={savingContractVersion}
+                                  >取消</button>
+                                </>
+                              ) : null}
+                            </div>
+                            {version.status === 'DRAFT' && !pdfMetadataComplete ? (
+                              <small className="d-block text-muted mt-1">尚未設定 PDF，暫時無法發布</small>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
 
       {staffAccounts.length ? (
         <section className="card shadow-sm mt-4">
