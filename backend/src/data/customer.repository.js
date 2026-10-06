@@ -109,8 +109,8 @@ async function getCustomerById(customerId) {
   };
 }
 
-async function createCustomer(payload) {
-  const [result] = await getPool().query(
+async function createCustomer(payload, connection = getPool()) {
+  const [result] = await connection.query(
     `INSERT INTO customers (name, phone, address, line_id, id_card_number, emergency_contact_name, emergency_contact_phone, note, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
     [

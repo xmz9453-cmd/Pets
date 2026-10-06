@@ -428,6 +428,7 @@ module.exports = {
   getPetById,
   listPets,
   listRelationships,
+  normalizeMultiSelectValue,
   removeCustomerRelationship,
   setPrimaryCustomer,
   updatePet,

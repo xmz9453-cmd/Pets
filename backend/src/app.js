@@ -15,6 +15,7 @@ const orderRoutes = require('./routes/order.routes');
 const paymentRoutes = require('./routes/payment.routes');
 const reportRoutes = require('./routes/report.routes');
 const contractVersionRoutes = require('./routes/contract-version.routes');
+const onboardingRoutes = require('./routes/onboarding.routes');
 const { errorHandler } = require('./middleware/error-handler');
 
 const app = express();
@@ -23,6 +24,7 @@ app.use(cors({
   origin: true,
   credentials: true,
 }));
+app.use('/api/public/onboardings/:token/submit', express.json({ limit: '2mb' }));
 app.use(express.json());
 
 app.use('/api', healthRoutes);
@@ -40,6 +42,7 @@ app.use('/api', orderRoutes);
 app.use('/api', paymentRoutes);
 app.use('/api', reportRoutes);
 app.use('/api', contractVersionRoutes);
+app.use('/api', onboardingRoutes);
 
 app.use((req, res) => {
   res.status(404).json({

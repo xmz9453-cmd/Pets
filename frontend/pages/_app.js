@@ -22,7 +22,7 @@ function AppShell({ Component, pageProps }) {
   const [shopName, setShopName] = useState('店家');
   const [error, setError] = useState('');
 
-  const shouldShowNav = !['/login', '/register', '/forgot-password'].includes(router.pathname);
+  const shouldShowNav = !['/login', '/register', '/forgot-password', '/onboarding/[token]'].includes(router.pathname);
   const visibleNavItems = NAV_ITEMS.filter((item) =>
     staff && Array.isArray(staff.roles)
       ? item.allowedRoles.some((role) => staff.roles.includes(role))

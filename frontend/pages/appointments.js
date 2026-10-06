@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import {
   createAppointment,
+  createOnboarding,
   deleteAppointment,
   getAppointment,
   getAppointments,
@@ -45,6 +46,7 @@ export default function AppointmentsPage() {
   const [success, setSuccess] = useState('');
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
+  const [onboardingLink, setOnboardingLink] = useState('');
 
   const serviceCatalog = useMemo(() => services
     .filter((service) => service.status === 'ACTIVE')
@@ -213,6 +215,16 @@ export default function AppointmentsPage() {
     }
   }
 
+  async function handleCreateOnboarding() {
+    try {
+      const result = await createOnboarding();
+      setOnboardingLink(`${window.location.origin}/onboarding/${encodeURIComponent(result.token)}`);
+      setError('');
+    } catch (createError) {
+      setError(createError.message || '建立 Onboarding 失敗');
+    }
+  }
+
   if (loading) {
     return (
       <main className="container py-4">
@@ -228,7 +240,17 @@ export default function AppointmentsPage() {
           <h1 className="mb-1">預約管理</h1>
           <p className="text-muted mb-0">建立與維護客戶預約。</p>
         </div>
+        {staff && staff.roles.some((role) => ['OWNER', 'FRONT_DESK'].includes(role)) ? (
+          <button type="button" className="btn btn-outline-dark" onClick={handleCreateOnboarding}>建立電子契約 Onboarding</button>
+        ) : null}
       </div>
+      {onboardingLink ? (
+        <div className="alert alert-success d-flex flex-wrap align-items-center gap-2" role="status">
+          <span className="me-auto">Onboarding 連結已建立：</span>
+          <a href={onboardingLink} target="_blank" rel="noreferrer">{onboardingLink}</a>
+          <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => navigator.clipboard.writeText(onboardingLink)}>複製連結</button>
+        </div>
+      ) : null}
 
       {error ? <div className="alert alert-danger">{error}</div> : null}
       {success ? <div className="alert alert-success">{success}</div> : null}

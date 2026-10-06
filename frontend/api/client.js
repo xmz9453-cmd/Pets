@@ -110,6 +110,42 @@ export async function getCurrentStaff() {
   return request('/api/auth/me');
 }
 
+export async function createOnboarding() {
+  return request('/api/onboardings', { method: 'POST', body: '{}' });
+}
+
+function publicOnboardingPath(token, suffix = '') {
+  return `/api/public/onboardings/${encodeURIComponent(token)}${suffix}`;
+}
+
+export async function getPublicOnboarding(token) {
+  return request(publicOnboardingPath(token));
+}
+
+export async function savePublicOnboarding(token, payload) {
+  return request(publicOnboardingPath(token), { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export async function searchOnboardingCustomers(token, query) {
+  return request(`${publicOnboardingPath(token, '/customers')}?q=${encodeURIComponent(query)}`);
+}
+
+export async function searchOnboardingPets(token, query) {
+  return request(`${publicOnboardingPath(token, '/pets')}?q=${encodeURIComponent(query)}`);
+}
+
+export async function resolveOnboardingCustomer(token, payload) {
+  return request(publicOnboardingPath(token, '/customer-resolution'), { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function resolveOnboardingPet(token, payload) {
+  return request(publicOnboardingPath(token, '/pet-resolution'), { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function submitPublicOnboarding(token, signaturePng) {
+  return request(publicOnboardingPath(token, '/submit'), { method: 'POST', body: JSON.stringify({ signature_png: signaturePng }) });
+}
+
 export async function getPets(params = {}) {
   const search = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
