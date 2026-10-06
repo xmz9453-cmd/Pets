@@ -25,6 +25,29 @@ async function getCustomer(req, res, next) {
   }
 }
 
+async function getContractPdf(req, res, next) {
+  try {
+    const pdf = await customerService.getContractPdf(req.params.id, req.params.historyId);
+    res.status(200)
+      .type('application/pdf')
+      .set('Content-Disposition', `inline; filename="contract.pdf"; filename*=UTF-8''${encodeURIComponent(pdf.file_name)}`)
+      .send(pdf.bytes);
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function getContractSignature(req, res, next) {
+  try {
+    const signature = await customerService.getContractSignature(req.params.id, req.params.historyId);
+    res.status(200)
+      .type('image/png')
+      .send(signature);
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function createCustomer(req, res, next) {
   try {
     const result = await customerService.createCustomer(req.body || {});
@@ -75,6 +98,8 @@ module.exports = {
   deleteCustomer,
   deactivateCustomer,
   getCustomer,
+  getContractPdf,
+  getContractSignature,
   listCustomers,
   reactivateCustomer,
   updateCustomer,

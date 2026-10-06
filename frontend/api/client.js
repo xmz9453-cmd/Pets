@@ -214,6 +214,14 @@ export async function getCustomer(customerId) {
   return request(`/api/customers/${customerId}`);
 }
 
+export function getCustomerContractPdfUrl(customerId, historyId) {
+  return `${API_BASE_URL}/api/customers/${encodeURIComponent(customerId)}/contracts/${encodeURIComponent(historyId)}/pdf`;
+}
+
+export function getCustomerContractSignatureUrl(customerId, historyId) {
+  return `${API_BASE_URL}/api/customers/${encodeURIComponent(customerId)}/contracts/${encodeURIComponent(historyId)}/signature`;
+}
+
 export async function createCustomer(payload) {
   return request('/api/customers', {
     method: 'POST',

@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { getCurrentStaff, getCustomer } from '../../api/client';
+import {
+  getCurrentStaff,
+  getCustomer,
+  getCustomerContractPdfUrl,
+  getCustomerContractSignatureUrl,
+} from '../../api/client';
 
 const statusLabels = { ACTIVE: '啟用', INACTIVE: '停用' };
 
@@ -136,6 +141,46 @@ export default function CustomerDetailPage() {
               </ul>
             ) : (
               <p className="text-muted mb-0">目前尚無關聯寵物</p>
+            )}
+          </div>
+        </div>
+
+        <div className="col-12">
+          <div className="foundation-panel">
+            <h2 className="h5 mb-3">電子契約</h2>
+            {customer.contracts && customer.contracts.length > 0 ? (
+              <div className="list-group list-group-flush">
+                {customer.contracts.map((contract) => (
+                  <div key={contract.id} className="list-group-item px-0">
+                    <div className="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                      <div>
+                        <div className="fw-semibold">契約版本：{contract.version}</div>
+                        <div className="small text-muted">簽署時間：{contract.agreed_at}</div>
+                      </div>
+                      <div className="d-flex flex-wrap gap-2">
+                        <a
+                          className="btn btn-sm btn-outline-dark"
+                          href={getCustomerContractPdfUrl(customer.id, contract.id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          查看契約 PDF
+                        </a>
+                        <a
+                          className="btn btn-sm btn-outline-dark"
+                          href={getCustomerContractSignatureUrl(customer.id, contract.id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          查看電子簽名
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-muted mb-0">目前沒有已完成的電子契約。</p>
             )}
           </div>
         </div>

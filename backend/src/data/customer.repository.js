@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const contractHistoryRepository = require('./contract-history.repository');
 
 function normalizeCustomer(row) {
   if (!row) {
@@ -97,6 +98,7 @@ async function getCustomerById(customerId) {
   return {
     ...customer,
     pet_count: Number(rows[0].pet_count || 0),
+    contracts: await contractHistoryRepository.listCompletedByCustomerId(customerId),
     pets: petRows.map((pet) => ({
       id: Number(pet.id),
       name: pet.name,

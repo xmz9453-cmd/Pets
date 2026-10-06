@@ -7,6 +7,8 @@ const router = express.Router();
 
 router.get('/customers', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']), customerController.listCustomers);
 router.get('/customers/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']), customerController.getCustomer);
+router.get('/customers/:id/contracts/:historyId/pdf', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']), customerController.getContractPdf);
+router.get('/customers/:id/contracts/:historyId/signature', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']), customerController.getContractSignature);
 router.post('/customers', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.createCustomer);
 router.patch('/customers/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.updateCustomer);
 router.patch('/customers/:id/deactivate', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.deactivateCustomer);

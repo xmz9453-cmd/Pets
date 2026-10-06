@@ -1,4 +1,7 @@
+const crypto = require('crypto');
 const customerRepository = require('../data/customer.repository');
+const contractHistoryRepository = require('../data/contract-history.repository');
+const contractPdfStorage = require('../utils/contract-pdf-storage');
 
 const VALID_STATUSES = new Set(['ACTIVE', 'INACTIVE']);
 
@@ -118,6 +121,40 @@ async function getCustomerById(customerId) {
     throw createNotFoundError('CUSTOMER_NOT_FOUND', 'Customer not found');
   }
   return { customer };
+}
+
+async function getContractPdf(customerId, historyId) {
+  const history = await contractHistoryRepository.getCompletedByCustomerAndId(customerId, historyId);
+  if (!history) {
+    throw createNotFoundError('CONTRACT_HISTORY_NOT_FOUND', 'Contract history not found');
+  }
+
+  return contractPdfStorage.verifyStoredFile({
+    file_name: history.file_name,
+    mime_type: history.mime_type,
+    file_size: history.file_size,
+    storage_path: history.storage_path,
+    file_hash: history.pdf_hash,
+  });
+}
+
+async function getContractSignature(customerId, historyId) {
+  const history = await contractHistoryRepository.getCompletedSignatureByCustomerAndId(customerId, historyId);
+  if (!history) {
+    throw createNotFoundError('CONTRACT_HISTORY_NOT_FOUND', 'Contract history not found');
+  }
+
+  const signatureHash = String(history.signature_hash || '');
+  const actualHash = crypto.createHash('sha256').update(history.signature_evidence).digest('hex');
+  if (!/^[a-f0-9]{64}$/i.test(signatureHash)
+      || !crypto.timingSafeEqual(Buffer.from(signatureHash, 'hex'), Buffer.from(actualHash, 'hex'))) {
+    const error = new Error('Stored contract signature hash does not match its evidence');
+    error.statusCode = 409;
+    error.code = 'CONTRACT_SIGNATURE_HASH_MISMATCH';
+    throw error;
+  }
+
+  return history.signature_evidence;
 }
 
 async function createCustomer(payload) {
@@ -244,6 +281,8 @@ module.exports = {
   deleteCustomer,
   deactivateCustomer,
   getCustomerById,
+  getContractPdf,
+  getContractSignature,
   listCustomers,
   reactivateCustomer,
   updateCustomer,
