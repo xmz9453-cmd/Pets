@@ -2,10 +2,11 @@ export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? (process.env
 const { getUserFacingErrorMessage } = require('../utils/error-message');
 
 async function request(path, options = {}) {
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: 'include',
     headers: {
-      'Content-Type': 'application/json',
+      ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers || {}),
     },
     ...options,
@@ -17,10 +18,20 @@ async function request(path, options = {}) {
     const isLoginCredentialFailure = path === '/api/auth/login'
       && response.status === 401
       && apiError.message === 'Invalid username or password';
+    const isContractPdfUpload = options.method === 'POST'
+      && /^\/api\/contract-versions\/\d+\/pdf$/.test(path);
+    const uploadValidationMessage = isContractPdfUpload && apiError.fields
+      ? Object.values(apiError.fields).find((message) => typeof message === 'string' && message.trim())
+      : '';
 
-    const errorMessage = isLoginCredentialFailure
-      ? apiError.message
-      : getUserFacingErrorMessage(apiError, response.status);
+    let errorMessage;
+    if (isLoginCredentialFailure) {
+      errorMessage = apiError.message;
+    } else if (isContractPdfUpload && (apiError.message || uploadValidationMessage)) {
+      errorMessage = apiError.message || uploadValidationMessage;
+    } else {
+      errorMessage = getUserFacingErrorMessage(apiError, response.status);
+    }
 
     const error = new Error(errorMessage);
     error.code = apiError.code;
@@ -271,6 +282,15 @@ export async function updateContractVersion(versionId, payload) {
   return request(`/api/contract-versions/${versionId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function uploadContractVersionPdf(versionId, file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request(`/api/contract-versions/${versionId}/pdf`, {
+    method: 'POST',
+    body: formData,
   });
 }
 

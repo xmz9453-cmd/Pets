@@ -39,6 +39,26 @@ async function updateDraft(req, res, next) {
   }
 }
 
+async function uploadDraftPdf(req, res, next) {
+  try {
+    sendSuccess(res, await contractVersionService.uploadDraftPdf(req.params.id, req.file));
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function getContractVersionPdf(req, res, next) {
+  try {
+    const pdf = await contractVersionService.getContractVersionPdf(req.params.id);
+    res.status(200)
+      .type('application/pdf')
+      .set('Content-Disposition', `inline; filename="contract.pdf"; filename*=UTF-8''${encodeURIComponent(pdf.file_name)}`)
+      .send(pdf.bytes);
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function publishDraft(req, res, next) {
   try {
     sendSuccess(res, await contractVersionService.publishDraft(req.params.id));
@@ -57,9 +77,11 @@ async function setCurrent(req, res, next) {
 
 module.exports = {
   createDraft,
+  getContractVersionPdf,
   getContractVersion,
   listContractVersions,
   publishDraft,
   setCurrent,
   updateDraft,
+  uploadDraftPdf,
 };

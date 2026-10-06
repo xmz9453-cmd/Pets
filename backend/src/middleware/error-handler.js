@@ -12,7 +12,8 @@ function errorHandler(error, req, res, next) {
   logError('API error', {
     path: req.path,
     method: req.method,
-    message: error.message,
+    message: error.path || error.syscall ? 'Filesystem operation failed' : error.message,
+    ...(error.path || error.syscall ? { code: error.code, syscall: error.syscall } : {}),
   });
 
   const response = {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { changeOwnPassword, createContractVersion, getContractVersions, getCurrentStaff, getShopSettings, getStaffAccounts, publishContractVersion, resetOperationalData, resetStaffPassword, setCurrentContractVersion, updateContractVersion, updateShopSettings, updateStaffRoles, updateStaffStatus } from '../api/client';
+import { API_BASE_URL, changeOwnPassword, createContractVersion, getContractVersions, getCurrentStaff, getShopSettings, getStaffAccounts, publishContractVersion, resetOperationalData, resetStaffPassword, setCurrentContractVersion, updateContractVersion, updateShopSettings, updateStaffRoles, updateStaffStatus, uploadContractVersionPdf } from '../api/client';
 import { getRoleLabel } from '../utils/staff-display';
 
 const WEEKDAY_ORDER = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -115,6 +115,8 @@ export default function SettingsPage() {
   const [editingContractVersionLabel, setEditingContractVersionLabel] = useState('');
   const [savingContractVersion, setSavingContractVersion] = useState(false);
   const [contractVersionActionId, setContractVersionActionId] = useState(null);
+  const [contractPdfFiles, setContractPdfFiles] = useState({});
+  const [uploadingContractVersionId, setUploadingContractVersionId] = useState(null);
 
   const canEdit = staff && staff.roles && staff.roles.includes('OWNER');
 
@@ -338,6 +340,28 @@ export default function SettingsPage() {
       setContractVersionsError(publishError.message || '契約版本發布失敗');
     } finally {
       setContractVersionActionId(null);
+    }
+  }
+
+  async function handleUploadContractVersionPdf(versionId) {
+    const file = contractPdfFiles[versionId];
+    if (!canEdit || !file) {
+      setContractVersionsError('請先選擇 PDF 檔案。');
+      return;
+    }
+
+    setUploadingContractVersionId(versionId);
+    setContractVersionsError('');
+    setContractVersionsSuccess('');
+    try {
+      const result = await uploadContractVersionPdf(versionId, file);
+      setContractPdfFiles((current) => ({ ...current, [versionId]: null }));
+      setContractVersionsSuccess(`PDF「${result.contract_version.file_name}」已上傳。`);
+      await loadContractVersions();
+    } catch (uploadError) {
+      setContractVersionsError(uploadError.message || 'PDF 上傳失敗');
+    } finally {
+      setUploadingContractVersionId(null);
     }
   }
 
@@ -649,7 +673,39 @@ export default function SettingsPage() {
                           </td>
                           <td>{version.is_current ? <span className="badge bg-primary">目前版本</span> : '—'}</td>
                           <td>
-                            {pdfMetadataComplete ? '已設定' : pdfMetadataExists ? 'PDF 資料不完整' : '尚未設定 PDF'}
+                            {pdfMetadataComplete ? (
+                              <span>
+                                已設定：{version.file_name}
+                                {version.status === 'PUBLISHED' ? (
+                                  <a className="d-block" href={`${API_BASE_URL}/api/contract-versions/${version.id}/pdf`}>
+                                    查看 PDF
+                                  </a>
+                                ) : null}
+                              </span>
+                            ) : pdfMetadataExists ? 'PDF 資料不完整' : '尚未設定 PDF'}
+                            {version.status === 'DRAFT' && !isEditing ? (
+                              <div className="mt-2">
+                                <input
+                                  className="form-control form-control-sm mb-2"
+                                  type="file"
+                                  accept=".pdf,application/pdf"
+                                  aria-label={`選擇 ${version.version_label} 契約 PDF`}
+                                  onChange={(event) => setContractPdfFiles((current) => ({
+                                    ...current,
+                                    [version.id]: event.target.files[0] || null,
+                                  }))}
+                                  disabled={uploadingContractVersionId === version.id}
+                                />
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-dark"
+                                  onClick={() => handleUploadContractVersionPdf(version.id)}
+                                  disabled={!contractPdfFiles[version.id] || uploadingContractVersionId === version.id}
+                                >
+                                  {uploadingContractVersionId === version.id ? '上傳中...' : '上傳 PDF'}
+                                </button>
+                              </div>
+                            ) : null}
                           </td>
                           <td>{displayTimestamp(version.created_at)}</td>
                           <td>{displayTimestamp(version.updated_at)}</td>

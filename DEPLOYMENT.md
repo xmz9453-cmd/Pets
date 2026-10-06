@@ -12,6 +12,7 @@ This document provides standard operating procedures (SOP) for **Pets 2.0 Produc
 - **Runtime**: Node.js `v24.21.0`, npm `11.19.0`, MySQL `8.0.46`, Nginx `1.24.0`
 - **Git Repository**: `https://github.com/xmz9453-cmd/Pets.git` (`master` branch)
 - **Database Target**: `psop_one` (MySQL)
+- **Contract PDF Storage**: private filesystem directory configured by `CONTRACT_STORAGE_ROOT`; not part of the Git checkout or Nginx document root.
 - **Application Services**:
   - Backend: `pets-backend.service` (`http://127.0.0.1:3001`)
   - Frontend: `pets-frontend.service` (`http://127.0.0.1:3000`)
@@ -27,6 +28,21 @@ This document provides standard operating procedures (SOP) for **Pets 2.0 Produc
 - **State File**: `/home/zhe/pets-deploy-state/deployment.state` (`chmod 600`)
 - **Lock File**: `/home/zhe/pets-deploy-state/deployment.lock`
 - **Logs**: `/home/zhe/pets-deploy-state/logs/deploy-YYYYMMDD-HHMMSS.log`
+- **Contract PDF Storage Root**: configured per environment; the Production candidate is `/home/zhe/pets-data/contracts/`. Provision it separately with access restricted to the Backend service account; do not expose it through Nginx.
+
+### Contract PDF Backup and Restore
+
+Contract PDFs and their database metadata form one recoverable contract history. Configure `CONTRACT_STORAGE_ROOT` in the Backend environment and in the repository `.env` used by the maintenance scripts. The root must already exist and be private; backup and restore refuse an unset or missing root.
+
+`deploy/backup.sh` creates a timestamped `pets_backup_YYYYMMDD_HHMMSS.tar.gz` bundle containing the compressed MySQL dump, contract PDF archive, PDF manifest, and checksums. Completed bundles are verified and stored with mode `600`; bundles older than 30 days are removed. Keep the bundle as one unit.
+
+Restore a complete bundle with:
+
+```bash
+bash deploy/restore.sh /home/zhe/pets-backups/pets_backup_YYYYMMDD_HHMMSS.tar.gz
+```
+
+The restore script validates the archive members, checksums, PDF manifest, storage keys, and then verifies that restored database references match PDF files by size and SHA-256. Stop the application services before restore to prevent reads/writes during the filesystem and database replacement; the storage coordination lock serializes uploads and backup/restore. Type `RESTORE` only after confirming the target environment and bundle. A failed database restore may leave the new PDF directory installed and the prior directory preserved as `.contract-versions-before-restore-*` for manual recovery; investigate before restarting application services.
 
 ### Formal State Transition Flow (Decision 20)
 ```
@@ -123,7 +139,7 @@ bash deploy/backup.sh
 To restore a specific backup file into the production database:
 
 ```bash
-bash deploy/restore.sh /home/zhe/pets-backups/psop_one_YYYYMMDD_HHMMSS.sql.gz
+bash deploy/restore.sh /home/zhe/pets-backups/pets_backup_YYYYMMDD_HHMMSS.tar.gz
 ```
 *Requires operator to explicitly type `RESTORE` to execute.*
 

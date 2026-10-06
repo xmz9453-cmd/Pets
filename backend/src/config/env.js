@@ -25,6 +25,7 @@ const config = {
   nodeEnv: readEnv('NODE_ENV', 'development'),
   backendPort: readNumberEnv('BACKEND_PORT', 3001),
   frontendApiBaseUrl: readEnv('FRONTEND_API_BASE_URL', 'http://localhost:3001'),
+  contractStorageRoot: readEnv('CONTRACT_STORAGE_ROOT', ''),
   database: {
     host: readEnv('DB_HOST', 'localhost'),
     port: readNumberEnv('DB_PORT', 3306),

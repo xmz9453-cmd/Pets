@@ -2,11 +2,6 @@ const { getPool } = require('../config/database');
 
 const EDITABLE_FIELDS = {
   version_label: 'version_label',
-  file_name: 'file_name',
-  mime_type: 'mime_type',
-  file_size: 'file_size',
-  storage_path: 'storage_path',
-  file_hash: 'file_hash',
 };
 
 function normalizeContractVersion(row) {
@@ -89,6 +84,24 @@ async function updateDraft(versionId, patch, connection = getPool()) {
   return getContractVersionById(versionId, connection);
 }
 
+async function updateDraftPdf(versionId, metadata, connection) {
+  const [result] = await connection.query(
+    `UPDATE contract_versions
+     SET file_name = ?, mime_type = ?, file_size = ?, storage_path = ?, file_hash = ?
+     WHERE id = ? AND status = 'DRAFT' AND is_current = FALSE`,
+    [
+      metadata.file_name,
+      metadata.mime_type,
+      metadata.file_size,
+      metadata.storage_path,
+      metadata.file_hash,
+      versionId,
+    ],
+  );
+
+  return result.affectedRows === 1;
+}
+
 async function publishDraft(versionId, connection) {
   const [result] = await connection.query(
     `UPDATE contract_versions
@@ -124,5 +137,6 @@ module.exports = {
   listContractVersions,
   markCurrent,
   publishDraft,
+  updateDraftPdf,
   updateDraft,
 };
