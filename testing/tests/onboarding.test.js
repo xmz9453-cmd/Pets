@@ -22,22 +22,42 @@ loadLocalEnvForTestDatabase();
 const app = require('../../backend/src/app');
 const { setup } = require('../../database/scripts/setup');
 const { getPool, closePool } = require('../../backend/src/config/database');
-const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
+const { getFoundationOwner, getFrontDeskStaff } = require('../../database/seeds/staff-authentication-seed');
 const contractPdfStorage = require('../../backend/src/utils/contract-pdf-storage');
 const dailyOperationsRepository = require('../../backend/src/data/daily-operations.repository');
+const { hashPassword } = require('../../backend/src/utils/password');
 
 const owner = getFoundationOwner();
+const frontDesk = getFrontDeskStaff();
 const pdfBytes = Buffer.from('%PDF-1.7\nOnboarding contract fixture\n%%EOF\n');
 const signaturePng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pGQAAAAASUVORK5CYII=';
+const createdStaffIds = [];
 
-async function loginAsOwner() {
+async function loginAs(staff) {
   const agent = request.agent(app);
   const response = await agent.post('/api/auth/login').send({
-    username: owner.username,
-    password: owner.password,
+    username: staff.username,
+    password: staff.password,
   });
   expect(response.status).toBe(200);
   return agent;
+}
+
+async function loginAsOwner() {
+  return loginAs(owner);
+}
+
+async function createStaffWithRole(roleCode) {
+  const username = `onboarding-${roleCode.toLowerCase()}-${Date.now()}`;
+  const [staffResult] = await getPool().query(
+    `INSERT INTO staff (username, password_hash, display_name, status)
+     VALUES (?, ?, ?, 'ACTIVE')`,
+    [username, await hashPassword('onboarding-test-password'), username],
+  );
+  const [roleRows] = await getPool().query('SELECT id FROM roles WHERE code = ? LIMIT 1', [roleCode]);
+  await getPool().query('INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)', [staffResult.insertId, roleRows[0].id]);
+  createdStaffIds.push(staffResult.insertId);
+  return { username, password: 'onboarding-test-password' };
 }
 
 async function createCurrentContract() {
@@ -62,6 +82,11 @@ async function clearData() {
   await getPool().query('DELETE FROM contract_history');
   await getPool().query('DELETE FROM onboardings');
   await getPool().query('DELETE FROM auth_sessions');
+  if (createdStaffIds.length) {
+    await getPool().query('DELETE FROM staff_roles WHERE staff_id IN (?)', [createdStaffIds]);
+    await getPool().query('DELETE FROM staff WHERE id IN (?)', [createdStaffIds]);
+    createdStaffIds.length = 0;
+  }
   await getPool().query('DELETE FROM payments');
   await getPool().query('DELETE FROM order_items');
   await getPool().query('DELETE FROM orders');
@@ -149,6 +174,82 @@ describe('Electronic Contract Onboarding API', () => {
     });
     expect(rows[0].public_token_hash).not.toContain(result.token);
     expect(Number(rows[0].contract_version_id)).toBeGreaterThan(0);
+  });
+
+  test('public create ignores client-supplied fields and creates only a token-addressable onboarding', async () => {
+    const response = await request(app)
+      .post('/api/public/onboardings')
+      .send({
+        created_by_staff_id: 1,
+        contract_version_id: 999999,
+        status: 'COMPLETED',
+        expires_at: '2000-01-01 00:00:00',
+        token: 'client-controlled-token',
+      })
+      .expect(201);
+    const { token } = response.body.data;
+
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(response.body.data).toEqual({ token });
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const [rows] = await getPool().query(
+      `SELECT id, public_token_hash, contract_version_id, created_by_staff_id, status,
+              created_at, expires_at,
+              TIMESTAMPDIFF(SECOND, created_at, expires_at) AS lifetime_seconds
+       FROM onboardings WHERE public_token_hash = ?`,
+      [tokenHash],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      public_token_hash: tokenHash,
+      created_by_staff_id: null,
+      status: 'NOT_STARTED',
+      lifetime_seconds: 604800,
+    });
+    expect(rows[0].created_at).toBeTruthy();
+    expect(rows[0].expires_at).toBeTruthy();
+    const [[currentContract]] = await getPool().query(
+      `SELECT id FROM contract_versions WHERE status = 'PUBLISHED' AND is_current = TRUE`,
+    );
+    expect(Number(rows[0].contract_version_id)).toBe(currentContract.id);
+
+    const [[petCount]] = await getPool().query(
+      'SELECT COUNT(*) AS total FROM onboarding_pets WHERE onboarding_id = ?',
+      [rows[0].id],
+    );
+    expect(Number(petCount.total)).toBe(1);
+    const [[counts]] = await getPool().query(
+      `SELECT (SELECT COUNT(*) FROM customers) AS customers,
+              (SELECT COUNT(*) FROM pets) AS pets,
+              (SELECT COUNT(*) FROM appointments) AS appointments,
+              (SELECT COUNT(*) FROM contract_history) AS contract_history`,
+    );
+    expect(counts).toMatchObject({
+      customers: 0,
+      pets: 0,
+      appointments: 0,
+      contract_history: 0,
+    });
+
+    const publicData = await request(app).get(`/api/public/onboardings/${token}`).expect(200);
+    expect(publicData.body.data.onboarding.status).toBe('NOT_STARTED');
+  });
+
+  test('public create requires a current published contract version', async () => {
+    await getPool().query('UPDATE contract_versions SET is_current = FALSE WHERE is_current = TRUE');
+    const response = await request(app).post('/api/public/onboardings').send({}).expect(409);
+    expect(response.body.error).toEqual({
+      code: 'CONTRACT_VERSION_NOT_AVAILABLE',
+      message: 'A current published contract is required',
+    });
+  });
+
+  test('staff create keeps its authentication and role restrictions', async () => {
+    await request(app).post('/api/onboardings').send({}).expect(401);
+    await (await loginAs(frontDesk)).post('/api/onboardings').send({}).expect(201);
+    const groomer = await createStaffWithRole('GROOMER');
+    await (await loginAs(groomer)).post('/api/onboardings').send({}).expect(403);
+    await (await loginAsOwner()).post('/api/onboardings').send({}).expect(201);
   });
 
   test('GET does not change status, first autosave starts the workflow, and data stays temporary before submit', async () => {

@@ -6,6 +6,7 @@ const { requireRole } = require('../middleware/authorize');
 const router = express.Router();
 
 router.post('/onboardings', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), onboardingController.create);
+router.post('/public/onboardings', onboardingController.createPublic);
 router.get('/public/onboardings/:token', onboardingController.getPublic);
 router.get('/public/onboardings/:token/contract.pdf', onboardingController.getContractPdf);
 router.put('/public/onboardings/:token', onboardingController.autosave);

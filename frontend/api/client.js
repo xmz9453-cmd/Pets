@@ -114,6 +114,10 @@ export async function createOnboarding() {
   return request('/api/onboardings', { method: 'POST', body: '{}' });
 }
 
+export async function createPublicOnboarding() {
+  return request('/api/public/onboardings', { method: 'POST', body: '{}' });
+}
+
 function publicOnboardingPath(token, suffix = '') {
   return `/api/public/onboardings/${encodeURIComponent(token)}${suffix}`;
 }

@@ -99,7 +99,7 @@ function checkWritable(row) {
   }
 }
 
-async function create(staffId) {
+async function createWithCreator(staffId) {
   const token = crypto.randomBytes(32).toString('base64url');
   const pool = getPool();
   const connection = await pool.getConnection();
@@ -126,6 +126,15 @@ async function create(staffId) {
   } finally {
     connection.release();
   }
+}
+
+async function create(staffId) {
+  return createWithCreator(staffId);
+}
+
+async function createPublic() {
+  const { token } = await createWithCreator(null);
+  return { token };
 }
 
 async function getPublic(token) {
@@ -448,6 +457,7 @@ async function getContractPdf(token) {
 module.exports = {
   autosave,
   create,
+  createPublic,
   getContractPdf,
   getPublic,
   resolve,

@@ -12,6 +12,15 @@ async function create(req, res, next) {
   }
 }
 
+async function createPublic(req, res, next) {
+  try {
+    const { token } = await onboardingService.createPublic();
+    sendSuccess(res, { token }, 201);
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function getPublic(req, res, next) {
   try {
     sendSuccess(res, await onboardingService.getPublic(req.params.token));
@@ -83,6 +92,7 @@ async function submit(req, res, next) {
 module.exports = {
   autosave,
   create,
+  createPublic,
   getContractPdf,
   getPublic,
   resolveCustomer,
