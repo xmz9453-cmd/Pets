@@ -31,6 +31,25 @@ async function listServices(filters = {}) {
   return { services: rows.map(normalizeService), total: rows.length };
 }
 
+async function listActiveServicesBySpecies(species, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT id, name, type, price, unit
+     FROM services
+     WHERE status = 'ACTIVE'
+       AND (species = 'BOTH' OR species = ?)
+     ORDER BY sort_order ASC, name ASC`,
+    [species],
+  );
+
+  return rows.map((row) => ({
+    id: Number(row.id),
+    name: row.name,
+    type: row.type,
+    price: Number(row.price),
+    unit: row.unit,
+  }));
+}
+
 async function getServiceById(id, connection = getPool()) {
   const [rows] = await connection.query('SELECT * FROM services WHERE id = ? LIMIT 1', [id]);
   return normalizeService(rows[0]);
@@ -81,4 +100,4 @@ async function deleteService(id) {
   await getPool().query('DELETE FROM services WHERE id = ?', [id]);
 }
 
-module.exports = { countHistoricalUsage, createService, deleteService, findByName, getServiceById, listServices, updateService };
+module.exports = { countHistoricalUsage, createService, deleteService, findByName, getServiceById, listActiveServicesBySpecies, listServices, updateService };

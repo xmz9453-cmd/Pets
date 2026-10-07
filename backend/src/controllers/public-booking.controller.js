@@ -48,7 +48,7 @@ async function confirmExistingCustomer(req, res) {
   }
 }
 
-async function listPets(req, res) {
+async function listPets(req, res, next) {
   const cookie = (req.headers.cookie || '')
     .split(';')
     .map((item) => item.trim())
@@ -70,16 +70,34 @@ async function listPets(req, res) {
       return;
     }
 
-    logError('Public booking pet list failed', {
-      path: req.path,
-      method: req.method,
-      message: error.message,
-    });
-    res.status(500).json({
-      success: false,
-      error: { message: 'Internal server error' },
-    });
+    next(error);
   }
 }
 
-module.exports = { confirmExistingCustomer, listPets };
+async function listServices(req, res, next) {
+  const cookie = (req.headers.cookie || '')
+    .split(';')
+    .map((item) => item.trim())
+    .find((item) => item.startsWith('booking_session='));
+  const token = cookie ? cookie.slice('booking_session='.length) : '';
+
+  try {
+    const result = await publicBookingService.listServicesForBookingSession(token, req.query.pet_id);
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    if (error.code === 'BOOKING_SESSION_INVALID') {
+      res.clearCookie('booking_session', {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: config.nodeEnv === 'production',
+        path: '/api/public/booking',
+      });
+      res.status(401).json(BOOKING_SESSION_FAILURE);
+      return;
+    }
+
+    next(error);
+  }
+}
+
+module.exports = { confirmExistingCustomer, listPets, listServices };

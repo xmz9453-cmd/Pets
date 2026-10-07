@@ -129,6 +129,10 @@ export async function getPublicBookingPets() {
   return request('/api/public/booking/pets');
 }
 
+export async function getPublicBookingServices(petId) {
+  return request(`/api/public/booking/services?pet_id=${encodeURIComponent(petId)}`);
+}
+
 function publicOnboardingPath(token, suffix = '') {
   return `/api/public/onboardings/${encodeURIComponent(token)}${suffix}`;
 }

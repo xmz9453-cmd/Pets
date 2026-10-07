@@ -157,10 +157,10 @@ describe('Public booking customer confirmation', () => {
     )).rejects.toMatchObject({ code: 'ER_DUP_ENTRY' });
   });
 
-  async function createPetForCustomer(ownerId, petName, status = 'ACTIVE') {
+  async function createPetForCustomer(ownerId, petName, status = 'ACTIVE', species = 'CAT') {
     const [pet] = await getPool().query(
       'INSERT INTO pets (name, species, breed, gender, status) VALUES (?, ?, ?, ?, ?)',
-      [petName, 'CAT', '米克斯', 'UNKNOWN', status],
+      [petName, species, '米克斯', 'UNKNOWN', status],
     );
     petIds.push(pet.insertId);
     await getPool().query(
@@ -168,6 +168,15 @@ describe('Public booking customer confirmation', () => {
       [pet.insertId, ownerId],
     );
     return pet.insertId;
+  }
+
+  async function createServiceFixture({ name, type = 'GROOMING', species = 'DOG', price = 500, unit = '次', status = 'ACTIVE' } = {}) {
+    const uniqueName = `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const [result] = await getPool().query(
+      'INSERT INTO services (name, type, description, price, unit, species, duration_minutes, sort_order, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [uniqueName, type, null, price, unit, species, 30, 0, status],
+    );
+    return { id: result.insertId, name: uniqueName };
   }
 
   async function createBookingSession() {
@@ -242,5 +251,81 @@ describe('Public booking customer confirmation', () => {
       .get('/api/public/booking/pets')
       .set('Cookie', cookie)
       .expect(401);
+  });
+
+  test('returns active, species-compatible services for the selected pet using the session customer identity', async () => {
+    const petId = await createPetForCustomer(customerId, '服務狗', 'ACTIVE', 'DOG');
+    const dogService = await createServiceFixture({ name: 'Dog Groom', type: 'GROOMING', species: 'DOG', price: 500, unit: '次' });
+    const bothService = await createServiceFixture({ name: 'All Pets Groom', type: 'GROOMING', species: 'BOTH', price: 600, unit: '次' });
+    const catService = await createServiceFixture({ name: 'Cat Groom', type: 'GROOMING', species: 'CAT', price: 550, unit: '次' });
+    const inactiveService = await createServiceFixture({ name: 'Inactive Dog Groom', type: 'GROOMING', species: 'DOG', price: 700, unit: '次', status: 'INACTIVE' });
+
+    const cookie = await createBookingSession();
+    const response = await request(app)
+      .get(`/api/public/booking/services?pet_id=${petId}`)
+      .set('Cookie', cookie)
+      .expect(200);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.services.map((service) => service.id)).toEqual(expect.arrayContaining([dogService.id, bothService.id]));
+    expect(response.body.data.services.every((service) => ['id', 'name', 'type', 'price', 'unit'].every((key) => Object.prototype.hasOwnProperty.call(service, key)))).toBe(true);
+    expect(response.body.data.services[0]).not.toHaveProperty('description');
+    expect(response.body.data.services[0]).not.toHaveProperty('duration_minutes');
+    expect(response.body.data.services[0]).not.toHaveProperty('customer_id');
+    expect(response.body.data.services.every((service) => service.id !== inactiveService.id)).toBe(true);
+    expect(response.body.data.services.every((service) => service.id !== catService.id)).toBe(true);
+  });
+
+  test('rejects invalid, expired, missing, and non-active booking sessions for service lookup', async () => {
+    const petId = await createPetForCustomer(customerId, '會話寵物', 'ACTIVE', 'DOG');
+    await request(app).get(`/api/public/booking/services?pet_id=${petId}`).expect(401);
+    await request(app).get(`/api/public/booking/services?pet_id=${petId}`).set('Cookie', 'booking_session=not-a-valid-token').expect(401);
+
+    const cookie = await createBookingSession();
+    const token = cookie.slice('booking_session='.length);
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    await getPool().query('UPDATE booking_sessions SET status = ? WHERE token_hash = ?', ['CONSUMED', tokenHash]);
+    await request(app).get(`/api/public/booking/services?pet_id=${petId}`).set('Cookie', cookie).expect(401);
+
+    await getPool().query('UPDATE booking_sessions SET status = ?, expires_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE token_hash = ?', ['ACTIVE', tokenHash]);
+    await request(app).get(`/api/public/booking/services?pet_id=${petId}`).set('Cookie', cookie).expect(401);
+  });
+
+  test('rejects unowned, missing, and inactive pets for service lookup and ignores customer_id in the request', async () => {
+    const ownPetId = await createPetForCustomer(customerId, '自己的狗', 'ACTIVE', 'DOG');
+    const otherCustomerId = (await getPool().query('INSERT INTO customers (name, phone, status) VALUES (?, ?, ?)', ['Other Service Customer', `09${crypto.randomInt(100000000, 999999999)}`, 'ACTIVE']))[0].insertId;
+    const otherCustomerPetId = await createPetForCustomer(otherCustomerId, '別人的狗', 'ACTIVE', 'DOG');
+    const inactivePetId = await createPetForCustomer(customerId, '停用狗', 'INACTIVE', 'DOG');
+
+    const cookie = await createBookingSession();
+    const validResponse = await request(app).get(`/api/public/booking/services?pet_id=${ownPetId}&customer_id=999999`).set('Cookie', cookie).expect(200);
+    expect(validResponse.body.data.services.length).toBeGreaterThan(0);
+
+    const otherResponse = await request(app).get(`/api/public/booking/services?pet_id=${otherCustomerPetId}`).set('Cookie', cookie).expect(400);
+    expect(otherResponse.body.error.code).toBe('VALIDATION_ERROR');
+    expect(otherResponse.body.error.fields.pet_id).toBe('Pet does not belong to this customer');
+
+    const missingResponse = await request(app).get('/api/public/booking/services?pet_id=999999').set('Cookie', cookie).expect(404);
+    expect(missingResponse.body.error.code).toBe('PET_NOT_FOUND');
+
+    const inactiveResponse = await request(app).get(`/api/public/booking/services?pet_id=${inactivePetId}`).set('Cookie', cookie).expect(400);
+    expect(inactiveResponse.body.error.fields.pet_id).toBe('Pet is not active');
+  });
+
+  test('filters services by species compatibility for dog and cat pets', async () => {
+    const dogPetId = await createPetForCustomer(customerId, '狗', 'ACTIVE', 'DOG');
+    const catPetId = await createPetForCustomer(customerId, '貓', 'ACTIVE', 'CAT');
+    const dogOnly = await createServiceFixture({ name: 'Dog Only', species: 'DOG', type: 'GROOMING', price: 500, unit: '次' });
+    const bothPets = await createServiceFixture({ name: 'Both Pets', species: 'BOTH', type: 'GROOMING', price: 600, unit: '次' });
+    const catOnly = await createServiceFixture({ name: 'Cat Only', species: 'CAT', type: 'GROOMING', price: 550, unit: '次' });
+    const cookie = await createBookingSession();
+
+    const dogResponse = await request(app).get(`/api/public/booking/services?pet_id=${dogPetId}`).set('Cookie', cookie).expect(200);
+    expect(dogResponse.body.data.services.map((service) => service.id)).toEqual(expect.arrayContaining([dogOnly.id, bothPets.id]));
+    expect(dogResponse.body.data.services.map((service) => service.id)).not.toContain(catOnly.id);
+
+    const catResponse = await request(app).get(`/api/public/booking/services?pet_id=${catPetId}`).set('Cookie', cookie).expect(200);
+    expect(catResponse.body.data.services.map((service) => service.id)).toEqual(expect.arrayContaining([catOnly.id, bothPets.id]));
+    expect(catResponse.body.data.services.map((service) => service.id)).not.toContain(dogOnly.id);
   });
 });

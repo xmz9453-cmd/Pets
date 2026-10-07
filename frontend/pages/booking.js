@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useRouter } from 'next/router';
-import { confirmExistingBookingCustomer, createPublicOnboarding, getPublicBookingPets } from '../api/client';
+import { confirmExistingBookingCustomer, createPublicOnboarding, getPublicBookingPets, getPublicBookingServices } from '../api/client';
 
 const BOOKING_MESSAGES = {
   new: '新客預約流程尚未開放。',
@@ -23,6 +23,10 @@ export default function BookingPage() {
   const [selectedPetId, setSelectedPetId] = useState(null);
   const [loadingPets, setLoadingPets] = useState(false);
   const [petsLoaded, setPetsLoaded] = useState(false);
+  const [services, setServices] = useState([]);
+  const [selectedServiceId, setSelectedServiceId] = useState(null);
+  const [loadingServices, setLoadingServices] = useState(false);
+  const [servicesLoaded, setServicesLoaded] = useState(false);
 
   async function handleNewBooking() {
     setCreating(true);
@@ -46,6 +50,9 @@ export default function BookingPage() {
     setLoadingPets(false);
     setPets([]);
     setSelectedPetId(null);
+    setSelectedServiceId(null);
+    setServices([]);
+    setServicesLoaded(false);
     setPetsLoaded(false);
     setError('');
     setMessage('');
@@ -67,6 +74,30 @@ export default function BookingPage() {
     } finally {
       setLoadingPets(false);
       setConfirming(false);
+    }
+  }
+
+  async function handlePetSelection(petId) {
+    setSelectedPetId(petId);
+    setSelectedServiceId(null);
+    setServices([]);
+    setServicesLoaded(false);
+    setLoadingServices(true);
+    setError('');
+
+    try {
+      const result = await getPublicBookingServices(petId);
+      setServices(result.services || []);
+      setServicesLoaded(true);
+    } catch (serviceError) {
+      const status = serviceError?.statusCode;
+      if (status === 401) {
+        setError(BOOKING_MESSAGES.petLoadFailure);
+      } else {
+        setError(serviceError?.message || '無法載入可預約服務，請稍後再試。');
+      }
+    } finally {
+      setLoadingServices(false);
     }
   }
 
@@ -155,7 +186,7 @@ export default function BookingPage() {
                         name="booking-pet"
                         value={pet.id}
                         checked={selectedPetId === pet.id}
-                        onChange={() => setSelectedPetId(pet.id)}
+                        onChange={() => handlePetSelection(pet.id)}
                       />
                       <span>
                         <span className="d-block fw-semibold">{pet.name}</span>
@@ -172,6 +203,40 @@ export default function BookingPage() {
           ) : null}
           {!loadingPets && petsLoaded && pets.length === 0 ? (
             <p className="mt-4 text-muted" role="status">目前沒有可預約的寵物。</p>
+          ) : null}
+          {selectedPetId ? (
+            <section className="mt-4" aria-labelledby="booking-service-heading">
+              <h2 id="booking-service-heading" className="h5">請選擇要預約的服務</h2>
+              {loadingServices ? (
+                <p className="mt-3" role="status">正在載入可預約服務...</p>
+              ) : services.length > 0 ? (
+                <div className="d-grid gap-2">
+                  {services.map((service) => (
+                    <label key={service.id} className="card p-3">
+                      <span className="d-flex align-items-start gap-2">
+                        <input
+                          type="radio"
+                          name="booking-service"
+                          value={service.id}
+                          checked={selectedServiceId === service.id}
+                          onChange={() => setSelectedServiceId(service.id)}
+                        />
+                        <span>
+                          <span className="d-block fw-semibold">{service.name}</span>
+                          <span className="d-block text-muted">{service.type === 'GROOMING' ? '美容' : '住宿'}</span>
+                          <span className="d-block text-muted">
+                            {new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(service.price)}／{service.unit}
+                          </span>
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+              {!loadingServices && servicesLoaded && services.length === 0 ? (
+                <p className="mt-3 text-muted" role="status">目前沒有可預約的服務。</p>
+              ) : null}
+            </section>
           ) : null}
         </div>
       </div>
