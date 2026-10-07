@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { useRouter } from 'next/router';
-import { confirmExistingBookingCustomer, createPublicOnboarding } from '../api/client';
+import { confirmExistingBookingCustomer, createPublicOnboarding, getPublicBookingPets } from '../api/client';
 
 const BOOKING_MESSAGES = {
   new: '新客預約流程尚未開放。',
   confirmationFailure: '手機號碼或姓名不正確，請確認後再試。',
-  confirmationSuccess: '身分確認成功，下一步功能尚未開放。',
+  petLoadFailure: '無法載入寵物資料，請重新確認身分。',
 };
+
+const SPECIES_LABELS = { DOG: '狗', CAT: '貓' };
 
 export default function BookingPage() {
   const router = useRouter();
@@ -17,6 +19,10 @@ export default function BookingPage() {
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
   const [confirming, setConfirming] = useState(false);
+  const [pets, setPets] = useState([]);
+  const [selectedPetId, setSelectedPetId] = useState(null);
+  const [loadingPets, setLoadingPets] = useState(false);
+  const [petsLoaded, setPetsLoaded] = useState(false);
 
   async function handleNewBooking() {
     setCreating(true);
@@ -37,14 +43,29 @@ export default function BookingPage() {
   async function handleExistingCustomerConfirmation(event) {
     event.preventDefault();
     setConfirming(true);
+    setLoadingPets(false);
+    setPets([]);
+    setSelectedPetId(null);
+    setPetsLoaded(false);
     setError('');
     setMessage('');
     try {
       await confirmExistingBookingCustomer(phone, name);
-      setMessage(BOOKING_MESSAGES.confirmationSuccess);
     } catch {
       setError(BOOKING_MESSAGES.confirmationFailure);
+      setConfirming(false);
+      return;
+    }
+
+    setLoadingPets(true);
+    try {
+      const result = await getPublicBookingPets();
+      setPets(result.pets || []);
+      setPetsLoaded(true);
+    } catch {
+      setError(BOOKING_MESSAGES.petLoadFailure);
     } finally {
+      setLoadingPets(false);
       setConfirming(false);
     }
   }
@@ -119,6 +140,38 @@ export default function BookingPage() {
             <div className="alert alert-info mt-4 mb-0" role="status" aria-live="polite">
               {message}
             </div>
+          ) : null}
+          {loadingPets ? (
+            <p className="mt-4" role="status">正在載入寵物資料...</p>
+          ) : pets.length > 0 ? (
+            <section className="mt-4" aria-labelledby="booking-pet-heading">
+              <h2 id="booking-pet-heading" className="h5">請選擇要預約的寵物</h2>
+              <div className="d-grid gap-2">
+                {pets.map((pet) => (
+                  <label key={pet.id} className="card p-3">
+                    <span className="d-flex align-items-start gap-2">
+                      <input
+                        type="radio"
+                        name="booking-pet"
+                        value={pet.id}
+                        checked={selectedPetId === pet.id}
+                        onChange={() => setSelectedPetId(pet.id)}
+                      />
+                      <span>
+                        <span className="d-block fw-semibold">{pet.name}</span>
+                        <span className="d-block text-muted">
+                          {SPECIES_LABELS[pet.species] || pet.species}
+                          {pet.breed ? `・${pet.breed}` : ''}
+                        </span>
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {!loadingPets && petsLoaded && pets.length === 0 ? (
+            <p className="mt-4 text-muted" role="status">目前沒有可預約的寵物。</p>
           ) : null}
         </div>
       </div>

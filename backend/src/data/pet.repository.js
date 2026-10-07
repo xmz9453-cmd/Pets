@@ -77,6 +77,18 @@ async function listPets(filters = {}) {
   };
 }
 
+async function listActivePetsByCustomerId(customerId, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT p.id, p.name, p.species, p.breed
+     FROM pet_customer_relationships pcr
+     INNER JOIN pets p ON p.id = pcr.pet_id
+     WHERE pcr.customer_id = ? AND p.status = 'ACTIVE'
+     ORDER BY p.name ASC, p.id ASC`,
+    [customerId],
+  );
+  return rows.map((row) => ({ ...row, id: Number(row.id) }));
+}
+
 async function getPetById(petId, connection = getPool()) {
   const [rows] = await connection.query('SELECT * FROM pets WHERE id = ? LIMIT 1', [petId]);
   return normalizePet(rows[0] || null);
@@ -273,6 +285,7 @@ module.exports = {
   findRelationshipByPetAndCustomer,
   getPetById,
   getPetDetail,
+  listActivePetsByCustomerId,
   listPets,
   listRelationshipsByPetId,
   removeRelationship,

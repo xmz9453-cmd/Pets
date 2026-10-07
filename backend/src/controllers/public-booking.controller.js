@@ -10,6 +10,14 @@ const CUSTOMER_CONFIRMATION_FAILURE = {
   },
 };
 
+const BOOKING_SESSION_FAILURE = {
+  success: false,
+  error: {
+    code: 'BOOKING_SESSION_INVALID',
+    message: '預約工作階段無效或已過期，請重新確認身分。',
+  },
+};
+
 async function confirmExistingCustomer(req, res) {
   try {
     const { token } = await publicBookingService.confirmExistingCustomer(
@@ -40,4 +48,38 @@ async function confirmExistingCustomer(req, res) {
   }
 }
 
-module.exports = { confirmExistingCustomer };
+async function listPets(req, res) {
+  const cookie = (req.headers.cookie || '')
+    .split(';')
+    .map((item) => item.trim())
+    .find((item) => item.startsWith('booking_session='));
+  const token = cookie ? cookie.slice('booking_session='.length) : '';
+
+  try {
+    const result = await publicBookingService.listPetsForBookingSession(token);
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    if (error.code === 'BOOKING_SESSION_INVALID') {
+      res.clearCookie('booking_session', {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: config.nodeEnv === 'production',
+        path: '/api/public/booking',
+      });
+      res.status(401).json(BOOKING_SESSION_FAILURE);
+      return;
+    }
+
+    logError('Public booking pet list failed', {
+      path: req.path,
+      method: req.method,
+      message: error.message,
+    });
+    res.status(500).json({
+      success: false,
+      error: { message: 'Internal server error' },
+    });
+  }
+}
+
+module.exports = { confirmExistingCustomer, listPets };

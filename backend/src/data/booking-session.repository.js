@@ -13,7 +13,7 @@ async function findActiveSessionByTokenHash(tokenHash, connection = getPool()) {
   const [rows] = await connection.query(
     `SELECT id, customer_id, status, created_at, expires_at
      FROM booking_sessions
-     WHERE token_hash = ? AND status = 'ACTIVE' AND expires_at > CURRENT_TIMESTAMP
+     WHERE token_hash = ? AND status = 'ACTIVE' AND expires_at > UTC_TIMESTAMP()
      LIMIT 1`,
     [tokenHash],
   );

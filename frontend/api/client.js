@@ -125,6 +125,10 @@ export async function confirmExistingBookingCustomer(phone, name) {
   });
 }
 
+export async function getPublicBookingPets() {
+  return request('/api/public/booking/pets');
+}
+
 function publicOnboardingPath(token, suffix = '') {
   return `/api/public/onboardings/${encodeURIComponent(token)}${suffix}`;
 }

@@ -31,8 +31,10 @@ const CUSTOMER_CONFIRMATION_FAILURE = {
 
 describe('Public booking customer confirmation', () => {
   let customerId;
+  let otherCustomerId;
   let phone;
   let name;
+  let petIds;
 
   beforeAll(async () => {
     await setup();
@@ -47,10 +49,20 @@ describe('Public booking customer confirmation', () => {
       [name, phone],
     );
     customerId = result.insertId;
+    petIds = [];
   });
 
   afterEach(async () => {
+    if (petIds.length) {
+      await getPool().query('DELETE FROM pet_customer_relationships WHERE pet_id IN (?)', [petIds]);
+      await getPool().query('DELETE FROM pets WHERE id IN (?)', [petIds]);
+    }
     await getPool().query('DELETE FROM booking_sessions WHERE customer_id = ?', [customerId]);
+    if (otherCustomerId) {
+      await getPool().query('DELETE FROM booking_sessions WHERE customer_id = ?', [otherCustomerId]);
+      await getPool().query('DELETE FROM customers WHERE id = ?', [otherCustomerId]);
+      otherCustomerId = null;
+    }
     await getPool().query('DELETE FROM customers WHERE id = ?', [customerId]);
   });
 
@@ -143,5 +155,92 @@ describe('Public booking customer confirmation', () => {
        VALUES (?, ?, 'ACTIVE', DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 2 HOUR))`,
       [tokenHash, customerId],
     )).rejects.toMatchObject({ code: 'ER_DUP_ENTRY' });
+  });
+
+  async function createPetForCustomer(ownerId, petName, status = 'ACTIVE') {
+    const [pet] = await getPool().query(
+      'INSERT INTO pets (name, species, breed, gender, status) VALUES (?, ?, ?, ?, ?)',
+      [petName, 'CAT', '米克斯', 'UNKNOWN', status],
+    );
+    petIds.push(pet.insertId);
+    await getPool().query(
+      'INSERT INTO pet_customer_relationships (pet_id, customer_id, is_primary) VALUES (?, ?, TRUE)',
+      [pet.insertId, ownerId],
+    );
+    return pet.insertId;
+  }
+
+  async function createBookingSession() {
+    const response = await request(app)
+      .post('/api/public/booking/customer-confirmation')
+      .send({ phone, name })
+      .expect(200);
+    return response.headers['set-cookie'][0].split(';')[0];
+  }
+
+  test('lists only this session customer active pets with public fields', async () => {
+    const ownPetId = await createPetForCustomer(customerId, '阿貓');
+    await createPetForCustomer(customerId, '停用寵物', 'INACTIVE');
+    const [otherCustomer] = await getPool().query(
+      `INSERT INTO customers (name, phone, status) VALUES (?, ?, 'ACTIVE')`,
+      ['Other Booking Customer', `09${crypto.randomInt(100000000, 999999999)}`],
+    );
+    otherCustomerId = otherCustomer.insertId;
+    await createPetForCustomer(otherCustomerId, '別人的寵物');
+
+    const cookie = await createBookingSession();
+    const response = await request(app)
+      .get('/api/public/booking/pets?customer_id=999999')
+      .set('Cookie', cookie)
+      .send({ customer_id: 999999 })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      success: true,
+      data: {
+        pets: [{ id: ownPetId, name: '阿貓', species: 'CAT', breed: '米克斯' }],
+      },
+    });
+    expect(JSON.stringify(response.body)).not.toContain(String(customerId));
+    expect(JSON.stringify(response.body)).not.toContain(phone);
+    expect(JSON.stringify(response.body)).not.toContain(name);
+    expect(JSON.stringify(response.body)).not.toContain(cookie.split('=')[1]);
+    expect(response.body.data.pets[0]).not.toHaveProperty('customer_id');
+    expect(response.body.data.pets[0]).not.toHaveProperty('status');
+    expect(response.body.data.pets[0]).not.toHaveProperty('gender');
+  });
+
+  test('requires a valid booking session cookie', async () => {
+    await request(app).get('/api/public/booking/pets').expect(401);
+    await request(app)
+      .get('/api/public/booking/pets')
+      .set('Cookie', 'booking_session=not-a-valid-token')
+      .expect(401);
+  });
+
+  test('rejects expired and non-active booking sessions', async () => {
+    for (const status of ['EXPIRED', 'CONSUMED']) {
+      const cookie = await createBookingSession();
+      const token = cookie.slice('booking_session='.length);
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      await getPool().query('UPDATE booking_sessions SET status = ? WHERE token_hash = ?', [status, tokenHash]);
+      await request(app)
+        .get('/api/public/booking/pets')
+        .set('Cookie', cookie)
+        .expect(401);
+      await getPool().query('DELETE FROM booking_sessions WHERE token_hash = ?', [tokenHash]);
+    }
+
+    const cookie = await createBookingSession();
+    const token = cookie.slice('booking_session='.length);
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    await getPool().query(
+      'UPDATE booking_sessions SET expires_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE token_hash = ?',
+      [tokenHash],
+    );
+    await request(app)
+      .get('/api/public/booking/pets')
+      .set('Cookie', cookie)
+      .expect(401);
   });
 });
