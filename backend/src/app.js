@@ -16,6 +16,7 @@ const paymentRoutes = require('./routes/payment.routes');
 const reportRoutes = require('./routes/report.routes');
 const contractVersionRoutes = require('./routes/contract-version.routes');
 const onboardingRoutes = require('./routes/onboarding.routes');
+const publicBookingRoutes = require('./routes/public-booking.routes');
 const { errorHandler } = require('./middleware/error-handler');
 
 const app = express();
@@ -43,6 +44,7 @@ app.use('/api', paymentRoutes);
 app.use('/api', reportRoutes);
 app.use('/api', contractVersionRoutes);
 app.use('/api', onboardingRoutes);
+app.use('/api', publicBookingRoutes);
 
 app.use((req, res) => {
   res.status(404).json({

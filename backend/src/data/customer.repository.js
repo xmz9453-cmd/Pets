@@ -128,6 +128,16 @@ async function createCustomer(payload, connection = getPool()) {
   return result.insertId;
 }
 
+async function findActiveCustomerIdByPhoneAndName(phone, name, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT id FROM customers
+     WHERE phone = ? AND name = ? AND status = 'ACTIVE'
+     LIMIT 1`,
+    [phone, name],
+  );
+  return rows[0] || null;
+}
+
 async function updateCustomer(customerId, patch) {
   const fields = [];
   const values = [];
@@ -285,6 +295,7 @@ module.exports = {
   createCustomer,
   deleteCustomer,
   getCustomerById,
+  findActiveCustomerIdByPhoneAndName,
   listCustomers,
   updateCustomer,
   updateStatus,

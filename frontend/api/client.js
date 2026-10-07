@@ -118,6 +118,13 @@ export async function createPublicOnboarding() {
   return request('/api/public/onboardings', { method: 'POST', body: '{}' });
 }
 
+export async function confirmExistingBookingCustomer(phone, name) {
+  return request('/api/public/booking/customer-confirmation', {
+    method: 'POST',
+    body: JSON.stringify({ phone, name }),
+  });
+}
+
 function publicOnboardingPath(token, suffix = '') {
   return `/api/public/onboardings/${encodeURIComponent(token)}${suffix}`;
 }

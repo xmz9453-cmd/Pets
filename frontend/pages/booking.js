@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useRouter } from 'next/router';
-import { createPublicOnboarding } from '../api/client';
+import { confirmExistingBookingCustomer, createPublicOnboarding } from '../api/client';
 
 const BOOKING_MESSAGES = {
   new: '新客預約流程尚未開放。',
-  returning: '舊客預約流程尚未開放。',
+  confirmationFailure: '手機號碼或姓名不正確，請確認後再試。',
+  confirmationSuccess: '身分確認成功，下一步功能尚未開放。',
 };
 
 export default function BookingPage() {
@@ -12,6 +13,10 @@ export default function BookingPage() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  const [showReturningForm, setShowReturningForm] = useState(false);
+  const [phone, setPhone] = useState('');
+  const [name, setName] = useState('');
+  const [confirming, setConfirming] = useState(false);
 
   async function handleNewBooking() {
     setCreating(true);
@@ -26,6 +31,21 @@ export default function BookingPage() {
         : createError.message || '目前無法開始預約，請稍後再試。');
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function handleExistingCustomerConfirmation(event) {
+    event.preventDefault();
+    setConfirming(true);
+    setError('');
+    setMessage('');
+    try {
+      await confirmExistingBookingCustomer(phone, name);
+      setMessage(BOOKING_MESSAGES.confirmationSuccess);
+    } catch {
+      setError(BOOKING_MESSAGES.confirmationFailure);
+    } finally {
+      setConfirming(false);
     }
   }
 
@@ -47,12 +67,49 @@ export default function BookingPage() {
             <button
               type="button"
               className="btn btn-outline-primary text-start p-4"
-              onClick={() => setMessage(BOOKING_MESSAGES.returning)}
+              onClick={() => {
+                setShowReturningForm(true);
+                setError('');
+                setMessage('');
+              }}
             >
               <span className="d-block fs-4 fw-semibold mb-1">舊客預約</span>
               <span className="d-block">之前已經來過店裡</span>
             </button>
           </div>
+          {showReturningForm ? (
+            <form className="mt-4" onSubmit={handleExistingCustomerConfirmation}>
+              <div className="mb-3">
+                <label htmlFor="booking-phone" className="form-label">手機號碼</label>
+                <input
+                  id="booking-phone"
+                  className="form-control"
+                  type="tel"
+                  autoComplete="tel"
+                  value={phone}
+                  onChange={(event) => setPhone(event.target.value)}
+                  required
+                  disabled={confirming}
+                />
+              </div>
+              <div className="mb-3">
+                <label htmlFor="booking-name" className="form-label">姓名</label>
+                <input
+                  id="booking-name"
+                  className="form-control"
+                  type="text"
+                  autoComplete="name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  required
+                  disabled={confirming}
+                />
+              </div>
+              <button type="submit" className="btn btn-primary" disabled={confirming}>
+                {confirming ? '確認中...' : '確認'}
+              </button>
+            </form>
+          ) : null}
           {error ? (
             <div className="alert alert-danger mt-4 mb-0" role="alert">
               {error}
