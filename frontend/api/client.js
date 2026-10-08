@@ -324,6 +324,50 @@ export async function updateShopSettings(payload) {
   });
 }
 
+export async function getBookingSchedule() {
+  return request('/api/shop-settings/booking-schedule');
+}
+
+export async function createBookingScheduleRule(payload) {
+  return request('/api/shop-settings/booking-schedule/rules', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateBookingScheduleRule(ruleId, payload) {
+  return request(`/api/shop-settings/booking-schedule/rules/${encodeURIComponent(ruleId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteBookingScheduleRule(ruleId) {
+  return request(`/api/shop-settings/booking-schedule/rules/${encodeURIComponent(ruleId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function createBookingScheduleOverride(payload) {
+  return request('/api/shop-settings/booking-schedule/overrides', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateBookingScheduleOverride(overrideId, payload) {
+  return request(`/api/shop-settings/booking-schedule/overrides/${encodeURIComponent(overrideId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteBookingScheduleOverride(overrideId) {
+  return request(`/api/shop-settings/booking-schedule/overrides/${encodeURIComponent(overrideId)}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function resetOperationalData() {
   return request('/api/shop-settings/reset-operational-data', {
     method: 'POST',

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { API_BASE_URL, changeOwnPassword, createContractVersion, getContractVersions, getCurrentStaff, getShopSettings, getStaffAccounts, publishContractVersion, resetOperationalData, resetStaffPassword, setCurrentContractVersion, updateContractVersion, updateShopSettings, updateStaffRoles, updateStaffStatus, uploadContractVersionPdf } from '../api/client';
+import { API_BASE_URL, changeOwnPassword, createBookingScheduleOverride, createBookingScheduleRule, createContractVersion, deleteBookingScheduleOverride, deleteBookingScheduleRule, getBookingSchedule, getContractVersions, getCurrentStaff, getShopSettings, getStaffAccounts, publishContractVersion, resetOperationalData, resetStaffPassword, setCurrentContractVersion, updateBookingScheduleOverride, updateBookingScheduleRule, updateContractVersion, updateShopSettings, updateStaffRoles, updateStaffStatus, uploadContractVersionPdf } from '../api/client';
 import { getRoleLabel } from '../utils/staff-display';
 
 const WEEKDAY_ORDER = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -86,6 +86,276 @@ function hasCompleteContractPdfMetadata(version) {
 
 function displayTimestamp(value) {
   return value ? String(value).replace('T', ' ').replace(/\.\d{3}Z$/, '') : '—';
+}
+
+function createEmptyRule() {
+  return { species: 'CAT', start_time: '', capacity: '1', is_closed: false, status: 'ACTIVE' };
+}
+
+function createEmptyOverride() {
+  return { override_date: '', species: 'CAT', kind: 'ALL_DAY_CLOSED', start_time: '', capacity: '' };
+}
+
+function BookingScheduleSettings() {
+  const [schedule, setSchedule] = useState({ rules: [], overrides: [] });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [ruleForm, setRuleForm] = useState(createEmptyRule());
+  const [editingRuleId, setEditingRuleId] = useState(null);
+  const [overrideForm, setOverrideForm] = useState(createEmptyOverride());
+  const [editingOverrideId, setEditingOverrideId] = useState(null);
+
+  async function loadSchedule() {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await getBookingSchedule();
+      setSchedule({ rules: result.rules || [], overrides: result.overrides || [] });
+      return true;
+    } catch (loadError) {
+      setError(loadError.message || '預約設定載入失敗。');
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadSchedule();
+  }, []);
+
+  async function saveSchedule(action) {
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await action();
+      const refreshed = await loadSchedule();
+      if (refreshed) setSuccess('預約設定已儲存。');
+    } catch (saveError) {
+      setError(saveError.message || '預約設定儲存失敗。');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function resetRuleForm() {
+    setRuleForm(createEmptyRule());
+    setEditingRuleId(null);
+  }
+
+  function resetOverrideForm() {
+    setOverrideForm(createEmptyOverride());
+    setEditingOverrideId(null);
+  }
+
+  async function submitRule(event) {
+    event.preventDefault();
+    const payload = {
+      ...ruleForm,
+      start_time: ruleForm.start_time,
+      capacity: ruleForm.is_closed ? null : Number(ruleForm.capacity),
+      status: ruleForm.status,
+    };
+    await saveSchedule(async () => {
+      if (editingRuleId) await updateBookingScheduleRule(editingRuleId, payload);
+      else await createBookingScheduleRule(payload);
+      resetRuleForm();
+    });
+  }
+
+  async function removeRule(ruleId) {
+    await saveSchedule(() => deleteBookingScheduleRule(ruleId));
+    if (editingRuleId === ruleId) resetRuleForm();
+  }
+
+  function editRule(rule) {
+    setEditingRuleId(rule.id);
+    setRuleForm({
+      species: rule.species,
+      start_time: rule.start_time.slice(0, 5),
+      capacity: rule.capacity === null ? '' : String(rule.capacity),
+      is_closed: rule.is_closed,
+      status: rule.status,
+    });
+  }
+
+  async function submitOverride(event) {
+    event.preventDefault();
+    const allDay = overrideForm.kind === 'ALL_DAY_CLOSED';
+    const closed = allDay || overrideForm.kind === 'TIME_CLOSED';
+    const payload = {
+      override_date: overrideForm.override_date,
+      species: overrideForm.species,
+      start_time: allDay ? null : overrideForm.start_time,
+      is_closed: closed,
+      capacity: closed ? null : Number(overrideForm.capacity),
+    };
+    await saveSchedule(async () => {
+      if (editingOverrideId) await updateBookingScheduleOverride(editingOverrideId, payload);
+      else await createBookingScheduleOverride(payload);
+      resetOverrideForm();
+    });
+  }
+
+  async function removeOverride(overrideId) {
+    await saveSchedule(() => deleteBookingScheduleOverride(overrideId));
+    if (editingOverrideId === overrideId) resetOverrideForm();
+  }
+
+  function editOverride(override) {
+    setEditingOverrideId(override.id);
+    setOverrideForm({
+      override_date: override.override_date,
+      species: override.species,
+      kind: override.start_time === null
+        ? 'ALL_DAY_CLOSED'
+        : (override.is_closed ? 'TIME_CLOSED' : 'CAPACITY'),
+      start_time: override.start_time ? override.start_time.slice(0, 5) : '',
+      capacity: override.capacity === null ? '' : String(override.capacity),
+    });
+  }
+
+  function renderSpeciesRules(species) {
+    const rules = schedule.rules.filter((rule) => rule.species === species);
+    return (
+      <div className="col-md-6" key={species}>
+        <h3 className="h6">{species === 'CAT' ? 'CAT 貓' : 'DOG 狗'}</h3>
+        {rules.length === 0 ? (
+          <p className="text-muted">尚未設定開始時間。</p>
+        ) : (
+          <div className="table-responsive">
+            <table className="table table-sm align-middle">
+              <thead>
+                <tr><th>開始時間</th><th>容量</th><th>狀態</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                {rules.map((rule) => (
+                  <tr key={rule.id}>
+                    <td>{rule.start_time.slice(0, 5)}</td>
+                    <td>{rule.is_closed ? '—' : rule.capacity}</td>
+                    <td>{rule.is_closed ? '休息／關閉' : (rule.status === 'ACTIVE' ? '開放' : '停用')}</td>
+                    <td className="text-nowrap">
+                      <button type="button" className="btn btn-sm btn-outline-dark me-1" onClick={() => editRule(rule)}>編輯</button>
+                      <button type="button" className="btn btn-sm btn-outline-danger" disabled={saving} onClick={() => removeRule(rule.id)}>刪除</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <section className="card shadow-sm mt-4">
+      <div className="card-body">
+        <h2 className="h5 mb-1">預約設定</h2>
+        <p className="text-muted">設定 CAT／DOG 每週可選開始時間與容量，以及特定日期例外。店家每週營業時間仍是外層限制。</p>
+        {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
+        {success ? <div className="alert alert-success" role="status">{success}</div> : null}
+        {loading ? (
+          <div className="alert alert-light border mb-0" role="status">預約設定載入中...</div>
+        ) : (
+          <>
+            <form className="row g-2 align-items-end mb-3" onSubmit={submitRule}>
+              <div className="col-md-2">
+                <label className="form-label" htmlFor="booking-rule-species">種類</label>
+                <select id="booking-rule-species" className="form-select" value={ruleForm.species} onChange={(event) => setRuleForm({ ...ruleForm, species: event.target.value })}>
+                  <option value="CAT">CAT 貓</option><option value="DOG">DOG 狗</option>
+                </select>
+              </div>
+              <div className="col-md-2">
+                <label className="form-label" htmlFor="booking-rule-time">開始時間</label>
+                <input id="booking-rule-time" className="form-control" type="time" required value={ruleForm.start_time} onChange={(event) => setRuleForm({ ...ruleForm, start_time: event.target.value })} />
+              </div>
+              <div className="col-md-2">
+                <label className="form-label" htmlFor="booking-rule-capacity">容量</label>
+                <input id="booking-rule-capacity" className="form-control" type="number" min="1" step="1" required={!ruleForm.is_closed} disabled={ruleForm.is_closed} value={ruleForm.is_closed ? '' : ruleForm.capacity} onChange={(event) => setRuleForm({ ...ruleForm, capacity: event.target.value })} />
+              </div>
+              <div className="col-md-3">
+                <div className="form-check mb-2">
+                  <input id="booking-rule-closed" className="form-check-input" type="checkbox" checked={ruleForm.is_closed} onChange={(event) => setRuleForm({ ...ruleForm, is_closed: event.target.checked, capacity: event.target.checked ? '' : (ruleForm.capacity || '1') })} />
+                  <label className="form-check-label" htmlFor="booking-rule-closed">休息／關閉</label>
+                </div>
+              </div>
+              <div className="col-md-3 d-flex gap-2">
+                <button type="submit" className="btn btn-dark" disabled={saving}>{editingRuleId ? '更新時段' : '新增時段'}</button>
+                {editingRuleId ? <button type="button" className="btn btn-outline-dark" onClick={resetRuleForm}>取消</button> : null}
+              </div>
+            </form>
+            <p className="form-text">每筆規則適用至同種類的下一個開始時間；關閉規則不設定容量。</p>
+            <div className="row g-3 mb-4">{renderSpeciesRules('CAT')}{renderSpeciesRules('DOG')}</div>
+
+            <h3 className="h6">日期例外</h3>
+            <form className="row g-2 align-items-end mb-3" onSubmit={submitOverride}>
+              <div className="col-md-2">
+                <label className="form-label" htmlFor="booking-override-date">日期</label>
+                <input id="booking-override-date" className="form-control" type="date" required value={overrideForm.override_date} onChange={(event) => setOverrideForm({ ...overrideForm, override_date: event.target.value })} />
+              </div>
+              <div className="col-md-2">
+                <label className="form-label" htmlFor="booking-override-species">種類</label>
+                <select id="booking-override-species" className="form-select" value={overrideForm.species} onChange={(event) => setOverrideForm({ ...overrideForm, species: event.target.value })}>
+                  <option value="CAT">CAT 貓</option><option value="DOG">DOG 狗</option>
+                </select>
+              </div>
+              <div className="col-md-3">
+                <label className="form-label" htmlFor="booking-override-kind">例外類型</label>
+                <select id="booking-override-kind" className="form-select" value={overrideForm.kind} onChange={(event) => setOverrideForm({ ...overrideForm, kind: event.target.value })}>
+                  <option value="ALL_DAY_CLOSED">整個種類當日關閉</option>
+                  <option value="TIME_CLOSED">關閉特定開始時間</option>
+                  <option value="CAPACITY">調整特定開始時間容量</option>
+                </select>
+              </div>
+              {overrideForm.kind !== 'ALL_DAY_CLOSED' ? (
+                <div className="col-md-2">
+                  <label className="form-label" htmlFor="booking-override-time">開始時間</label>
+                  <input id="booking-override-time" className="form-control" type="time" required value={overrideForm.start_time} onChange={(event) => setOverrideForm({ ...overrideForm, start_time: event.target.value })} />
+                </div>
+              ) : null}
+              {overrideForm.kind === 'CAPACITY' ? (
+                <div className="col-md-2">
+                  <label className="form-label" htmlFor="booking-override-capacity">容量</label>
+                  <input id="booking-override-capacity" className="form-control" type="number" min="1" step="1" required value={overrideForm.capacity} onChange={(event) => setOverrideForm({ ...overrideForm, capacity: event.target.value })} />
+                </div>
+              ) : null}
+              <div className="col-md-3 d-flex gap-2">
+                <button type="submit" className="btn btn-dark" disabled={saving}>{editingOverrideId ? '更新例外' : '新增例外'}</button>
+                {editingOverrideId ? <button type="button" className="btn btn-outline-dark" onClick={resetOverrideForm}>取消</button> : null}
+              </div>
+            </form>
+            {schedule.overrides.length === 0 ? (
+              <p className="text-muted mb-0">目前沒有日期例外。</p>
+            ) : (
+              <div className="table-responsive">
+                <table className="table table-sm align-middle mb-0">
+                  <thead><tr><th>日期</th><th>種類</th><th>範圍</th><th>設定</th><th>操作</th></tr></thead>
+                  <tbody>
+                    {schedule.overrides.map((override) => (
+                      <tr key={override.id}>
+                        <td>{override.override_date}</td>
+                        <td>{override.species}</td>
+                        <td>{override.start_time === null ? '整日' : override.start_time.slice(0, 5)}</td>
+                        <td>{override.is_closed ? '休息／關閉' : `容量 ${override.capacity}`}</td>
+                        <td className="text-nowrap">
+                          <button type="button" className="btn btn-sm btn-outline-dark me-1" onClick={() => editOverride(override)}>編輯</button>
+                          <button type="button" className="btn btn-sm btn-outline-danger" disabled={saving} onClick={() => removeOverride(override.id)}>刪除</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
 }
 
 export default function SettingsPage() {
@@ -598,6 +868,8 @@ export default function SettingsPage() {
           </button>
         </div>
       </form>
+
+      {canEdit ? <BookingScheduleSettings /> : null}
 
       {canEdit ? (
         <section className="card shadow-sm mt-4">
