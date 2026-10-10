@@ -5,16 +5,36 @@ import '../styles/globals.css';
 import { getCurrentStaff, getShopIdentity, logout } from '../api/client';
 
 const NAV_ITEMS = [
-  { href: '/customers', label: '客戶', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/pets', label: '寵物', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/services', label: '服務', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/products', label: '商品', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/appointments', label: '預約', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/calendar', label: '行事曆', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/operations', label: '日常營運', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/orders', label: '訂單', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
-  { href: '/reports', label: '報表', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/customers', label: '客戶', icon: 'user', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/pets', label: '寵物', icon: 'paw', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/services', label: '服務', icon: 'scissors', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/products', label: '商品', icon: 'box', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/appointments', label: '預約', icon: 'calendar', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/calendar', label: '行事曆', icon: 'calendar', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/operations', label: '日常營運', icon: 'list', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/orders', label: '訂單', icon: 'receipt', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/reports', label: '報表', icon: 'chart', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
 ];
+
+const ICON_PATHS = {
+  user: 'M20 21a8 8 0 0 0-16 0 M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z',
+  paw: 'M8 11a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z M16 11a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z M5 17a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z M19 17a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z M12 21c-2.5 0-5-1.2-5-3.2 0-1.5 2.3-4.3 5-4.3s5 2.8 5 4.3c0 2-2.5 3.2-5 3.2Z',
+  scissors: 'M6 6a2.5 2.5 0 1 0 0 .01 M6 18a2.5 2.5 0 1 0 0 .01 M8 8l12 12 M8 16l5-5 M15 9l5-5',
+  box: 'm12 3 9 5-9 5-9-5 9-5Z M3 8v9l9 5 9-5V8 M12 13v9',
+  calendar: 'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v13H3V6a2 2 0 0 1 2-2Z',
+  list: 'M9 6h11 M9 12h11 M9 18h11 M4 6h.01 M4 12h.01 M4 18h.01',
+  receipt: 'M4 3h16v18l-3-2-3 2-3-2-3 2-4-2V3Z M8 8h8 M8 12h8 M8 16h4',
+  chart: 'M4 19V5 M4 19h17 M8 15l4-4 3 2 5-6',
+  settings: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.5 2.6-.2-.1a1.7 1.7 0 0 0-1.9.3l-.1.1h-3l-.1-.2a1.7 1.7 0 0 0-1.5-1l-.2.1-2.6-1.5.1-.2a1.7 1.7 0 0 0-.3-1.9l-.1-.1v-3l.2-.1a1.7 1.7 0 0 0 1-1.5l-.1-.2 1.5-2.6.2.1a1.7 1.7 0 0 0 1.9-.3l.1-.1h3l.1.2a1.7 1.7 0 0 0 1.5 1l.2-.1 2.6 1.5-.1.2a1.7 1.7 0 0 0 .3 1.9l.1.1v3l-.2.1Z',
+};
+
+function AppIcon({ name }) {
+  return (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d={ICON_PATHS[name]} />
+    </svg>
+  );
+}
 
 function AppShell({ Component, pageProps }) {
   const router = useRouter();
@@ -72,30 +92,58 @@ function AppShell({ Component, pageProps }) {
   return (
     <>
       {shouldShowNav ? (
-        <nav className="navbar navbar-expand-lg navbar-dark bg-dark sticky-top shadow-sm">
-          <div className="container-fluid px-3 px-lg-4">
-            <span className="navbar-brand mb-0 h4 me-3">{shopName}</span>
-            <div className="d-flex flex-wrap align-items-center gap-2 ms-auto">
+        <div className="app-shell">
+          <aside className="app-sidebar">
+            <div className="app-sidebar-brand">{shopName}</div>
+            <nav className="app-sidebar-nav" aria-label="主要導覽">
+              {visibleNavItems.map((item) => {
+                const isActive = router.pathname === item.href || router.pathname.startsWith(`${item.href}/`);
+                return (
+                  <a
+                    key={item.href}
+                    href={item.href}
+                    className={`app-nav-link${isActive ? ' active' : ''}`}
+                    aria-current={isActive ? 'page' : undefined}
+                  >
+                    <AppIcon name={item.icon} />
+                    {item.label}
+                  </a>
+                );
+              })}
               {staff && staff.roles.includes('OWNER') ? (
-                <a href="/settings" className="btn btn-outline-light btn-sm">店家設定</a>
-              ) : null}
-              {visibleNavItems.map((item) => (
-                <a key={item.href} href={item.href} className="btn btn-outline-light btn-sm">
-                  {item.label}
+                <a
+                  href="/settings"
+                  className={`app-nav-link${router.pathname === '/settings' ? ' active' : ''}`}
+                  aria-current={router.pathname === '/settings' ? 'page' : undefined}
+                >
+                  <AppIcon name="settings" />
+                  店家設定
                 </a>
-              ))}
-              <span className="navbar-text text-light small">{staff ? staff.display_name : '驗證中'}</span>
-              <button type="button" className="btn btn-outline-light btn-sm" onClick={handleLogout}>登出</button>
+              ) : null}
+            </nav>
+            <div className="app-sidebar-footer">
+              <span className="app-sidebar-user">{staff ? staff.display_name : '驗證中'}</span>
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={handleLogout}>登出</button>
             </div>
+          </aside>
+          <div className="app-main">
+            {error ? (
+              <div className="alert alert-warning" role="alert">{error}</div>
+            ) : null}
+            <Component {...pageProps} />
           </div>
-        </nav>
-      ) : null}
-      {error ? (
-        <div className="container mt-3">
-          <div className="alert alert-warning mb-0" role="alert">{error}</div>
         </div>
       ) : null}
-      <Component {...pageProps} />
+      {!shouldShowNav ? (
+        <>
+          {error ? (
+            <div className="container mt-3">
+              <div className="alert alert-warning mb-0" role="alert">{error}</div>
+            </div>
+          ) : null}
+          <Component {...pageProps} />
+        </>
+      ) : null}
     </>
   );
 }
