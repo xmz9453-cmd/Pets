@@ -30,7 +30,7 @@ const APPOINTMENT_STATUS_LABELS = {
 };
 
 function buildEmptyEntry() {
-  return { pet_id: '', service_ids: [] };
+  return { pet_id: '', service_ids: [], service_durations: {} };
 }
 
 export default function AppointmentsPage() {
@@ -50,7 +50,12 @@ export default function AppointmentsPage() {
 
   const serviceCatalog = useMemo(() => services
     .filter((service) => service.status === 'ACTIVE')
-    .map((service) => ({ id: Number(service.id), name: service.name, species: service.species })), [services]);
+    .map((service) => ({
+      id: Number(service.id),
+      name: service.name,
+      species: service.species,
+      duration_minutes: Number(service.duration_minutes),
+    })), [services]);
 
   async function loadCustomersAndPets() {
     const [customerResult, petResult, serviceResult] = await Promise.all([
@@ -121,7 +126,48 @@ export default function AppointmentsPage() {
       nextPets[index] = {
         ...nextPets[index],
         [field]: value,
-        ...(field === 'pet_id' ? { service_ids: [] } : {}),
+        ...(field === 'pet_id' ? { service_ids: [], service_durations: {} } : {}),
+      };
+      return { ...current, pets: nextPets };
+    });
+    setError('');
+  }
+
+  function handleServiceToggle(index, service) {
+    setForm((current) => {
+      const nextPets = [...current.pets];
+      const entry = nextPets[index];
+      const selected = entry.service_ids.includes(service.id);
+      const serviceIds = selected
+        ? entry.service_ids.filter((serviceId) => serviceId !== service.id)
+        : [...entry.service_ids, service.id];
+      const serviceDurations = { ...entry.service_durations };
+
+      if (selected) {
+        delete serviceDurations[service.id];
+      } else {
+        serviceDurations[service.id] = String(service.duration_minutes);
+      }
+
+      nextPets[index] = {
+        ...entry,
+        service_ids: serviceIds,
+        service_durations: serviceDurations,
+      };
+      return { ...current, pets: nextPets };
+    });
+    setError('');
+  }
+
+  function handleServiceDurationChange(petIndex, serviceId, value) {
+    setForm((current) => {
+      const nextPets = [...current.pets];
+      nextPets[petIndex] = {
+        ...nextPets[petIndex],
+        service_durations: {
+          ...nextPets[petIndex].service_durations,
+          [serviceId]: value,
+        },
       };
       return { ...current, pets: nextPets };
     });
@@ -159,6 +205,7 @@ export default function AppointmentsPage() {
         pets: form.pets.map((petEntry) => ({
           pet_id: petEntry.pet_id,
           service_ids: petEntry.service_ids,
+          ...(editingId ? { service_durations: petEntry.service_durations } : {}),
         })),
       };
 
@@ -193,6 +240,12 @@ export default function AppointmentsPage() {
         pets: (appointment.pets || []).map((pet) => ({
           pet_id: String(pet.pet_id),
           service_ids: (pet.services || []).map((service) => Number(service.id)),
+          service_durations: Object.fromEntries((pet.services || [])
+            .filter((service) => service.duration_minutes !== null && service.duration_minutes !== undefined)
+            .map((service) => [
+              Number(service.id),
+              String(service.duration_minutes),
+            ])),
         })),
       });
     } catch (editError) {
@@ -356,10 +409,7 @@ export default function AppointmentsPage() {
                             type="button"
                             className={`btn btn-sm ${selected ? 'btn-dark' : 'btn-outline-secondary'}`}
                             onClick={() => {
-                              const nextServices = selected
-                                ? (entry.service_ids || []).filter((serviceId) => serviceId !== service.id)
-                                : [...(entry.service_ids || []), service.id];
-                              handlePetChange(index, 'service_ids', nextServices);
+                              handleServiceToggle(index, service);
                             }}
                           >
                             {service.name}
@@ -367,6 +417,24 @@ export default function AppointmentsPage() {
                         );
                       })}
                     </div>
+                    {editingId ? entry.service_ids.map((serviceId) => {
+                      const service = serviceCatalog.find((item) => item.id === serviceId);
+                      return (
+                        <div className="mt-2" key={`duration-${entry.pet_id}-${serviceId}`}>
+                          <label className="form-label mb-1">
+                            {service?.name || `服務 ${serviceId}`} 預估時長（分鐘）
+                          </label>
+                          <input
+                            className="form-control"
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={entry.service_durations?.[serviceId] ?? ''}
+                            onChange={(event) => handleServiceDurationChange(index, serviceId, event.target.value)}
+                          />
+                        </div>
+                      );
+                    }) : null}
                     <small className="text-muted d-block mt-2">已選擇 {selectedServiceCount(entry)} 項服務</small>
                   </div>
                 ))}

@@ -216,6 +216,15 @@ describe('Appointment API', () => {
     );
     expect(Number(initialUpdateSnapshot[0].duration_minutes)).toBe(70);
 
+    const thirdCreateResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2099-01-12',
+      appointment_time: '12:00:00',
+      pets: [{ pet_id: dogResponse.body.data.pet.id, service_ids: [bothServiceId, dogServiceId] }],
+    });
+    expect(thirdCreateResponse.status).toBe(201);
+    const thirdAppointmentId = thirdCreateResponse.body.data.appointment.id;
+
     await getPool().query(
       'UPDATE services SET duration_minutes = 90 WHERE id = ?',
       [catServiceId],
@@ -223,7 +232,7 @@ describe('Appointment API', () => {
 
     const unchangedServiceUpdateResponse = await agent.patch(`/api/appointments/${secondAppointmentId}`).send({
       note: 'Updated appointment note',
-      pets: [{ pet_id: catResponse.body.data.pet.id, service_ids: [catServiceId], duration_minutes: 1 }],
+      pets: [{ pet_id: catResponse.body.data.pet.id, service_ids: [catServiceId] }],
     });
     expect(unchangedServiceUpdateResponse.status).toBe(200);
     const [unchangedServiceSnapshot] = await getPool().query(
@@ -234,6 +243,70 @@ describe('Appointment API', () => {
       [secondAppointmentId, catServiceId],
     );
     expect(Number(unchangedServiceSnapshot[0].duration_minutes)).toBe(70);
+
+    const customDurationUpdateResponse = await agent.patch(`/api/appointments/${firstAppointmentId}`).send({
+      pets: [
+        {
+          pet_id: dogResponse.body.data.pet.id,
+          service_ids: [bothServiceId, dogServiceId],
+          service_durations: { [bothServiceId]: 55 },
+        },
+        {
+          pet_id: catResponse.body.data.pet.id,
+          service_ids: [bothServiceId],
+          service_durations: { [bothServiceId]: 65 },
+        },
+      ],
+    });
+    expect(customDurationUpdateResponse.status).toBe(200);
+    const [scopedSnapshots] = await getPool().query(
+      `SELECT ap.pet_id, ap.appointment_id, aps.service_id, aps.duration_minutes
+       FROM appointment_pets ap
+       INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
+       WHERE (ap.appointment_id = ? AND aps.service_id IN (?, ?))
+          OR (ap.appointment_id = ? AND aps.service_id IN (?, ?))
+       ORDER BY ap.appointment_id, ap.pet_id, aps.service_id`,
+      [firstAppointmentId, bothServiceId, dogServiceId, thirdAppointmentId, bothServiceId, dogServiceId],
+    );
+    expect(scopedSnapshots.map((row) => ({
+      appointment_id: Number(row.appointment_id),
+      pet_id: Number(row.pet_id),
+      service_id: Number(row.service_id),
+      duration_minutes: Number(row.duration_minutes),
+    }))).toEqual([
+      { appointment_id: firstAppointmentId, pet_id: dogResponse.body.data.pet.id, service_id: bothServiceId, duration_minutes: 55 },
+      { appointment_id: firstAppointmentId, pet_id: dogResponse.body.data.pet.id, service_id: dogServiceId, duration_minutes: 30 },
+      { appointment_id: firstAppointmentId, pet_id: catResponse.body.data.pet.id, service_id: bothServiceId, duration_minutes: 65 },
+      { appointment_id: thirdAppointmentId, pet_id: dogResponse.body.data.pet.id, service_id: bothServiceId, duration_minutes: 90 },
+      { appointment_id: thirdAppointmentId, pet_id: dogResponse.body.data.pet.id, service_id: dogServiceId, duration_minutes: 30 },
+    ]);
+
+    for (const invalidDuration of [0, -1, 1.5, 'not-a-number']) {
+      const invalidUpdateResponse = await agent.patch(`/api/appointments/${secondAppointmentId}`).send({
+        pets: [{
+          pet_id: catResponse.body.data.pet.id,
+          service_ids: [catServiceId],
+          service_durations: { [catServiceId]: invalidDuration },
+        }],
+      });
+      expect(invalidUpdateResponse.status).toBe(400);
+    }
+    const unselectedServiceDurationResponse = await agent.patch(`/api/appointments/${secondAppointmentId}`).send({
+      pets: [{
+        pet_id: catResponse.body.data.pet.id,
+        service_ids: [catServiceId],
+        service_durations: { [replacementCatServiceId]: 25 },
+      }],
+    });
+    expect(unselectedServiceDurationResponse.status).toBe(400);
+    const [unchangedAfterInvalidDuration] = await getPool().query(
+      `SELECT aps.duration_minutes
+       FROM appointment_pets ap
+       INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
+       WHERE ap.appointment_id = ? AND aps.service_id = ?`,
+      [secondAppointmentId, catServiceId],
+    );
+    expect(Number(unchangedAfterInvalidDuration[0].duration_minutes)).toBe(70);
 
     const replacementServiceUpdateResponse = await agent.patch(`/api/appointments/${secondAppointmentId}`).send({
       pets: [{ pet_id: catResponse.body.data.pet.id, service_ids: [replacementCatServiceId] }],

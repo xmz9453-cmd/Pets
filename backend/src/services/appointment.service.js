@@ -186,6 +186,44 @@ async function validatePetEntries(customerId, petEntries = []) {
   }
 }
 
+function validateCustomServiceDurations(petEntries) {
+  const errors = {};
+
+  petEntries.forEach((petEntry, petIndex) => {
+    if (petEntry.service_durations === undefined) {
+      return;
+    }
+    if (!petEntry.service_durations || typeof petEntry.service_durations !== 'object' || Array.isArray(petEntry.service_durations)) {
+      errors[`pets[${petIndex}].service_durations`] = 'Service durations must be an object';
+      return;
+    }
+
+    const selectedServiceIds = new Set((petEntry.service_ids || []).map((serviceId) => String(Number(serviceId))));
+    for (const [serviceId, value] of Object.entries(petEntry.service_durations)) {
+      const normalizedServiceId = Number(serviceId);
+      const field = `pets[${petIndex}].service_durations.${serviceId}`;
+      if (!Number.isInteger(normalizedServiceId)
+        || normalizedServiceId <= 0
+        || String(normalizedServiceId) !== serviceId
+        || !selectedServiceIds.has(String(normalizedServiceId))) {
+        errors[field] = 'Duration can only be set for a selected service';
+        continue;
+      }
+
+      if ((typeof value !== 'number' && typeof value !== 'string')
+        || (typeof value === 'string' && value.trim() === '')
+        || !Number.isInteger(Number(value))
+        || Number(value) <= 0) {
+        errors[field] = 'Duration must be a positive integer';
+      }
+    }
+  });
+
+  if (Object.keys(errors).length) {
+    throw createValidationError(errors);
+  }
+}
+
 async function addServiceDurationSnapshots(customerId, petEntries, connection, previousPetEntries = []) {
   const entries = [];
 
@@ -224,7 +262,11 @@ async function addServiceDurationSnapshots(customerId, petEntries, connection, p
       const previousService = previousPetEntry?.services.find(
         (entry) => Number(entry.id) === Number(service.id),
       );
-      const durationMinutes = previousService?.duration_minutes ?? Number(service.duration_minutes);
+      const hasCustomDuration = petEntry.service_durations
+        && Object.prototype.hasOwnProperty.call(petEntry.service_durations, String(service.id));
+      const durationMinutes = hasCustomDuration
+        ? Number(petEntry.service_durations[String(service.id)])
+        : previousService?.duration_minutes ?? Number(service.duration_minutes);
       if (!Number.isInteger(durationMinutes) || durationMinutes <= 0) {
         throw createValidationError({ service_ids: 'Service duration is invalid' });
       }
@@ -355,6 +397,7 @@ async function updateAppointment(appointmentId, payload = {}) {
 
   if (pets) {
     await validatePetEntries(targetCustomerId, pets);
+    validateCustomServiceDurations(pets);
   }
 
   const updatePayload = {};
