@@ -418,6 +418,7 @@ async function submit(token, payload = {}) {
     await appointmentRepository.createAppointmentPetService({
       appointmentPetId,
       serviceId: Number(appointment.service_id),
+      durationMinutes: Number(services.duration_minutes),
     }, connection);
     await dailyOperationsRepository.create(appointmentId, connection);
     const signatureHash = crypto.createHash('sha256').update(signature).digest('hex');

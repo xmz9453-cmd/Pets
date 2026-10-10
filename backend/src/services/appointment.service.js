@@ -1,5 +1,6 @@
 const appointmentRepository = require('../data/appointment.repository');
 const dailyOperationsRepository = require('../data/daily-operations.repository');
+const petRepository = require('../data/pet.repository');
 const { isSpeciesCompatible } = require('./service.service');
 const { getPool } = require('../config/database');
 
@@ -185,6 +186,56 @@ async function validatePetEntries(customerId, petEntries = []) {
   }
 }
 
+async function addServiceDurationSnapshots(customerId, petEntries, connection, previousPetEntries = []) {
+  const entries = [];
+
+  for (const petEntry of petEntries) {
+    const previousPetEntry = previousPetEntries.find(
+      (entry) => Number(entry.pet_id) === Number(petEntry.pet_id),
+    );
+    const pet = await petRepository.getPetById(Number(petEntry.pet_id), connection);
+    if (!pet) {
+      throw createValidationError({ pet_id: 'Pet not found' });
+    }
+    if (pet.status !== 'ACTIVE') {
+      throw createValidationError({ pet_id: 'Pet is not active' });
+    }
+
+    const relationship = await petRepository.findRelationshipByPetAndCustomer(
+      Number(petEntry.pet_id),
+      customerId,
+      connection,
+    );
+    if (!relationship) {
+      throw createValidationError({ pet_id: 'Pet does not belong to this customer' });
+    }
+
+    const services = [];
+    for (const serviceId of petEntry.service_ids) {
+      const service = await appointmentRepository.findServiceById(Number(serviceId), connection);
+      if (!service || service.status !== 'ACTIVE') {
+        throw createValidationError({ service_ids: 'Service is not available' });
+      }
+
+      if (!isSpeciesCompatible(service.species, pet.species)) {
+        throw createValidationError({ service_ids: 'Service is not compatible with pet species' });
+      }
+
+      const previousService = previousPetEntry?.services.find(
+        (entry) => Number(entry.id) === Number(service.id),
+      );
+      const durationMinutes = previousService?.duration_minutes ?? Number(service.duration_minutes);
+      if (!Number.isInteger(durationMinutes) || durationMinutes <= 0) {
+        throw createValidationError({ service_ids: 'Service duration is invalid' });
+      }
+      services.push({ serviceId: Number(service.id), durationMinutes });
+    }
+    entries.push({ ...petEntry, services });
+  }
+
+  return entries;
+}
+
 async function listAppointments(filters = {}) {
   const normalizedFilters = { ...filters };
   if (filters.appointmentDate) {
@@ -242,8 +293,9 @@ async function createAppointment(payload = {}) {
       note: payload.note || null,
     }, connection);
 
-    await appointmentRepository.replaceAppointmentPetRelations(appointmentId, petEntries, connection);
-  await dailyOperationsRepository.create(appointmentId, connection);
+    const petEntriesWithSnapshots = await addServiceDurationSnapshots(customerId, petEntries, connection);
+    await appointmentRepository.replaceAppointmentPetRelations(appointmentId, petEntriesWithSnapshots, connection);
+    await dailyOperationsRepository.create(appointmentId, connection);
     const appointment = await appointmentRepository.getAppointmentById(appointmentId, connection);
     return { appointment };
   });
@@ -358,7 +410,14 @@ async function updateAppointment(appointmentId, payload = {}) {
 
     await appointmentRepository.updateAppointment(appointmentId, patchValues, connection);
     if (pets) {
-      await appointmentRepository.replaceAppointmentPetRelations(appointmentId, pets, connection);
+      const previousAppointment = await appointmentRepository.getAppointmentById(appointmentId, connection);
+      const petEntriesWithSnapshots = await addServiceDurationSnapshots(
+        customerId,
+        pets,
+        connection,
+        previousAppointment?.pets,
+      );
+      await appointmentRepository.replaceAppointmentPetRelations(appointmentId, petEntriesWithSnapshots, connection);
     }
 
     return { appointment: await appointmentRepository.getAppointmentById(appointmentId, connection) };

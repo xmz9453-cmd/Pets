@@ -125,7 +125,7 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
   if (appointmentPetIds.length) {
     const placeholders = appointmentPetIds.map(() => '?').join(', ');
     [serviceRows] = await connection.query(
-      `SELECT aps.appointment_pet_id, aps.service_id, s.name AS service_name, s.status AS service_status, s.price
+      `SELECT aps.appointment_pet_id, aps.service_id, aps.duration_minutes, s.name AS service_name, s.status AS service_status, s.price
        FROM appointment_pet_services aps
        INNER JOIN services s ON s.id = aps.service_id
        WHERE aps.appointment_pet_id IN (${placeholders})
@@ -145,6 +145,9 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
       name: row.service_name,
       status: row.service_status,
       price: row.price === null || row.price === undefined ? null : Number(row.price),
+      duration_minutes: row.duration_minutes === null || row.duration_minutes === undefined
+        ? null
+        : Number(row.duration_minutes),
     });
   }
 
@@ -220,10 +223,14 @@ async function createAppointmentPet({ appointmentId, petId }, connection = getPo
   return result.insertId;
 }
 
-async function createAppointmentPetService({ appointmentPetId, serviceId }, connection = getPool()) {
+async function createAppointmentPetService({ appointmentPetId, serviceId, durationMinutes }, connection = getPool()) {
+  if (!Number.isInteger(durationMinutes) || durationMinutes <= 0) {
+    throw new Error('Appointment service duration snapshot must be a positive integer');
+  }
+
   await connection.query(
-    'INSERT INTO appointment_pet_services (appointment_pet_id, service_id) VALUES (?, ?)',
-    [appointmentPetId, serviceId],
+    'INSERT INTO appointment_pet_services (appointment_pet_id, service_id, duration_minutes) VALUES (?, ?, ?)',
+    [appointmentPetId, serviceId, durationMinutes],
   );
 }
 
@@ -248,8 +255,12 @@ async function replaceAppointmentPetRelations(appointmentId, petEntries, connect
 
   for (const petEntry of petEntries) {
     const appointmentPetId = await createAppointmentPet({ appointmentId, petId: petEntry.pet_id }, connection);
-    for (const serviceId of petEntry.service_ids || []) {
-      await createAppointmentPetService({ appointmentPetId, serviceId }, connection);
+    for (const service of petEntry.services || []) {
+      await createAppointmentPetService({
+        appointmentPetId,
+        serviceId: service.serviceId,
+        durationMinutes: service.durationMinutes,
+      }, connection);
     }
   }
 }

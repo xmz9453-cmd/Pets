@@ -16,6 +16,13 @@ function loadLocalEnvForTestDatabase() {
 
   process.env.NODE_ENV = 'test';
   process.env.DB_NAME = process.env.TEST_DB_NAME || 'psop_test';
+
+  if (!['localhost', '127.0.0.1'].includes(process.env.DB_HOST)) {
+    throw new Error(`Unsafe test database host "${process.env.DB_HOST}"; expected localhost or 127.0.0.1`);
+  }
+  if (process.env.DB_NAME !== 'psop_test') {
+    throw new Error(`Unsafe test database "${process.env.DB_NAME}"; expected psop_test`);
+  }
 }
 
 loadLocalEnvForTestDatabase();
@@ -50,6 +57,21 @@ async function getServiceIds() {
   return rows.map((row) => row.id);
 }
 
+const durationSnapshotServiceIds = [];
+const boardingTestServiceIds = [];
+
+async function createDurationSnapshotService({ name, species, durationMinutes }) {
+  const uniqueName = `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const [result] = await getPool().query(
+    `INSERT INTO services
+     (name, type, description, price, unit, species, duration_minutes, sort_order, status)
+     VALUES (?, 'GROOMING', NULL, 500, '次', ?, ?, 0, 'ACTIVE')`,
+    [uniqueName, species, durationMinutes],
+  );
+  durationSnapshotServiceIds.push(result.insertId);
+  return result.insertId;
+}
+
 describe('Appointment API', () => {
   beforeAll(async () => {
     await setup();
@@ -73,8 +95,158 @@ describe('Appointment API', () => {
     await getPool().query('DELETE FROM customers');
   });
 
+  afterEach(async () => {
+    if (durationSnapshotServiceIds.length) {
+      await getPool().query(
+        'DELETE FROM appointment_pet_services WHERE service_id IN (?)',
+        [durationSnapshotServiceIds],
+      );
+      await getPool().query('DELETE FROM services WHERE id IN (?)', [durationSnapshotServiceIds]);
+      durationSnapshotServiceIds.length = 0;
+    }
+    if (boardingTestServiceIds.length) {
+      await getPool().query('DELETE FROM boardings WHERE service_id IN (?)', [boardingTestServiceIds]);
+      await getPool().query(
+        'DELETE FROM appointment_pet_services WHERE service_id IN (?)',
+        [boardingTestServiceIds],
+      );
+      await getPool().query('DELETE FROM services WHERE id IN (?)', [boardingTestServiceIds]);
+      boardingTestServiceIds.length = 0;
+    }
+  });
+
   afterAll(async () => {
     await closePool();
+  });
+
+  test('persists server-side duration snapshots on creation and relation replacement', async () => {
+    const { agent } = await loginAsOwner();
+    const customerResponse = await createCustomer(agent, {
+      name: 'Duration Snapshot Customer',
+      phone: `09${Date.now().toString().slice(-8)}`,
+    });
+    const customerId = customerResponse.body.data.customer.id;
+    const dogResponse = await createPet(agent, {
+      name: 'Duration Snapshot Dog',
+      species: 'DOG',
+      gender: 'MALE',
+      customer_id: customerId,
+    });
+    const catResponse = await createPet(agent, {
+      name: 'Duration Snapshot Cat',
+      species: 'CAT',
+      gender: 'FEMALE',
+      customer_id: customerId,
+    });
+    const bothServiceId = await createDurationSnapshotService({
+      name: 'Both Duration Service',
+      species: 'BOTH',
+      durationMinutes: 45,
+    });
+    const dogServiceId = await createDurationSnapshotService({
+      name: 'Dog Duration Service',
+      species: 'DOG',
+      durationMinutes: 30,
+    });
+    const catServiceId = await createDurationSnapshotService({
+      name: 'Cat Duration Service',
+      species: 'CAT',
+      durationMinutes: 70,
+    });
+    const replacementCatServiceId = await createDurationSnapshotService({
+      name: 'Replacement Cat Duration Service',
+      species: 'CAT',
+      durationMinutes: 35,
+    });
+
+    const createResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2099-01-10',
+      appointment_time: '10:00:00',
+      duration_minutes: 999,
+      pets: [
+        { pet_id: dogResponse.body.data.pet.id, service_ids: [bothServiceId, dogServiceId], duration_minutes: 888 },
+        { pet_id: catResponse.body.data.pet.id, service_ids: [bothServiceId], duration_minutes: 777 },
+      ],
+    });
+    expect(createResponse.status).toBe(201);
+    const firstAppointmentId = createResponse.body.data.appointment.id;
+    const [initialSnapshots] = await getPool().query(
+      `SELECT aps.service_id, aps.duration_minutes
+       FROM appointment_pets ap
+       INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
+       WHERE ap.appointment_id = ?
+       ORDER BY aps.service_id ASC, ap.pet_id ASC`,
+      [firstAppointmentId],
+    );
+    expect(initialSnapshots).toHaveLength(3);
+    expect(initialSnapshots.map((row) => ({
+      service_id: Number(row.service_id),
+      duration_minutes: Number(row.duration_minutes),
+    }))).toEqual([
+      { service_id: bothServiceId, duration_minutes: 45 },
+      { service_id: bothServiceId, duration_minutes: 45 },
+      { service_id: dogServiceId, duration_minutes: 30 },
+    ]);
+
+    await getPool().query(
+      'UPDATE services SET duration_minutes = 90 WHERE id = ?',
+      [bothServiceId],
+    );
+    const [unchangedSnapshots] = await getPool().query(
+      'SELECT duration_minutes FROM appointment_pet_services WHERE service_id = ? AND appointment_pet_id IN (SELECT id FROM appointment_pets WHERE appointment_id = ?)',
+      [bothServiceId, firstAppointmentId],
+    );
+    expect(unchangedSnapshots.map((row) => Number(row.duration_minutes))).toEqual([45, 45]);
+
+    const secondCreateResponse = await agent.post('/api/appointments').send({
+      customer_id: customerId,
+      appointment_date: '2099-01-11',
+      appointment_time: '11:00:00',
+      pets: [{ pet_id: catResponse.body.data.pet.id, service_ids: [catServiceId] }],
+    });
+    expect(secondCreateResponse.status).toBe(201);
+    const secondAppointmentId = secondCreateResponse.body.data.appointment.id;
+    const [initialUpdateSnapshot] = await getPool().query(
+      `SELECT aps.duration_minutes
+       FROM appointment_pets ap
+       INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
+       WHERE ap.appointment_id = ? AND aps.service_id = ?`,
+      [secondAppointmentId, catServiceId],
+    );
+    expect(Number(initialUpdateSnapshot[0].duration_minutes)).toBe(70);
+
+    await getPool().query(
+      'UPDATE services SET duration_minutes = 90 WHERE id = ?',
+      [catServiceId],
+    );
+
+    const unchangedServiceUpdateResponse = await agent.patch(`/api/appointments/${secondAppointmentId}`).send({
+      note: 'Updated appointment note',
+      pets: [{ pet_id: catResponse.body.data.pet.id, service_ids: [catServiceId], duration_minutes: 1 }],
+    });
+    expect(unchangedServiceUpdateResponse.status).toBe(200);
+    const [unchangedServiceSnapshot] = await getPool().query(
+      `SELECT aps.duration_minutes
+       FROM appointment_pets ap
+       INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
+       WHERE ap.appointment_id = ? AND aps.service_id = ?`,
+      [secondAppointmentId, catServiceId],
+    );
+    expect(Number(unchangedServiceSnapshot[0].duration_minutes)).toBe(70);
+
+    const replacementServiceUpdateResponse = await agent.patch(`/api/appointments/${secondAppointmentId}`).send({
+      pets: [{ pet_id: catResponse.body.data.pet.id, service_ids: [replacementCatServiceId] }],
+    });
+    expect(replacementServiceUpdateResponse.status).toBe(200);
+    const [replacementServiceSnapshot] = await getPool().query(
+      `SELECT aps.duration_minutes
+       FROM appointment_pets ap
+       INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
+       WHERE ap.appointment_id = ? AND aps.service_id = ?`,
+      [secondAppointmentId, replacementCatServiceId],
+    );
+    expect(Number(replacementServiceSnapshot[0].duration_minutes)).toBe(35);
   });
 
   test('POST /api/appointments creates a multi-pet appointment and GET detail returns joined data', async () => {
@@ -476,9 +648,17 @@ describe('Appointment API', () => {
     const { agent } = await loginAsOwner();
     const customerResponse = await createCustomer(agent, { name: 'Execution Customer', phone: '0912-777-890' });
     const petResponse = await createPet(agent, { name: 'Execution Pet', species: 'DOG', gender: 'MALE', customer_id: customerResponse.body.data.customer.id });
-    const [serviceRows] = await getPool().query('SELECT id, type FROM services WHERE type IN (\'GROOMING\', \'BOARDING\') ORDER BY type');
-    const groomingService = serviceRows.find((service) => service.type === 'GROOMING');
-    const boardingService = serviceRows.find((service) => service.type === 'BOARDING');
+    const [serviceRows] = await getPool().query("SELECT id FROM services WHERE type = 'GROOMING' ORDER BY id LIMIT 1");
+    const groomingService = serviceRows[0];
+    const boardingServiceName = `Test Boarding Service ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const [boardingServiceResult] = await getPool().query(
+      `INSERT INTO services
+       (name, type, description, price, unit, species, duration_minutes, sort_order, status)
+       VALUES (?, 'BOARDING', NULL, 500, '次', 'DOG', 60, 0, 'ACTIVE')`,
+      [boardingServiceName],
+    );
+    const boardingService = { id: boardingServiceResult.insertId };
+    boardingTestServiceIds.push(boardingService.id);
     const createResponse = await agent.post('/api/appointments').send({
       customer_id: customerResponse.body.data.customer.id,
       appointment_date: '2026-12-04',

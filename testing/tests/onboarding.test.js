@@ -14,6 +14,14 @@ function loadLocalEnvForTestDatabase() {
   }
   process.env.NODE_ENV = 'test';
   process.env.DB_NAME = process.env.TEST_DB_NAME || 'psop_test';
+
+  if (!['localhost', '127.0.0.1'].includes(process.env.DB_HOST)) {
+    throw new Error(`Unsafe test database host "${process.env.DB_HOST}"; expected localhost or 127.0.0.1`);
+  }
+  if (process.env.DB_NAME !== 'psop_test') {
+    throw new Error(`Unsafe test database "${process.env.DB_NAME}"; expected psop_test`);
+  }
+
   process.env.CONTRACT_STORAGE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'pets-onboarding-test-'));
 }
 
@@ -396,6 +404,16 @@ describe('Electronic Contract Onboarding API', () => {
     await resolveNew(agent, token);
 
     await agent.post(`/api/public/onboardings/${token}/submit`).send({ signature_png: signaturePng }).expect(200);
+    const [[durationSnapshot]] = await getPool().query(
+      `SELECT aps.duration_minutes, s.duration_minutes AS service_duration_minutes
+       FROM contract_history ch
+       INNER JOIN appointment_pets ap ON ap.appointment_id = ch.appointment_id
+       INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
+       INNER JOIN services s ON s.id = aps.service_id
+       WHERE ch.onboarding_id = ?`,
+      [id],
+    );
+    expect(Number(durationSnapshot.duration_minutes)).toBe(Number(durationSnapshot.service_duration_minutes));
     const [[status]] = await getPool().query('SELECT status FROM onboardings WHERE id = ?', [id]);
     expect(status.status).toBe('COMPLETED');
     const [[history]] = await getPool().query('SELECT * FROM contract_history WHERE onboarding_id = ?', [id]);
