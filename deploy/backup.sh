@@ -61,7 +61,7 @@ fi
 export MYSQL_PWD="${DB_PASSWORD}"
 coproc PDF_STORAGE_LOCK {
   mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" \
-    --batch --skip-column-names "${DB_NAME}"
+    --batch --skip-column-names --unbuffered "${DB_NAME}"
 }
 LOCK_PID="${PDF_STORAGE_LOCK_PID}"
 LOCK_READ_FD="${PDF_STORAGE_LOCK[0]}"

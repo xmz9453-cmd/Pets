@@ -104,7 +104,10 @@ fi
 if [[ "$*" == *"--skip-column-names"* ]]; then
   while IFS= read -r query; do
     case "$query" in
-      *GET_LOCK*) printf '1\\n' ;;
+      *GET_LOCK*)
+        printf '%s\\n' "$*" > "$MOCK_LOCK_MYSQL_ARGS"
+        printf '1\\n'
+        ;;
       *RELEASE_LOCK*) printf '1\\n'; break ;;
     esac
   done
@@ -146,6 +149,7 @@ exec /usr/bin/find "$@"
     BASH_ENV: toBashPath(bashEnv),
     MOCK_EXPECTED_PASSWORD: 'test-password',
     MOCK_FIND_MARKER: toBashPath(path.join(tempRoot, 'find-failure-marker.txt')),
+    MOCK_LOCK_MYSQL_ARGS: toBashPath(path.join(tempRoot, 'lock-mysql-args.txt')),
     MOCK_PDF_REFERENCES: references,
     MOCK_QUERY_LOG: toBashPath(queryLog),
     MOCK_RESTORE_MARKER: toBashPath(restoreMarker),
@@ -238,6 +242,18 @@ describe('Contract PDF backup and restore scripts', () => {
       expect(fs.existsSync(fixture.restoreMarker)).toBe(true);
       expect(fs.existsSync(fixture.queryLog)).toBe(false);
       expect(restore.stdout).toContain('restored and verified');
+    } finally {
+      removeFixture(fixture);
+    }
+  });
+
+  test('uses unbuffered MySQL output for the Contract PDF storage lock', () => {
+    const fixture = createFixture({ schemaCount: '0' });
+    try {
+      const backup = fixture.runBackup();
+      expect(backup.status).toBe(0);
+      expect(fs.readFileSync(path.join(fixture.tempRoot, 'lock-mysql-args.txt'), 'utf8'))
+        .toContain('--unbuffered');
     } finally {
       removeFixture(fixture);
     }
