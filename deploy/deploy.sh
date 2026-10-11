@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "$#" -ne 1 ] || [[ ! "${1:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "Usage: $0 <40-character-target-commit-sha>" >&2
+  exit 2
+fi
+
+TARGET_SHA="${1,,}"
+
 # ==============================================================================
 # Pets 2.0 - Production Automated Deployment Entry Point (deploy.sh)
 # Design Baseline: Production Deployment Automation Design Freeze v1.0
@@ -47,6 +54,7 @@ exec > >(mask_secrets | tee -a "${LOG_FILE}") 2>&1
 
 echo "================================================================="
 echo " Pets 2.0 Production Deployment Started at ${ISO_TIMESTAMP}"
+echo " Requested Target Commit: ${TARGET_SHA}"
 echo " Log File: ${LOG_FILE}"
 echo "================================================================="
 
@@ -98,7 +106,7 @@ if [ -f "${STATE_FILE}" ]; then
 fi
 
 # 3. Transition State to RUNNING
-write_state "RUNNING" "pending" "${PREV_COMMIT}" "pending" "pending" "${LOG_FILE}"
+write_state "RUNNING" "${TARGET_SHA}" "${PREV_COMMIT}" "pending" "pending" "${LOG_FILE}"
 
 cleanup_on_failure() {
   local exit_code=$?
@@ -120,18 +128,23 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 echo "[Step 1/11 PASS] Working Tree is clean."
 
-# 5. Git Fetch & Fast-Forward Update
-echo "[Step 2/11] Fetching latest changes from origin/master..."
-git fetch origin master
-if ! git merge --ff-only origin/master; then
-  echo "[deploy.sh ERROR] Git Fast-Forward update failed. Local branch has diverged." >&2
+# 5. Fetch the authorized GitHub master history and validate the requested commit
+echo "[Step 2/11] Fetching GitHub master history and validating requested commit..."
+git fetch --no-tags origin refs/heads/master
+FETCHED_MASTER_SHA="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
+if ! git cat-file -e "${TARGET_SHA}^{commit}"; then
+  echo "[deploy.sh ERROR] Requested commit is not available in the fetched repository objects." >&2
   exit 1
 fi
-echo "[Step 2/11 PASS] Git repository updated."
+if [ "${FETCHED_MASTER_SHA}" != "${TARGET_SHA}" ]; then
+  echo "[deploy.sh ERROR] GitHub master SHA does not match the requested target commit." >&2
+  exit 1
+fi
+echo "[Step 2/11 PASS] GitHub master exactly matches the requested target commit."
 
-# 6. Fix TARGET_SHA & Consistency Check Helper
-TARGET_SHA="$(git rev-parse HEAD)"
-echo "[Step 3/11] Fixed TARGET_SHA: ${TARGET_SHA}"
+# 6. Check out only the requested commit
+echo "[Step 3/11] Checking out requested target commit: ${TARGET_SHA}"
+git checkout --detach "${TARGET_SHA}"
 
 check_target_sha() {
   local current_sha
@@ -143,7 +156,7 @@ check_target_sha() {
 }
 check_target_sha
 write_state "RUNNING" "${TARGET_SHA}" "${PREV_COMMIT}" "pending" "pending" "${LOG_FILE}"
-echo "[Step 3/11 PASS] TARGET_SHA consistency verified."
+echo "[Step 3/11 PASS] Requested TARGET_SHA is checked out and verified."
 
 # 7. Backend npm ci
 echo "[Step 4/11] Installing Backend dependencies (npm ci)..."

@@ -213,7 +213,7 @@ try {
 
     $quotedRemoteUrl = "'" + $script:ExpectedRemoteUrl + "'"
     $quotedExpectedSha = "'" + $ExpectedCommit + "'"
-    $deployCommand = "cd $script:ProductionRoot || exit 1; remote_url=`$(git remote get-url origin) || exit 1; if [ `"`$remote_url`" != $quotedRemoteUrl ]; then echo 'Production origin URL mismatch; refusing deployment.' >&2; exit 41; fi; remote_sha=`$(git ls-remote origin refs/heads/master | cut -f1) || exit 1; if [ `"`$remote_sha`" != $quotedExpectedSha ]; then echo 'GitHub master changed before deployment; refusing deployment.' >&2; exit 42; fi; exec bash $script:ProductionRoot/deploy/deploy.sh"
+    $deployCommand = "cd $script:ProductionRoot || exit 1; remote_url=`$(git remote get-url origin) || exit 1; if [ `"`$remote_url`" != $quotedRemoteUrl ]; then echo 'Production origin URL mismatch; refusing deployment.' >&2; exit 41; fi; remote_sha=`$(git ls-remote origin refs/heads/master | cut -f1) || exit 1; if [ `"`$remote_sha`" != $quotedExpectedSha ]; then echo 'GitHub master changed before deployment; refusing deployment.' >&2; exit 42; fi; exec bash $script:ProductionRoot/deploy/deploy.sh $quotedExpectedSha"
 
     Write-Host "Starting Production deployment for $ExpectedCommit."
     & $script:SshPath -tt -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $deployCommand
