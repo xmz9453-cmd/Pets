@@ -1,30 +1,30 @@
-\# TASK-CODING-AI-EXECUTION-PROMPT — Coding AI 實作執行提示詞
+# TASK-CODING-AI-EXECUTION-PROMPT — Coding AI 實作執行提示詞
 
 
 
-\- Document ID: TASK-CODING-AI-EXECUTION-PROMPT
+- Document ID: TASK-CODING-AI-EXECUTION-PROMPT
 
-\- Document Name: Coding AI 實作執行提示詞 — Coding AI Execution Prompt
+- Document Name: Coding AI 實作執行提示詞 — Coding AI Execution Prompt
 
-\- Version: v1.0
+- Version: v1.0
 
-\- Status: FREEZE
+- Status: FREEZE
 
-\- Project: 小型寵物美容／寵物住宿工作室 MVP 營運管理系統
+- Project: 小型寵物美容／寵物住宿工作室 MVP 營運管理系統
 
-\- Document Type: Engineering Execution Prompt
+- Document Type: Engineering Execution Prompt
 
-\- Purpose: 提供 Coding AI 執行正式 TASK 時使用的統一實作規則
+- Purpose: 提供 Coding AI 執行正式 TASK 時使用的統一實作規則
 
-\- Created: 2026-08-17
-
-
-
-\---
+- Created: 2026-08-17
 
 
 
-\# 1. Purpose
+---
+
+
+
+# 1. Purpose
 
 
 
@@ -92,11 +92,11 @@ Business Requirement、Technical Decision、Scope 與 Acceptance Criteria：
 
 
 
-\---
+---
 
 
 
-\# 2. Execution Principle
+# 2. Execution Principle
 
 
 
@@ -104,7 +104,7 @@ Coding AI 必須遵守：
 
 
 
-> \*\*TASK First、Scope First、Evidence First、No Guessing。\*\*
+> **TASK First、Scope First、Evidence First、No Guessing。**
 
 
 
@@ -112,11 +112,11 @@ Coding AI 不得以「通常這樣設計比較好」、「業界通常這樣做�
 
 
 
-\---
+---
 
 
 
-\# 3. Source of Truth Priority
+# 3. Source of Truth Priority
 
 
 
@@ -168,11 +168,11 @@ Coding AI Engineering Judgment：
 
 
 
-\---
+---
 
 
 
-\# 4. Required Input
+# 4. Required Input
 
 
 
@@ -216,11 +216,11 @@ STOP
 
 
 
-\---
+---
 
 
 
-\# 5. TASK Identification
+# 5. TASK Identification
 
 
 
@@ -276,11 +276,11 @@ FREEZE
 
 
 
-\---
+---
 
 
 
-\# 6. Repository Inspection
+# 6. Repository Inspection
 
 
 
@@ -334,11 +334,11 @@ Git Status
 
 
 
-\---
+---
 
 
 
-\# 7. Precondition Check
+# 7. Precondition Check
 
 
 
@@ -386,11 +386,11 @@ STOP
 
 
 
-\---
+---
 
 
 
-\# 8. Scope Inspection
+# 8. Scope Inspection
 
 
 
@@ -416,11 +416,11 @@ Implementation 過程只能修改：
 
 
 
-\---
+---
 
 
 
-\# 9. No Scope Expansion
+# 9. No Scope Expansion
 
 
 
@@ -466,11 +466,11 @@ Coding AI 不得自行：
 
 
 
-\---
+---
 
 
 
-\# 10. No Freeze Modification
+# 10. No Freeze Modification
 
 
 
@@ -534,11 +534,11 @@ Report Conflict
 
 
 
-\---
+---
 
 
 
-\# 11. No Guessing Rule
+# 11. No Guessing Rule
 
 
 
@@ -574,11 +574,11 @@ Coding AI 不得直接假設它是正式需求。
 
 
 
-\---
+---
 
 
 
-\# 12. Implementation Plan
+# 12. Implementation Plan
 
 
 
@@ -624,11 +624,11 @@ Implementation Plan 必須對應 TASK Scope。
 
 
 
-\---
+---
 
 
 
-\# 13. Plan Review Boundary
+# 13. Plan Review Boundary
 
 
 
@@ -674,11 +674,11 @@ STOP
 
 
 
-\---
+---
 
 
 
-\# 14. Implementation Rule
+# 14. Implementation Rule
 
 
 
@@ -716,11 +716,11 @@ Minimal Complexity
 
 
 
-\---
+---
 
 
 
-\# 15. Existing Code Rule
+# 15. Existing Code Rule
 
 
 
@@ -766,11 +766,11 @@ Modify only when necessary
 
 
 
-\---
+---
 
 
 
-\# 16. Dependency Rule
+# 16. Dependency Rule
 
 
 
@@ -810,11 +810,11 @@ Coding AI 個人偏好
 
 
 
-\---
+---
 
 
 
-\# 17. Technology Freeze Rule
+# 17. Technology Freeze Rule
 
 
 
@@ -880,11 +880,11 @@ Sequelize
 
 
 
-\---
+---
 
 
 
-\# 18. ORM Rule
+# 18. ORM Rule
 
 
 
@@ -928,11 +928,11 @@ MySQL
 
 
 
-\---
+---
 
 
 
-\# 19. Database Safety Rule
+# 19. Database Safety Rule
 
 
 
@@ -984,11 +984,11 @@ Production：
 
 
 
-\---
+---
 
 
 
-\# 20. Destructive Database Operation
+# 20. Destructive Database Operation
 
 
 
@@ -1028,11 +1028,11 @@ STOP
 
 
 
-\---
+---
 
 
 
-\# 21. Migration Rule
+# 21. Migration Rule
 
 
 
@@ -1076,11 +1076,11 @@ Coding AI 必須：
 
 
 
-\---
+---
 
 
 
-\# 22. Secret Safety
+# 22. Secret Safety
 
 
 
@@ -1128,11 +1128,11 @@ Commit
 
 
 
-\---
+---
 
 
 
-\# 23. Environment Rule
+# 23. Environment Rule
 
 
 
@@ -1168,11 +1168,11 @@ Commit
 
 
 
-\---
+---
 
 
 
-\# 24. Testing Requirement
+# 24. Testing Requirement
 
 
 
@@ -1202,11 +1202,11 @@ End-to-End Test
 
 
 
-\---
+---
 
 
 
-\# 25. Test Integrity
+# 25. Test Integrity
 
 
 
@@ -1256,11 +1256,11 @@ Run Test Again
 
 
 
-\---
+---
 
 
 
-\# 26. Test Failure Rule
+# 26. Test Failure Rule
 
 
 
@@ -1300,11 +1300,11 @@ Remaining Problem
 
 
 
-\---
+---
 
 
 
-\# 27. Verification Evidence
+# 27. Verification Evidence
 
 
 
@@ -1350,11 +1350,11 @@ Database Verification
 
 
 
-\---
+---
 
 
 
-\# 28. API Verification
+# 28. API Verification
 
 
 
@@ -1382,11 +1382,11 @@ Error Behavior
 
 
 
-\---
+---
 
 
 
-\# 29. Database Verification
+# 29. Database Verification
 
 
 
@@ -1424,11 +1424,11 @@ mysql2 package installed
 
 
 
-\---
+---
 
 
 
-\# 30. Browser Verification
+# 30. Browser Verification
 
 
 
@@ -1456,11 +1456,11 @@ AI 自動測試：
 
 
 
-\---
+---
 
 
 
-\# 31. Human Verification Boundary
+# 31. Human Verification Boundary
 
 
 
@@ -1488,11 +1488,11 @@ AI 可以：
 
 
 
-\---
+---
 
 
 
-\# 32. Acceptance Criteria Verification
+# 32. Acceptance Criteria Verification
 
 
 
@@ -1534,11 +1534,11 @@ TASK 不得宣告 PASS。
 
 
 
-\---
+---
 
 
 
-\# 33. Regression Verification
+# 33. Regression Verification
 
 
 
@@ -1566,11 +1566,11 @@ Relevant Build / Startup Checks
 
 
 
-\---
+---
 
 
 
-\# 34. Unrelated Failure Rule
+# 34. Unrelated Failure Rule
 
 
 
@@ -1614,11 +1614,11 @@ Unrelated Existing Issue
 
 
 
-\---
+---
 
 
 
-\# 35. Code Cleanup Boundary
+# 35. Code Cleanup Boundary
 
 
 
@@ -1652,11 +1652,11 @@ Style Rewrite
 
 
 
-\---
+---
 
 
 
-\# 36. Documentation Rule
+# 36. Documentation Rule
 
 
 
@@ -1704,11 +1704,11 @@ Documentation
 
 
 
-\---
+---
 
 
 
-\# 37. Git Verification
+# 37. Git Verification
 
 
 
@@ -1746,11 +1746,11 @@ Generated Files
 
 
 
-\---
+---
 
 
 
-\# 38. Commit Boundary
+# 38. Commit Boundary
 
 
 
@@ -1794,11 +1794,11 @@ TASK-0001: establish engineering foundation
 
 
 
-\---
+---
 
 
 
-\# 39. STOP Conditions
+# 39. STOP Conditions
 
 
 
@@ -1854,11 +1854,11 @@ STOP
 
 
 
-\---
+---
 
 
 
-\# 40. STOP Report
+# 40. STOP Report
 
 
 
@@ -1910,11 +1910,11 @@ Required User Decision:
 
 
 
-\---
+---
 
 
 
-\# 41. Change Request Rule
+# 41. Change Request Rule
 
 
 
@@ -1970,11 +1970,11 @@ Technical Baseline
 
 
 
-\---
+---
 
 
 
-\# 42. No Silent Change
+# 42. No Silent Change
 
 
 
@@ -2006,11 +2006,11 @@ Technical Baseline
 
 
 
-\---
+---
 
 
 
-\# 43. Implementation Completion
+# 43. Implementation Completion
 
 
 
@@ -2050,11 +2050,11 @@ Completion Report
 
 
 
-\---
+---
 
 
 
-\# 44. PASS Rule
+# 44. PASS Rule
 
 
 
@@ -2126,11 +2126,11 @@ No Unapproved Scope Expansion
 
 
 
-\---
+---
 
 
 
-\# 45. Final Status
+# 45. Final Status
 
 
 
@@ -2150,7 +2150,7 @@ BLOCKED
 
 
 
-\## PASS
+## PASS
 
 
 
@@ -2162,7 +2162,7 @@ BLOCKED
 
 
 
-\## FAIL
+## FAIL
 
 
 
@@ -2174,7 +2174,7 @@ BLOCKED
 
 
 
-\## BLOCKED
+## BLOCKED
 
 
 
@@ -2186,11 +2186,44 @@ BLOCKED
 
 
 
-\---
+# 45.1 GitHub Push Readiness
 
 
 
-\# 46. Completion Report Format
+完成本次開發工作及必要驗收後，Coding AI 必須在當次最終回覆交代：
+
+
+
+- 本次修改範圍。
+- 必要驗收項目與結果。
+- Git 工作樹與 commit 狀態。
+- 若適用，推送前仍需由操作中心確認的條件。
+
+
+
+只有在本次必要驗收全部通過、沒有未解的必要阻擋問題，且 Git 工作樹及 commit 狀態符合推送條件時，才可在當次最終回覆明確提示：
+
+
+
+```text
+PASS，可以推送到 GitHub。
+```
+
+
+
+必要測試失敗時，回報 `FAIL` 並指出失敗項目。必要驗收尚未完成、工作樹不符合推送條件，或仍有必要阻擋問題時，回報 `BLOCKED` 並指出直接原因。任何非 `PASS` 狀態都不得提示可以推送；不得省略必要驗收以達成 `PASS`。
+
+
+
+Coding AI 只負責開發、必要驗收及交付提示。除非使用者另行明確授權，Coding AI 不得自行執行 `git push`。推送提示必須在完成當次工作的對話中提供，不得要求使用者另開一輪對話取得提示。
+
+
+
+---
+
+
+
+# 46. Completion Report Format
 
 
 
@@ -2290,11 +2323,11 @@ Status:
 
 
 
-\---
+---
 
 
 
-\# 47. Completion Report Evidence
+# 47. Completion Report Evidence
 
 
 
@@ -2370,11 +2403,11 @@ Response:
 
 
 
-\---
+---
 
 
 
-\# 48. Coding AI Communication Style
+# 48. Coding AI Communication Style
 
 
 
@@ -2414,11 +2447,11 @@ Coding AI 回報必須：
 
 
 
-\---
+---
 
 
 
-\# 49. AI Implementation Mode
+# 49. AI Implementation Mode
 
 
 
@@ -2430,23 +2463,23 @@ Coding AI 的工作模式：
 
 MODE 1 — Inspect
 
-&#x20;       ↓
+               ↓
 
 MODE 2 — Plan
 
-&#x20;       ↓
+               ↓
 
 MODE 3 — Implement
 
-&#x20;       ↓
+               ↓
 
 MODE 4 — Test
 
-&#x20;       ↓
+               ↓
 
 MODE 5 — Verify
 
-&#x20;       ↓
+               ↓
 
 MODE 6 — Report
 
@@ -2472,11 +2505,11 @@ Verify
 
 
 
-\---
+---
 
 
 
-\# 50. First Response Requirement
+# 50. First Response Requirement
 
 
 
@@ -2534,11 +2567,11 @@ Potential Risks
 
 
 
-\---
+---
 
 
 
-\# 51. Implementation Plan Format
+# 51. Implementation Plan Format
 
 
 
@@ -2622,11 +2655,11 @@ TASK Version:
 
 
 
-\---
+---
 
 
 
-\# 52. Implementation Sequence
+# 52. Implementation Sequence
 
 
 
@@ -2672,11 +2705,11 @@ TASK Version:
 
 
 
-\---
+---
 
 
 
-\# 53. Minimal Complexity Principle
+# 53. Minimal Complexity Principle
 
 
 
@@ -2684,7 +2717,7 @@ Coding AI 必須遵守：
 
 
 
-> \*\*完成 TASK 所需的最小複雜度。\*\*
+> **完成 TASK 所需的最小複雜度。**
 
 
 
@@ -2710,11 +2743,11 @@ Maximum Genericity
 
 
 
-\---
+---
 
 
 
-\# 54. MVP Principle
+# 54. MVP Principle
 
 
 
@@ -2758,11 +2791,11 @@ Enterprise-grade complexity
 
 
 
-\---
+---
 
 
 
-\# 55. Business Block Boundary
+# 55. Business Block Boundary
 
 
 
@@ -2808,11 +2841,11 @@ Payment
 
 
 
-\---
+---
 
 
 
-\# 56. Cross-Block Dependency
+# 56. Cross-Block Dependency
 
 
 
@@ -2848,11 +2881,11 @@ Placeholder
 
 
 
-\---
+---
 
 
 
-\# 57. Interface Before Implementation Principle
+# 57. Interface Before Implementation Principle
 
 
 
@@ -2884,11 +2917,11 @@ Block B
 
 
 
-\---
+---
 
 
 
-\# 58. Documentation as Source
+# 58. Documentation as Source
 
 
 
@@ -2934,11 +2967,11 @@ Documentation ≠ Implementation
 
 
 
-\---
+---
 
 
 
-\# 59. Existing Freeze Protection
+# 59. Existing Freeze Protection
 
 
 
@@ -3002,11 +3035,11 @@ NEW DESIGN
 
 
 
-\---
+---
 
 
 
-\# 60. Task Completion Boundary
+# 60. Task Completion Boundary
 
 
 
@@ -3030,11 +3063,11 @@ TASK 完成只代表：
 
 
 
-\---
+---
 
 
 
-\# 61. Next TASK Rule
+# 61. Next TASK Rule
 
 
 
@@ -3062,11 +3095,11 @@ TASK-0004
 
 
 
-\---
+---
 
 
 
-\# 62. User Decision Boundary
+# 62. User Decision Boundary
 
 
 
@@ -3098,11 +3131,11 @@ Production Deployment Decision
 
 
 
-\---
+---
 
 
 
-\# 63. Prompt Usage
+# 63. Prompt Usage
 
 
 
@@ -3148,11 +3181,11 @@ TASK-0001-專案工程基礎-MVP-Engineering-Foundation-v1.0.md
 
 
 
-\---
+---
 
 
 
-\# 64. Recommended User Prompt
+# 64. Recommended User Prompt
 
 
 
@@ -3238,11 +3271,11 @@ Implementation Plan
 
 
 
-\---
+---
 
 
 
-\# 65. Recommended Implementation Start Prompt
+# 65. Recommended Implementation Start Prompt
 
 
 
@@ -3314,11 +3347,11 @@ Implementation 完成後：
 
 
 
-\---
+---
 
 
 
-\# 66. Recommended Verification Prompt
+# 66. Recommended Verification Prompt
 
 
 
@@ -3386,11 +3419,11 @@ Implementation 完成後，如果需要單獨要求 AI 驗證：
 
 
 
-\---
+---
 
 
 
-\# 67. Mandatory Final Rule
+# 67. Mandatory Final Rule
 
 
 
@@ -3430,11 +3463,11 @@ User 是最終決策者
 
 
 
-\---
+---
 
 
 
-\# 68. Version Freeze
+# 68. Version Freeze
 
 
 
@@ -3466,9 +3499,8 @@ PSOP MVP 全部正式 TASK 的 Coding AI 統一實作規則
 
 
 
-\---
+---
 
 
 
-\# END OF TASK-CODING-AI-EXECUTION-PROMPT
-
+# END OF TASK-CODING-AI-EXECUTION-PROMPT
