@@ -5,6 +5,16 @@ $ErrorActionPreference = 'Stop'
 
 $script:ProjectRoot = 'D:\MVP'
 $script:KnownProductionSha = '5aeb5dc37dc4a3d10b26dca5888e083fa7bdd043'
+$script:SshPath = if ($env:WINDIR) {
+    Join-Path $env:WINDIR 'System32\OpenSSH\ssh.exe'
+} else {
+    $null
+}
+$script:SshKey = Join-Path $HOME '.ssh\pets3_production'
+$script:SshTarget = 'zhe@175.183.34.91'
+$script:ProductionRoot = '/home/zhe/pets'
+$script:BackupScript = '/home/zhe/pets/deploy/backup.sh'
+$script:VerifiedBackupDirectory = $null
 $script:GitPath = $null
 $script:Controls = @{}
 $script:OperationState = @{
@@ -607,6 +617,140 @@ function Format-ProcessOutput {
     return $lines.ToArray()
 }
 
+function Get-BackupProcessOutcome {
+    param(
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)][string]$ExpectedDirectory
+    )
+
+    if ($Result.TimedOut -or $Result.Cancelled -or $Result.ExitCode -ne 0) {
+        return [pscustomobject]@{
+            Success = $false
+            BackupFile = $null
+            Reason = '備份程序未以成功退出碼完成。'
+        }
+    }
+
+    $directory = $ExpectedDirectory.TrimEnd('/')
+    $directoryPattern = '\A/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*)\z'
+    if ([string]::IsNullOrWhiteSpace($directory) -or $directory -cnotmatch $directoryPattern) {
+        return [pscustomobject]@{
+            Success = $false
+            BackupFile = $null
+            Reason = '備份目的地格式無效。'
+        }
+    }
+
+    $expectedPattern = '\ABACKUP_FILE=(' + [regex]::Escape($directory) +
+        '/pets_backup_[0-9]{8}_[0-9]{6}\.tar\.gz)\z'
+    $backupFileMatches = @(
+        $Result.Stdout -split "`r?`n" |
+            Where-Object { $_ -cmatch $expectedPattern } |
+            ForEach-Object { [regex]::Match($_, $expectedPattern).Groups[1].Value }
+    )
+    if ($backupFileMatches.Count -ne 1) {
+        return [pscustomobject]@{
+            Success = $false
+            BackupFile = $null
+            Reason = '成功輸出中未能唯一確認符合目的地的 BACKUP_FILE。'
+        }
+    }
+
+    return [pscustomobject]@{
+        Success = $true
+        BackupFile = $backupFileMatches[0]
+        Reason = $null
+    }
+}
+
+function Get-BackupCompletion {
+    param(
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)][string]$ExpectedDirectory
+    )
+
+    $outcome = Get-BackupProcessOutcome -Result $Result -ExpectedDirectory $ExpectedDirectory
+    $output = @(Format-ProcessOutput -Result $Result)
+    if ($outcome.Success) {
+        return [pscustomobject]@{
+            Success = $true
+            Status = '成功'
+            ActivityText = '成功'
+            Output = @("備份檔：$($outcome.BackupFile)") + $output
+        }
+    }
+
+    $status = if ($Result.TimedOut -or $Result.Cancelled) {
+        '失敗；遠端結果未確認'
+    } else {
+        "失敗（exit $($Result.ExitCode)）"
+    }
+    $details = @($outcome.Reason) + $output
+    if ($Result.TimedOut -or $Result.Cancelled) {
+        $details += 'SSH 中止或逾時後，遠端備份程序是否已結束無法確認；請勿據此假設備份未產生。'
+    }
+
+    return [pscustomobject]@{
+        Success = $false
+        Status = $status
+        ActivityText = $status
+        Output = $details
+    }
+}
+
+function Confirm-BackupRequest {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    return [System.Windows.Forms.MessageBox]::Show(
+        $script:Controls.Form,
+        $Message,
+        '確認正式環境備份',
+        [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+        [System.Windows.Forms.MessageBoxIcon]::Warning,
+        [System.Windows.Forms.MessageBoxDefaultButton]::Button2
+    )
+}
+
+function Request-BackupOperation {
+    $destinationText = if ($script:VerifiedBackupDirectory) {
+        $script:VerifiedBackupDirectory
+    } else {
+        '尚未驗證；正式備份禁止執行'
+    }
+    $confirmationMessage = @"
+正式環境備份目標
+SSH 主機：$($script:SshTarget)
+遠端專案：$($script:ProductionRoot)
+備份腳本：$($script:BackupScript)
+有效備份目的地：$destinationText
+
+備份腳本會刪除備份目錄中符合命名條件且超過 30 天的舊備份。
+目前無法驗證遠端實際生效的 BACKUP_DIR；即使確認，本次仍會拒絕執行，不會建立背景工作或呼叫 SSH。
+
+是否繼續檢查？
+"@
+    $confirmation = Confirm-BackupRequest -Message $confirmationMessage
+    if ($confirmation -ne [System.Windows.Forms.DialogResult]::OK) {
+        $script:Controls.ActivityLabel.Text = '正式環境備份：已取消'
+        Add-OperationLog -Operation '正式環境備份' -Status '使用者取消；未建立背景工作或呼叫 SSH'
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($script:VerifiedBackupDirectory)) {
+        $script:Controls.ActivityLabel.Text = '正式環境備份：已阻擋（目的地未驗證）'
+        Add-OperationLog -Operation '正式環境備份' -Status '已阻擋；備份目的地未驗證' -Output @(
+            "SSH 主機：$($script:SshTarget)",
+            "遠端專案：$($script:ProductionRoot)",
+            "備份腳本：$($script:BackupScript)",
+            '未建立背景工作或呼叫 SSH。'
+        )
+        return
+    }
+
+    Start-BackgroundOperation -Operation '正式環境備份' -Action 'Backup' `
+        -BackupDestination $script:VerifiedBackupDirectory
+}
+
 function Set-OperationButtonsEnabled {
     param([bool]$Enabled)
     $script:Controls.RefreshButton.Enabled = $Enabled
@@ -614,14 +758,16 @@ function Set-OperationButtonsEnabled {
     $script:Controls.GitHubButton.Enabled = $Enabled
     $script:Controls.PushButton.Enabled = $Enabled
     $script:Controls.DeploymentPreflightButton.Enabled = $Enabled
+    $script:Controls.BackupButton.Enabled = $Enabled
 }
 
 function Start-BackgroundOperation {
     param(
         [Parameter(Mandatory = $true)][string]$Operation,
-        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster', 'DeploymentPreflight')][string]$Action,
+        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster', 'DeploymentPreflight', 'Backup')][string]$Action,
         [string]$ExpectedHeadSha,
-        [string]$ExpectedRemoteSha
+        [string]$ExpectedRemoteSha,
+        [string]$BackupDestination
     )
     if ($script:OperationState.IsBusy -or
         ($script:OperationState.ActiveOperation -and $script:OperationState.ActiveOperation.StopUnconfirmed)) {
@@ -654,6 +800,12 @@ function Start-BackgroundOperation {
         Context = $context
         ExpectedHeadSha = $ExpectedHeadSha
         ExpectedRemoteSha = $ExpectedRemoteSha
+        BackupDestination = $BackupDestination
+        BackupSshPath = $script:SshPath
+        BackupSshKey = $script:SshKey
+        BackupSshTarget = $script:SshTarget
+        BackupProductionRoot = $script:ProductionRoot
+        BackupScript = $script:BackupScript
     }
     $completedRequest = $request
     $completedUi = $script:Controls
@@ -688,6 +840,11 @@ try {
     if ($null -eq $workContext -or $workContext -isnot [System.Collections.IDictionary]) {
         throw '背景工作操作請求未包含有效的操作狀態物件。'
     }
+    $script:SshPath = $workerRequest.BackupSshPath
+    $script:SshKey = $workerRequest.BackupSshKey
+    $script:SshTarget = $workerRequest.BackupSshTarget
+    $script:ProductionRoot = $workerRequest.BackupProductionRoot
+    $script:BackupScript = $workerRequest.BackupScript
     $workContext.Stage = '解析背景工作請求完成'
     switch ($workerRequest.Action) {
         'LocalStatus' {
@@ -712,6 +869,32 @@ try {
                 -Arguments @('/d', '/s', '/c', 'npm.cmd --prefix testing test') `
                 -WorkingDirectory $script:ProjectRoot -Context $workContext `
                 -Stage '執行 npm 測試' -TimeoutMilliseconds 600000
+            break
+        }
+        'Backup' {
+            $destination = [string]$workerRequest.BackupDestination
+            $directoryPattern = '\A/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*)\z'
+            if ([string]::IsNullOrWhiteSpace($destination) -or
+                $destination -cnotmatch $directoryPattern) {
+                throw '有效備份目的地未驗證；拒絕啟動 SSH。'
+            }
+            if (-not (Test-Path -LiteralPath $script:SshPath -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $script:SshKey -PathType Leaf)) {
+                throw '正式環境 SSH 程式或金鑰不存在；未啟動 SSH。'
+            }
+
+            $remoteCommand = "cd -- '$($script:ProductionRoot)' && exec bash '$($script:BackupScript)'"
+            $result = Invoke-CapturedProcess -FilePath $script:SshPath `
+                -Arguments @(
+                    '-T', '-i', $script:SshKey,
+                    '-o', 'IdentitiesOnly=yes',
+                    '-o', 'StrictHostKeyChecking=yes',
+                    '-o', 'BatchMode=yes',
+                    '-o', 'ConnectTimeout=15',
+                    $script:SshTarget, $remoteCommand
+                ) `
+                -WorkingDirectory $script:ProjectRoot -Context $workContext `
+                -Stage '執行正式環境 backup.sh' -TimeoutMilliseconds 3600000
             break
         }
         'PushMasterPreflight' {
@@ -1033,6 +1216,14 @@ try {
                         & $completionAddOperationLog -Operation $completedRequest.Operation -Status "失敗（exit $($result.ExitCode)）" -Output $output
                     }
                 }
+                'Backup' {
+                    $result = $eventArgs.Result
+                    $completion = Get-BackupCompletion -Result $result `
+                        -ExpectedDirectory $completedRequest.BackupDestination
+                    $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$($completion.ActivityText)"
+                    & $completionAddOperationLog -Operation $completedRequest.Operation `
+                        -Status $completion.Status -Output $completion.Output
+                }
                 }
             }
         } catch {
@@ -1259,13 +1450,15 @@ $serverTable.AutoScroll = $true
 $serverTable.ColumnCount = 2
 $serverTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
 $serverTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-[void](New-InfoRow -Table $serverTable -Label '備份' -Value '已有 deploy/backup.sh；未接線' -ControlName 'BackupStateValue')
+[void](New-InfoRow -Table $serverTable -Label '備份' -Value '正式操作待目的地驗證' -ControlName 'BackupStateValue')
+[void](New-InfoRow -Table $serverTable -Label '備份目的地' -Value '未驗證；正式備份禁止執行' -ControlName 'BackupDestinationValue')
 [void](New-InfoRow -Table $serverTable -Label '還原' -Value '已有 deploy/restore.sh；未接線' -ControlName 'RestoreStateValue')
 [void](New-InfoRow -Table $serverTable -Label '伺服器重建' -Value '尚無完整重建流程' -ControlName 'RebuildStateValue')
 $serverButtons = New-Object System.Windows.Forms.FlowLayoutPanel
 $serverButtons.AutoSize = $true
 $serverButtons.Dock = [System.Windows.Forms.DockStyle]::Fill
-$backupButton = New-ActionButton -Text '備份（尚未接線）' -Enabled $false
+$backupButton = New-ActionButton -Text '備份（目的地未驗證）'
+$script:Controls.BackupButton = $backupButton
 $restoreButton = New-ActionButton -Text '還原（尚未接線）' -Enabled $false
 $rebuildButton = New-ActionButton -Text '重建（尚未接線）' -Enabled $false
 $serverButtons.Controls.Add($backupButton)
@@ -1314,6 +1507,9 @@ $script:Controls.GitHubButton.Add_Click({
 })
 $script:Controls.PushButton.Add_Click({
     Start-BackgroundOperation -Operation '推送到 GitHub' -Action 'PushMasterPreflight'
+})
+$script:Controls.BackupButton.Add_Click({
+    Request-BackupOperation
 })
 $script:Controls.DeploymentPreflightButton.Add_Click({
     $script:Controls.BranchValue.Text = '檢查中…'
