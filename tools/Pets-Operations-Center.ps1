@@ -145,7 +145,8 @@ function Invoke-CapturedProcess {
         [Parameter(Mandatory = $true)][string]$WorkingDirectory,
         [Parameter(Mandatory = $true)][hashtable]$Context,
         [Parameter(Mandatory = $true)][string]$Stage,
-        [ValidateRange(1, 3600000)][int]$TimeoutMilliseconds = 30000
+        [ValidateRange(1, 3600000)][int]$TimeoutMilliseconds = 30000,
+        [switch]$MarkPushAttempted
     )
 
     if ($TimeoutMilliseconds -le 0) {
@@ -166,6 +167,9 @@ function Invoke-CapturedProcess {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    if ([string]::Equals($FilePath, $script:GitPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $startInfo.EnvironmentVariables['GIT_NO_LAZY_FETCH'] = '1'
+    }
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
@@ -174,6 +178,9 @@ function Invoke-CapturedProcess {
             throw "無法啟動程序：$FilePath"
         }
         $Context.Process = $process
+        if ($MarkPushAttempted) {
+            $Context.PushAttempted = $true
+        }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $Context.StdoutTask = $stdoutTask
@@ -336,6 +343,90 @@ function Get-GitHubMasterStatus {
     return $Matches[1].ToLowerInvariant()
 }
 
+function Get-PushPreflight {
+    param([Parameter(Mandatory = $true)][hashtable]$Context)
+
+    $status = Get-LocalProjectStatus -Context $Context
+    if ($status.Branch -cne 'master') {
+        throw "目前分支為 '$($status.Branch)'，推送只允許 master。"
+    }
+    $shallowResult = Invoke-GitReadOnly -Arguments @('rev-parse', '--is-shallow-repository') `
+        -Context $Context -Stage '確認本機提交歷史完整'
+    $shallowState = $shallowResult.Stdout.Trim()
+    if ($shallowState -ieq 'true') {
+        throw '本機是 shallow repository，無法可靠判斷完整提交關係；不會自動 fetch，請人工補足歷史後重新檢查。'
+    }
+    if ($shallowState -cne 'false') {
+        throw "無法確認本機提交歷史是否完整（git rev-parse 回傳 '$shallowState'）；未執行推送。"
+    }
+
+    $followTags = Invoke-CapturedProcess -FilePath $script:GitPath `
+        -Arguments @('config', '--bool', '--get', 'push.followTags') `
+        -WorkingDirectory $script:ProjectRoot -Context $Context `
+        -Stage '確認推送不會附帶標籤' -TimeoutMilliseconds 30000
+    if ($followTags.TimedOut -or $followTags.Cancelled) {
+        throw '無法完成 push.followTags 設定檢查；未執行推送。'
+    }
+    if ($followTags.ExitCode -eq 0 -and $followTags.Stdout.Trim() -ieq 'true') {
+        throw 'Git 設定 push.followTags=true 會附帶推送標籤；請由使用者處理設定後重新檢查。'
+    }
+    if (($followTags.ExitCode -eq 0 -and $followTags.Stdout.Trim() -ine 'false') -or
+        ($followTags.ExitCode -ne 0 -and $followTags.ExitCode -ne 1)) {
+        throw "無法確認 push.followTags 設定（退出碼 $($followTags.ExitCode)）；未執行推送。"
+    }
+
+    $recurseSubmodules = Invoke-CapturedProcess -FilePath $script:GitPath `
+        -Arguments @('config', '--get', 'push.recurseSubmodules') `
+        -WorkingDirectory $script:ProjectRoot -Context $Context `
+        -Stage '確認推送不會連帶推送子模組' -TimeoutMilliseconds 30000
+    if ($recurseSubmodules.TimedOut -or $recurseSubmodules.Cancelled) {
+        throw '無法完成 push.recurseSubmodules 設定檢查；未執行推送。'
+    }
+    if (($recurseSubmodules.ExitCode -eq 0 -and $recurseSubmodules.Stdout.Trim() -cne 'no') -or
+        ($recurseSubmodules.ExitCode -ne 0 -and $recurseSubmodules.ExitCode -ne 1)) {
+        throw "Git 設定 push.recurseSubmodules=$($recurseSubmodules.Stdout.Trim()) 可能連帶操作子模組；未執行推送。"
+    }
+
+    $remoteSha = Get-GitHubMasterStatus -Context $Context
+    $remoteCommit = Invoke-CapturedProcess -FilePath $script:GitPath `
+        -Arguments @('cat-file', '-e', "$remoteSha^{commit}") `
+        -WorkingDirectory $script:ProjectRoot -Context $Context `
+        -Stage '確認本機具備 GitHub commit 物件' -TimeoutMilliseconds 30000
+    if ($remoteCommit.TimedOut) {
+        throw '確認本機是否具備遠端 commit 物件逾時（30 秒）；未執行推送。'
+    }
+    if ($remoteCommit.Cancelled) {
+        throw '確認本機遠端 commit 物件已取消；未執行推送。'
+    }
+    if ($remoteCommit.ExitCode -ne 0) {
+        throw "本機缺少 GitHub origin/master commit $remoteSha；不會自動 fetch，請人工更新並重新檢查。"
+    }
+
+    $ancestorResult = Invoke-CapturedProcess -FilePath $script:GitPath `
+        -Arguments @('merge-base', '--is-ancestor', $remoteSha, $status.Head) `
+        -WorkingDirectory $script:ProjectRoot -Context $Context `
+        -Stage '確認 GitHub master 是本機 HEAD 的祖先' -TimeoutMilliseconds 30000
+    if ($ancestorResult.TimedOut) {
+        throw '確認提交關係逾時（30 秒）；未執行推送。'
+    }
+    if ($ancestorResult.Cancelled) {
+        throw '確認提交關係已取消；未執行推送。'
+    }
+    if ($ancestorResult.ExitCode -eq 1) {
+        throw "GitHub origin/master ($remoteSha) 不是本機 HEAD 的祖先；可能遠端領先或歷史分歧，未執行推送。"
+    }
+    if ($ancestorResult.ExitCode -ne 0) {
+        $detail = Protect-SensitiveText -Text $ancestorResult.Stderr.Trim()
+        throw "無法可靠判斷提交關係，退出碼 $($ancestorResult.ExitCode)。 $detail"
+    }
+
+    return [pscustomobject]@{
+        Branch = $status.Branch
+        Head = $status.Head
+        RemoteHead = $remoteSha
+    }
+}
+
 function Add-OperationLog {
     param(
         [Parameter(Mandatory = $true)][string]$Operation,
@@ -381,14 +472,18 @@ function Set-OperationButtonsEnabled {
     $script:Controls.RefreshButton.Enabled = $Enabled
     $script:Controls.TestButton.Enabled = $Enabled
     $script:Controls.GitHubButton.Enabled = $Enabled
+    $script:Controls.PushButton.Enabled = $Enabled
 }
 
 function Start-BackgroundOperation {
     param(
         [Parameter(Mandatory = $true)][string]$Operation,
-        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests')][string]$Action
+        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster')][string]$Action,
+        [string]$ExpectedHeadSha,
+        [string]$ExpectedRemoteSha
     )
-    if ($script:OperationState.IsBusy) {
+    if ($script:OperationState.IsBusy -or
+        ($script:OperationState.ActiveOperation -and $script:OperationState.ActiveOperation.StopUnconfirmed)) {
         return
     }
 
@@ -416,6 +511,8 @@ function Start-BackgroundOperation {
         Action = $Action
         Operation = $Operation
         Context = $context
+        ExpectedHeadSha = $ExpectedHeadSha
+        ExpectedRemoteSha = $ExpectedRemoteSha
     }
     $completedRequest = $request
     $completedUi = $script:Controls
@@ -428,7 +525,8 @@ function Start-BackgroundOperation {
         'Invoke-CapturedProcess',
         'Invoke-GitReadOnly',
         'Get-LocalProjectStatus',
-        'Get-GitHubMasterStatus'
+        'Get-GitHubMasterStatus',
+        'Get-PushPreflight'
     )
     $functionDefinitions = foreach ($functionName in $functionNames) {
         $functionInfo = Get-Command $functionName -CommandType Function -ErrorAction Stop
@@ -469,6 +567,53 @@ try {
                 -Stage '執行 npm 測試' -TimeoutMilliseconds 600000
             break
         }
+        'PushMasterPreflight' {
+            $workContext.Stage = '執行推送前檢查'
+            $result = Get-PushPreflight -Context $workContext
+            break
+        }
+        'PushMaster' {
+            $workContext.Stage = '重新確認推送條件'
+            $preflight = Get-PushPreflight -Context $workContext
+            if ($preflight.Head -cne $workerRequest.ExpectedHeadSha -or
+                $preflight.RemoteHead -cne $workerRequest.ExpectedRemoteSha) {
+                throw '確認對話框顯示後，本機 HEAD 或 GitHub master 已變更；為避免使用過期目標，未執行推送。'
+            }
+
+            $workContext.Stage = '執行 git push origin master'
+            $pushResult = Invoke-CapturedProcess -FilePath $script:GitPath `
+                -Arguments @('push', 'origin', 'master') `
+                -WorkingDirectory $script:ProjectRoot -Context $workContext `
+                -Stage '推送 GitHub master' -TimeoutMilliseconds 120000 -MarkPushAttempted
+            if ($pushResult.TimedOut -or $pushResult.Cancelled) {
+                $result = [pscustomobject]@{
+                    Phase = 'PushUnconfirmed'
+                    ProcessResult = $pushResult
+                    Head = $preflight.Head
+                    RemoteHead = $preflight.RemoteHead
+                }
+                break
+            }
+            if ($pushResult.ExitCode -ne 0) {
+                $result = [pscustomobject]@{
+                    Phase = 'PushFailed'
+                    ProcessResult = $pushResult
+                    Head = $preflight.Head
+                    RemoteHead = $preflight.RemoteHead
+                }
+                break
+            }
+
+            $workContext.Stage = '驗證推送後 GitHub master SHA'
+            $verifiedRemoteSha = Get-GitHubMasterStatus -Context $workContext
+            $result = [pscustomobject]@{
+                Phase = if ($verifiedRemoteSha -ceq $preflight.Head) { 'Verified' } else { 'VerifyMismatch' }
+                ProcessResult = $pushResult
+                Head = $preflight.Head
+                RemoteHead = $verifiedRemoteSha
+            }
+            break
+        }
         default {
             throw "背景工作收到未知操作類型：$($workerRequest.Action)"
         }
@@ -483,21 +628,28 @@ try {
 '@
     $workerScript = ($functionDefinitions -join "`r`n") + "`r`n" + $workerScript
 
+    $completionAddOperationLog = (Get-Command Add-OperationLog -CommandType Function -ErrorAction Stop).ScriptBlock
+    $completionFormatProcessOutput = (Get-Command Format-ProcessOutput -CommandType Function -ErrorAction Stop).ScriptBlock
+    $completionProtectSensitiveText = (Get-Command Protect-SensitiveText -CommandType Function -ErrorAction Stop).ScriptBlock
+    $completionSetOperationButtonsEnabled = (Get-Command Set-OperationButtonsEnabled -CommandType Function -ErrorAction Stop).ScriptBlock
+    $completionStartBackgroundOperation = (Get-Command Start-BackgroundOperation -CommandType Function -ErrorAction Stop).ScriptBlock
+
     $completionHandler = {
         param($eventArgs)
         $workContext = $completedRequest.Context
         $closeAfterCompletion = $workContext.CloseWhenDone
         $unconfirmedProcess = $workContext.Process -and $workContext.StopUnconfirmed
+        $nextPush = $null
         try {
             if ($eventArgs.Error) {
                 $workError = $eventArgs.Error
                 $exceptionDetails = New-Object System.Collections.Generic.List[string]
                 if ($null -ne $workError) {
-                    $message = Protect-SensitiveText -Text $workError.Message
+                    $message = & $completionProtectSensitiveText -Text $workError.Message
                     $exceptionDetails.Add("例外類型：$($workError.GetType().FullName)")
                     $exceptionDetails.Add("例外訊息：$message")
                     if (-not [string]::IsNullOrWhiteSpace($workError.StackTrace)) {
-                        $stack = Protect-SensitiveText -Text $workError.StackTrace
+                        $stack = & $completionProtectSensitiveText -Text $workError.StackTrace
                         $exceptionDetails.Add("例外堆疊：$stack")
                     }
                 } else {
@@ -508,19 +660,27 @@ try {
                 if ($unconfirmedProcess) {
                     $message += ' 本機程序是否已停止尚未確認；可再次關閉視窗選擇取消，或選擇繼續等待。'
                     $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：停止狀態未確認"
-                    Add-OperationLog -Operation $completedRequest.Operation -Status '停止狀態未確認' -Output @(
+                    & $completionAddOperationLog -Operation $completedRequest.Operation -Status '停止狀態未確認' -Output @(
                         $exceptionDetails.ToArray(),
+                        $(if ($workContext.PushAttempted) { '推送可能已在遠端完成；請重新查詢 GitHub master SHA。' }),
+                        "執行階段：$($workContext.Stage)"
+                    )
+                } elseif ($completedRequest.Action -eq 'PushMaster' -and $workContext.PushAttempted) {
+                    $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：結果未確認"
+                    & $completionAddOperationLog -Operation $completedRequest.Operation -Status '結果未確認' -Output @(
+                        $exceptionDetails.ToArray(),
+                        '推送已開始或可能已送出；請重新查詢 GitHub master SHA，勿直接假設遠端未更新。',
                         "執行階段：$($workContext.Stage)"
                     )
                 } elseif ($workContext.CancelRequested) {
                     $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：已取消"
-                    Add-OperationLog -Operation $completedRequest.Operation -Status '已取消並確認無活動子程序' -Output @(
+                    & $completionAddOperationLog -Operation $completedRequest.Operation -Status '已取消並確認無活動子程序' -Output @(
                         $exceptionDetails.ToArray(),
                         "執行階段：$($workContext.Stage)"
                     )
                 } else {
                     $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：失敗"
-                    Add-OperationLog -Operation $completedRequest.Operation -Status '失敗' -Output @(
+                    & $completionAddOperationLog -Operation $completedRequest.Operation -Status '失敗' -Output @(
                         $exceptionDetails.ToArray(),
                         "執行階段：$($workContext.Stage)"
                     )
@@ -566,7 +726,7 @@ try {
                         $completedUi.GitHubCompareValue.Text = if ($same) { '一致' } else { '不一致' }
                     }
                     $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：成功"
-                    Add-OperationLog -Operation $completedRequest.Operation -Status '成功' -Output $details
+                    & $completionAddOperationLog -Operation $completedRequest.Operation -Status '成功' -Output $details
                 }
                 'GitHubMaster' {
                     $completedState.GitHubMasterSha = [string]$eventArgs.Result
@@ -578,37 +738,107 @@ try {
                         $completedUi.GitHubCompareValue.Text = '請先檢查本機狀態'
                     }
                     $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：成功"
-                    Add-OperationLog -Operation $completedRequest.Operation -Status '成功' -Output @(
+                    & $completionAddOperationLog -Operation $completedRequest.Operation -Status '成功' -Output @(
                         "GitHub master：$($completedState.GitHubMasterSha)",
                         "與本機 HEAD：$($completedUi.GitHubCompareValue.Text)",
                         '查詢方式：git ls-remote（未執行 fetch/pull/push）'
                     )
                 }
+                'PushMasterPreflight' {
+                    $preflight = $eventArgs.Result
+                    $confirmation = [System.Windows.Forms.MessageBox]::Show(
+                        $completedUi.Form,
+                        "推送前檢查通過。`r`n`r`n本機分支：$($preflight.Branch)`r`n本機 HEAD：$($preflight.Head)`r`nGitHub origin/master：$($preflight.RemoteHead)`r`n`r`n即將執行：git push origin master`r`n`r`n不會自動建立 commit，也不會自動 pull、merge、rebase、reset 或 force push。`r`n`r`n是否繼續？",
+                        '確認推送到 GitHub',
+                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning,
+                        [System.Windows.Forms.MessageBoxDefaultButton]::Button2
+                    )
+                    if ($confirmation -eq [System.Windows.Forms.DialogResult]::Yes) {
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：準備推送"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status '推送前檢查通過；已確認' -Output @(
+                            "分支：$($preflight.Branch)",
+                            "本機 HEAD：$($preflight.Head)",
+                            "GitHub origin/master：$($preflight.RemoteHead)"
+                        )
+                        $nextPush = @{
+                            ExpectedHeadSha = $preflight.Head
+                            ExpectedRemoteSha = $preflight.RemoteHead
+                        }
+                    } else {
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：已取消"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status '使用者取消；未執行推送' -Output @(
+                            "本機 HEAD：$($preflight.Head)",
+                            "GitHub origin/master：$($preflight.RemoteHead)"
+                        )
+                    }
+                }
+                'PushMaster' {
+                    $result = $eventArgs.Result
+                    $output = @(& $completionFormatProcessOutput -Result $result.ProcessResult)
+                    if ($result.Phase -eq 'PushUnconfirmed') {
+                        $status = if ($result.ProcessResult.TimedOut) { '逾時；結果未確認' } else { '取消；結果未確認' }
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：結果未確認"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status $status -Output @(
+                            $output,
+                            '推送可能已在遠端完成；請重新查詢 GitHub master SHA，以確認實際結果。'
+                        )
+                    } elseif ($result.Phase -eq 'PushFailed') {
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：失敗"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status '推送失敗' -Output $output
+                    } elseif ($result.Phase -eq 'VerifyMismatch') {
+                        $completedUi.GitHubShaValue.Text = $result.RemoteHead
+                        $completedState.GitHubMasterSha = $result.RemoteHead
+                        $completedUi.GitHubCompareValue.Text = if ($result.RemoteHead -ceq $result.Head) {
+                            '一致'
+                        } else {
+                            '不一致'
+                        }
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：結果未確認"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status '結果未確認；推送後 SHA 不一致' -Output @(
+                            "本次本機 HEAD：$($result.Head)",
+                            "目前 GitHub origin/master：$($result.RemoteHead)",
+                            '未自動重試或強制推送；請人工檢查遠端狀態。'
+                        )
+                    } elseif ($result.Phase -eq 'Verified') {
+                        $completedUi.GitHubShaValue.Text = $result.RemoteHead
+                        $completedUi.GitHubCompareValue.Text = '一致'
+                        $completedState.GitHubMasterSha = $result.RemoteHead
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：推送成功"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status '推送成功' -Output @(
+                            "本次本機 HEAD：$($result.Head)",
+                            "推送後 GitHub origin/master：$($result.RemoteHead)",
+                            '推送命令成功，且推送後遠端 SHA 完全一致。'
+                        )
+                    } else {
+                        throw "推送回傳未知驗證階段：$($result.Phase)"
+                    }
+                }
                 'Tests' {
                     $result = $eventArgs.Result
-                    $output = @(Format-ProcessOutput -Result $result)
+                    $output = @(& $completionFormatProcessOutput -Result $result)
                     if ($result.TimedOut) {
                         $timeoutMessage = "$($completedRequest.Operation) 的 $($result.Stage) 逾時（$($result.TimeoutSeconds) 秒）；已停止本機程序樹。"
                         $output = @($timeoutMessage) + $output
                         $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：逾時"
-                        Add-OperationLog -Operation $completedRequest.Operation -Status '逾時' -Output $output
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status '逾時' -Output $output
                     } elseif ($result.Cancelled) {
                         $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：已取消"
-                        Add-OperationLog -Operation $completedRequest.Operation -Status '已取消並確認停止' -Output $output
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status '已取消並確認停止' -Output $output
                     } elseif ($result.ExitCode -eq 0) {
                         $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：成功（exit $($result.ExitCode)）"
-                        Add-OperationLog -Operation $completedRequest.Operation -Status "成功（exit $($result.ExitCode)）" -Output $output
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status "成功（exit $($result.ExitCode)）" -Output $output
                     } else {
                         $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：失敗（exit $($result.ExitCode)）"
-                        Add-OperationLog -Operation $completedRequest.Operation -Status "失敗（exit $($result.ExitCode)）" -Output $output
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status "失敗（exit $($result.ExitCode)）" -Output $output
                     }
                 }
                 }
             }
         } catch {
             $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：完成處理失敗"
-            Add-OperationLog -Operation $completedRequest.Operation -Status '完成處理失敗' -Output @(
-                (Protect-SensitiveText -Text $_.Exception.Message)
+            & $completionAddOperationLog -Operation $completedRequest.Operation -Status '完成處理失敗' -Output @(
+                (& $completionProtectSensitiveText -Text $_.Exception.Message)
             )
         } finally {
             try {
@@ -622,8 +852,8 @@ try {
                     $workContext.Runspace.Dispose()
                 }
             } catch {
-                Add-OperationLog -Operation $completedRequest.Operation -Status '背景工作資源清理失敗' -Output @(
-                    (Protect-SensitiveText -Text $_.Exception.Message)
+                & $completionAddOperationLog -Operation $completedRequest.Operation -Status '背景工作資源清理失敗' -Output @(
+                    (& $completionProtectSensitiveText -Text $_.Exception.Message)
                 )
             } finally {
                 $workContext.PowerShell = $null
@@ -631,17 +861,22 @@ try {
                 $workContext.AsyncResult = $null
                 $workContext.CompletionHandler = $null
                 $completedState.IsBusy = $false
-                $completedUi.RefreshButton.Enabled = $true
-                $completedUi.TestButton.Enabled = $true
-                $completedUi.GitHubButton.Enabled = $true
                 if (-not $unconfirmedProcess) {
                     $completedState.ActiveOperation = $null
+                    & $completionSetOperationButtonsEnabled -Enabled $true
+                } else {
+                    & $completionSetOperationButtonsEnabled -Enabled $false
                 }
             }
             if ($closeAfterCompletion -and -not $unconfirmedProcess) {
                 $completedState.AllowClose = $true
                 $completedUi.Form.Close()
             }
+        }
+        if ($nextPush -and -not $closeAfterCompletion) {
+            & $completionStartBackgroundOperation -Operation '推送到 GitHub（git push origin master）' `
+                -Action 'PushMaster' -ExpectedHeadSha $nextPush.ExpectedHeadSha `
+                -ExpectedRemoteSha $nextPush.ExpectedRemoteSha
         }
     }.GetNewClosure()
     $context.CompletionHandler = $completionHandler
@@ -764,7 +999,7 @@ $localGroup.Controls.Add($localTable)
 $rootLayout.Controls.Add($localGroup, 0, 0)
 
 $githubGroup = New-Object System.Windows.Forms.GroupBox
-$githubGroup.Text = '2. GitHub 版本（唯讀）'
+$githubGroup.Text = '2. GitHub 版本'
 $githubGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 $githubTable = New-Object System.Windows.Forms.TableLayoutPanel
 $githubTable.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -777,6 +1012,9 @@ $githubTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([Syst
 $script:Controls.GitHubButton = New-ActionButton -Text '檢查 GitHub master'
 $githubTable.Controls.Add($script:Controls.GitHubButton, 0, $githubTable.RowCount)
 $githubTable.SetColumnSpan($script:Controls.GitHubButton, 2)
+$script:Controls.PushButton = New-ActionButton -Text '推送到 GitHub'
+$githubTable.Controls.Add($script:Controls.PushButton, 0, $githubTable.RowCount + 1)
+$githubTable.SetColumnSpan($script:Controls.PushButton, 2)
 $githubGroup.Controls.Add($githubTable)
 $rootLayout.Controls.Add($githubGroup, 1, 0)
 
@@ -870,6 +1108,9 @@ $script:Controls.TestButton.Add_Click({
 })
 $script:Controls.GitHubButton.Add_Click({
     Start-BackgroundOperation -Operation '檢查 GitHub master（git ls-remote）' -Action 'GitHubMaster'
+})
+$script:Controls.PushButton.Add_Click({
+    Start-BackgroundOperation -Operation '推送到 GitHub' -Action 'PushMasterPreflight'
 })
 
 $form.Add_Shown({
@@ -1004,6 +1245,7 @@ $processMonitor.add_Tick({
         $context.StdoutTask = $null
         $context.StderrTask = $null
         $script:OperationState.ActiveOperation = $null
+        Set-OperationButtonsEnabled -Enabled $true
         Add-OperationLog -Operation $context.Operation -Status '本機程序已結束；操作結果未確認' `
             -Output @('程序已結束且輸出管道已排空；由於先前停止未確認，不將原操作視為成功。')
         $script:Controls.ActivityLabel.Text = '本機程序已結束；原操作結果未確認'
