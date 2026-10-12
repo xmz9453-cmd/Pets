@@ -417,6 +417,37 @@ function Get-DeploymentPreflight {
         Detail = $worktreeDetail
     })
 
+    $trackingStatus = 'FAIL'
+    $trackingDetail = $null
+    try {
+        $localMasterResult = Invoke-GitReadOnly -Arguments @('rev-parse', '--verify', 'refs/heads/master^{commit}') `
+            -Context $Context -Stage '確認本機 master 參照'
+        $originMasterResult = Invoke-GitReadOnly -Arguments @('rev-parse', '--verify', 'refs/remotes/origin/master^{commit}') `
+            -Context $Context -Stage '確認本機 origin/master 參照'
+        if ($localMasterResult.Stdout.Trim() -notmatch '^[0-9a-fA-F]{40}$' -or
+            $originMasterResult.Stdout.Trim() -notmatch '^[0-9a-fA-F]{40}$') {
+            throw '本機 master 或 origin/master 未解析為有效的完整 commit SHA。'
+        }
+
+        $trackingResult = Invoke-GitReadOnly -Arguments @(
+            'rev-list', '--left-right', '--count', 'refs/heads/master...refs/remotes/origin/master'
+        ) -Context $Context -Stage '計算本機 master 與 origin/master 提交關係'
+        $trackingOutput = $trackingResult.Stdout.Trim()
+        if ($trackingOutput -notmatch '^([0-9]+)\s+([0-9]+)$') {
+            throw "無法解析 ahead/behind 數據：$trackingOutput"
+        }
+
+        $trackingStatus = 'PASS'
+        $trackingDetail = "ahead $($Matches[1])，behind $($Matches[2])。"
+    } catch {
+        $trackingDetail = "無法確認：$(Protect-SensitiveText -Text $_.Exception.Message)"
+    }
+    $checks.Add([pscustomobject]@{
+        Name = '本機 master 與 origin/master 提交關係'
+        Status = $trackingStatus
+        Detail = $trackingDetail
+    })
+
     $repositoryValid = $false
     $originSafe = $false
     $repositoryDetail = $null
