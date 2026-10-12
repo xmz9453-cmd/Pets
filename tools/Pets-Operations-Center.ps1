@@ -343,6 +343,146 @@ function Get-GitHubMasterStatus {
     return $Matches[1].ToLowerInvariant()
 }
 
+function Get-DeploymentPreflight {
+    param([Parameter(Mandatory = $true)][hashtable]$Context)
+
+    $checks = New-Object System.Collections.Generic.List[object]
+    $localStatus = $null
+    $localError = $null
+    try {
+        $localStatus = Get-LocalProjectStatus -Context $Context
+        $checks.Add([pscustomobject]@{
+            Name = '本機 Git 狀態可正常取得'
+            Status = 'PASS'
+            Detail = '已取得分支、HEAD 與包含未追蹤檔案的工作樹狀態。'
+        })
+    } catch {
+        $localError = Protect-SensitiveText -Text $_.Exception.Message
+        $checks.Add([pscustomobject]@{
+            Name = '本機 Git 狀態可正常取得'
+            Status = 'FAIL'
+            Detail = $localError
+        })
+    }
+
+    $branchStatus = '無法確認'
+    $branchDetail = '本機 Git 狀態無法取得。'
+    if ($localStatus) {
+        if ($localStatus.Branch -ceq 'master') {
+            $branchStatus = 'PASS'
+            $branchDetail = "目前分支：$($localStatus.Branch)"
+        } else {
+            $branchStatus = 'FAIL'
+            $branchDetail = "目前分支為 '$($localStatus.Branch)'，不是 master。"
+        }
+    }
+    $checks.Add([pscustomobject]@{
+        Name = '目前分支為 master'
+        Status = $branchStatus
+        Detail = $branchDetail
+    })
+
+    $headStatus = if ($localStatus) { 'PASS' } else { '無法確認' }
+    $headDetail = if ($localStatus) { "本機 HEAD：$($localStatus.Head)" } else { '本機 HEAD SHA 無法取得。' }
+    $checks.Add([pscustomobject]@{
+        Name = '本機 HEAD SHA 可取得'
+        Status = $headStatus
+        Detail = $headDetail
+    })
+
+    $worktreeStatus = '無法確認'
+    $worktreeDetail = '本機工作樹狀態無法取得。'
+    if ($localStatus) {
+        if ($localStatus.IsClean) {
+            $worktreeStatus = 'PASS'
+            $worktreeDetail = '工作樹乾淨（包含未追蹤檔案檢查）。'
+        } else {
+            $worktreeStatus = 'FAIL'
+            $worktreeDetail = "工作樹有未提交或未追蹤變更：$($localStatus.StatusOutput -replace "`r?`n", '; ')"
+        }
+    }
+    $checks.Add([pscustomobject]@{
+        Name = '工作樹乾淨（包含未追蹤檔案）'
+        Status = $worktreeStatus
+        Detail = $worktreeDetail
+    })
+
+    $repositoryValid = $false
+    $originSafe = $false
+    $repositoryDetail = $null
+    try {
+        $repositoryResult = Invoke-GitReadOnly -Arguments @('rev-parse', '--is-inside-work-tree') `
+            -Context $Context -Stage '確認有效 Git repository'
+        if ($repositoryResult.Stdout.Trim() -cne 'true') {
+            throw '目前路徑不是有效的 Git 工作樹。'
+        }
+        $repositoryValid = $true
+        $originResult = Invoke-GitReadOnly -Arguments @('remote', 'get-url', 'origin') `
+            -Context $Context -Stage '確認 origin remote 設定'
+        $originUrl = $originResult.Stdout.Trim()
+        $originUri = $null
+        if (-not [uri]::TryCreate($originUrl, [System.UriKind]::Absolute, [ref]$originUri) -or
+            $originUri.Scheme -cne 'https' -or $originUri.Host -ine 'github.com') {
+            throw 'origin 必須設定為 GitHub HTTPS remote；其他傳輸方式不會嘗試連線。'
+        }
+        $originSafe = $true
+        $repositoryDetail = '有效 Git 工作樹，且 origin 已設定為 GitHub HTTPS remote。'
+    } catch {
+        $repositoryDetail = Protect-SensitiveText -Text $_.Exception.Message
+    }
+    $repositoryStatus = if ($repositoryValid -and $originSafe) { 'PASS' } else { 'FAIL' }
+    $checks.Add([pscustomobject]@{
+        Name = '有效 Git repository 且必要 origin 設定存在'
+        Status = $repositoryStatus
+        Detail = $repositoryDetail
+    })
+
+    $remoteSha = $null
+    $remoteStatus = '無法確認'
+    $remoteDetail = '因 repository 或 origin 設定未通過，未執行 GitHub 查詢。'
+    if ($repositoryValid -and $originSafe) {
+        try {
+            $remoteSha = Get-GitHubMasterStatus -Context $Context
+            $remoteStatus = 'PASS'
+            $remoteDetail = "即時取得 GitHub origin/master SHA：$remoteSha"
+        } catch {
+            $remoteDetail = "即時查詢失敗：$(Protect-SensitiveText -Text $_.Exception.Message)"
+        }
+    }
+    $checks.Add([pscustomobject]@{
+        Name = '即時查詢 GitHub origin/master'
+        Status = $remoteStatus
+        Detail = $remoteDetail
+    })
+
+    $compareStatus = '無法確認'
+    $compareDetail = '本機或 GitHub SHA 無法取得，未能比較。'
+    if ($localStatus -and $remoteSha) {
+        if ($localStatus.Head -ceq $remoteSha) {
+            $compareStatus = 'PASS'
+            $compareDetail = '本機 HEAD 與 GitHub master SHA 一致。'
+        } else {
+            $compareStatus = 'FAIL'
+            $compareDetail = "本機 HEAD $($localStatus.Head) 與 GitHub master $remoteSha 不一致。"
+        }
+    }
+    $checks.Add([pscustomobject]@{
+        Name = '本機 HEAD 與 GitHub master SHA 一致'
+        Status = $compareStatus
+        Detail = $compareDetail
+    })
+
+    return [pscustomobject]@{
+        IsPass = (@($checks | Where-Object { $_.Status -ne 'PASS' }).Count -eq 0)
+        Checks = $checks.ToArray()
+        Branch = if ($localStatus) { $localStatus.Branch } else { '無法確認' }
+        Head = if ($localStatus) { $localStatus.Head } else { '無法確認' }
+        IsClean = if ($localStatus) { $localStatus.IsClean } else { $null }
+        StatusOutput = if ($localStatus) { $localStatus.StatusOutput } else { $null }
+        RemoteHead = if ($remoteSha) { $remoteSha } else { '無法確認' }
+    }
+}
+
 function Get-PushPreflight {
     param([Parameter(Mandatory = $true)][hashtable]$Context)
 
@@ -473,12 +613,13 @@ function Set-OperationButtonsEnabled {
     $script:Controls.TestButton.Enabled = $Enabled
     $script:Controls.GitHubButton.Enabled = $Enabled
     $script:Controls.PushButton.Enabled = $Enabled
+    $script:Controls.DeploymentPreflightButton.Enabled = $Enabled
 }
 
 function Start-BackgroundOperation {
     param(
         [Parameter(Mandatory = $true)][string]$Operation,
-        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster')][string]$Action,
+        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster', 'DeploymentPreflight')][string]$Action,
         [string]$ExpectedHeadSha,
         [string]$ExpectedRemoteSha
     )
@@ -526,6 +667,7 @@ function Start-BackgroundOperation {
         'Invoke-GitReadOnly',
         'Get-LocalProjectStatus',
         'Get-GitHubMasterStatus',
+        'Get-DeploymentPreflight',
         'Get-PushPreflight'
     )
     $functionDefinitions = foreach ($functionName in $functionNames) {
@@ -556,6 +698,11 @@ try {
         'GitHubMaster' {
             $workContext.Stage = '開始 GitHub master 查詢'
             $result = Get-GitHubMasterStatus -Context $workContext
+            break
+        }
+        'DeploymentPreflight' {
+            $workContext.Stage = '執行部署前唯讀檢查'
+            $result = Get-DeploymentPreflight -Context $workContext
             break
         }
         'Tests' {
@@ -700,6 +847,14 @@ try {
                         '無法確認'
                     }
                     $completedState.GitHubMasterSha = $null
+                } elseif ($completedRequest.Action -eq 'DeploymentPreflight') {
+                    $completedUi.BranchValue.Text = '無法確認'
+                    $completedUi.HeadValue.Text = '無法確認'
+                    $completedUi.WorktreeValue.Text = '無法確認'
+                    $completedUi.GitHubShaValue.Text = '無法確認'
+                    $completedUi.GitHubCompareValue.Text = '無法確認'
+                    $completedState.LocalHeadSha = $null
+                    $completedState.GitHubMasterSha = $null
                 }
             } else {
                 switch ($completedRequest.Action) {
@@ -743,6 +898,51 @@ try {
                         "與本機 HEAD：$($completedUi.GitHubCompareValue.Text)",
                         '查詢方式：git ls-remote（未執行 fetch/pull/push）'
                     )
+                }
+                'DeploymentPreflight' {
+                    $preflight = $eventArgs.Result
+                    $completedUi.BranchValue.Text = $preflight.Branch
+                    $completedUi.HeadValue.Text = $preflight.Head
+                    $completedUi.WorktreeValue.Text = if ($null -eq $preflight.IsClean) {
+                        '無法確認'
+                    } elseif ($preflight.IsClean) {
+                        '乾淨（PASS）'
+                    } else {
+                        '有未提交變更（FAIL）'
+                    }
+                    $completedUi.WorktreeValue.ForeColor = if ($preflight.IsClean -eq $true) {
+                        [System.Drawing.Color]::DarkGreen
+                    } elseif ($preflight.IsClean -eq $false) {
+                        [System.Drawing.Color]::DarkRed
+                    } else {
+                        [System.Drawing.SystemColors]::ControlText
+                    }
+                    $completedUi.GitHubShaValue.Text = $preflight.RemoteHead
+                    $compareCheck = @($preflight.Checks | Where-Object {
+                        $_.Name -eq '本機 HEAD 與 GitHub master SHA 一致'
+                    })[0]
+                    $completedUi.GitHubCompareValue.Text = "$($compareCheck.Status)：$($compareCheck.Detail)"
+                    $completedState.LocalHeadSha = if ($preflight.Head -ne '無法確認') { $preflight.Head } else { $null }
+                    $completedState.GitHubMasterSha = if ($preflight.RemoteHead -ne '無法確認') {
+                        $preflight.RemoteHead
+                    } else {
+                        $null
+                    }
+                    $checkDetails = @($preflight.Checks | ForEach-Object {
+                        "[$($_.Status)] $($_.Name)：$($_.Detail)"
+                    })
+                    $checkDetails += "目前分支：$($preflight.Branch)"
+                    $checkDetails += "本機 HEAD SHA：$($preflight.Head)"
+                    $checkDetails += "GitHub origin/master SHA：$($preflight.RemoteHead)"
+                    $checkDetails += "工作樹狀態：$($completedUi.WorktreeValue.Text)"
+                    $checkDetails += '本檢查僅驗證本機與 GitHub 狀態，未執行正式伺服器檢查或部署。'
+                    if ($preflight.IsPass) {
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：PASS"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status 'PASS' -Output $checkDetails
+                    } else {
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：FAIL"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status 'FAIL' -Output $checkDetails
+                    }
                 }
                 'PushMasterPreflight' {
                     $preflight = $eventArgs.Result
@@ -1044,6 +1244,9 @@ $targetInput.AccessibleDescription = '本階段不會使用或傳送此 SHA。'
 $deployButton = New-ActionButton -Text '部署（第二階段啟用）' -Enabled $false
 $productionTable.Controls.Add($deployButton, 0, $productionTable.RowCount + 1)
 $productionTable.SetColumnSpan($deployButton, 2)
+$script:Controls.DeploymentPreflightButton = New-ActionButton -Text '部署前檢查'
+$productionTable.Controls.Add($script:Controls.DeploymentPreflightButton, 0, $productionTable.RowCount + 2)
+$productionTable.SetColumnSpan($script:Controls.DeploymentPreflightButton, 2)
 $productionGroup.Controls.Add($productionTable)
 $rootLayout.Controls.Add($productionGroup, 0, 1)
 
@@ -1111,6 +1314,15 @@ $script:Controls.GitHubButton.Add_Click({
 })
 $script:Controls.PushButton.Add_Click({
     Start-BackgroundOperation -Operation '推送到 GitHub' -Action 'PushMasterPreflight'
+})
+$script:Controls.DeploymentPreflightButton.Add_Click({
+    $script:Controls.BranchValue.Text = '檢查中…'
+    $script:Controls.HeadValue.Text = '檢查中…'
+    $script:Controls.WorktreeValue.Text = '檢查中…'
+    $script:Controls.GitHubShaValue.Text = '檢查中…'
+    $script:Controls.GitHubCompareValue.Text = '檢查中…'
+    $script:Controls.WorktreeValue.ForeColor = [System.Drawing.SystemColors]::ControlText
+    Start-BackgroundOperation -Operation '部署前檢查（唯讀）' -Action 'DeploymentPreflight'
 })
 
 $form.Add_Shown({
