@@ -1274,9 +1274,17 @@ try {
                     $workContext.Runspace.Dispose()
                 }
             } catch {
-                & $completionAddOperationLog -Operation $completedRequest.Operation -Status '背景工作資源清理失敗' -Output @(
-                    (& $completionProtectSensitiveText -Text $_.Exception.Message)
-                )
+                if ($completedRequest.Action -eq 'ReadOnlySshPreflight') {
+                    & $completionAddOperationLog -Operation $completedRequest.Operation `
+                        -Status '背景工作資源清理失敗' -Output @(
+                            '清理失敗；例外訊息與堆疊未記錄。'
+                        )
+                } else {
+                    & $completionAddOperationLog -Operation $completedRequest.Operation `
+                        -Status '背景工作資源清理失敗' -Output @(
+                            (& $completionProtectSensitiveText -Text $_.Exception.Message)
+                        )
+                }
             } finally {
                 $workContext.PowerShell = $null
                 $workContext.Runspace = $null
