@@ -417,8 +417,8 @@ function Get-DeploymentPreflight {
         Detail = $worktreeDetail
     })
 
-    $trackingStatus = 'FAIL'
-    $trackingDetail = $null
+    $trackingStatus = '無法確認'
+    $trackingDetail = '本機分支或 tracking ref 尚未驗證。'
     try {
         $localMasterResult = Invoke-GitReadOnly -Arguments @('rev-parse', '--verify', 'refs/heads/master^{commit}') `
             -Context $Context -Stage '確認本機 master 參照'
@@ -429,6 +429,16 @@ function Get-DeploymentPreflight {
             throw '本機 master 或 origin/master 未解析為有效的完整 commit SHA。'
         }
 
+        $shallowResult = Invoke-GitReadOnly -Arguments @('rev-parse', '--is-shallow-repository') `
+            -Context $Context -Stage '確認本機提交歷史完整'
+        $shallowState = $shallowResult.Stdout.Trim()
+        if ($shallowState -ceq 'true') {
+            throw '本機是 shallow repository，無法可靠比較完整提交關係。'
+        }
+        if ($shallowState -cne 'false') {
+            throw "無法確認本機提交歷史是否完整：$shallowState"
+        }
+
         $trackingResult = Invoke-GitReadOnly -Arguments @(
             'rev-list', '--left-right', '--count', 'refs/heads/master...refs/remotes/origin/master'
         ) -Context $Context -Stage '計算本機 master 與 origin/master 提交關係'
@@ -437,10 +447,24 @@ function Get-DeploymentPreflight {
             throw "無法解析 ahead/behind 數據：$trackingOutput"
         }
 
-        $trackingStatus = 'PASS'
-        $trackingDetail = "ahead $($Matches[1])，behind $($Matches[2])。"
+        [decimal]$aheadCount = $Matches[1]
+        [decimal]$behindCount = $Matches[2]
+        if ($aheadCount -eq 0 -and $behindCount -eq 0) {
+            $trackingStatus = 'PASS'
+            $trackingDetail = '本機 master 與 origin/master 完全同步（ahead 0，behind 0）。'
+        } elseif ($aheadCount -gt 0 -and $behindCount -eq 0) {
+            $trackingStatus = 'FAIL'
+            $trackingDetail = "本機 master 領先 origin/master（ahead $aheadCount，behind 0）；未同步。"
+        } elseif ($aheadCount -eq 0 -and $behindCount -gt 0) {
+            $trackingStatus = 'FAIL'
+            $trackingDetail = "本機 master 落後 origin/master（ahead 0，behind $behindCount）；未同步。"
+        } else {
+            $trackingStatus = 'FAIL'
+            $trackingDetail = "本機 master 與 origin/master 分歧（ahead $aheadCount，behind $behindCount）。"
+        }
     } catch {
-        $trackingDetail = "無法確認：$(Protect-SensitiveText -Text $_.Exception.Message)"
+        $trackingStatus = '無法確認'
+        $trackingDetail = "無法比較：$(Protect-SensitiveText -Text $_.Exception.Message)"
     }
     $checks.Add([pscustomobject]@{
         Name = '本機 master 與 origin/master 提交關係'
