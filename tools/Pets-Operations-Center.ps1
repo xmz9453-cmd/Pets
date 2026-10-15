@@ -328,15 +328,15 @@ function Get-PreflightStderrSummary {
 function Get-PreflightExceptionType {
     param([Parameter(Mandatory = $true)][System.Exception]$Exception)
 
-    switch ($Exception.GetType().FullName) {
-        'Renci.SshNet.Common.SshOperationTimeoutException' { return 'SshOperationTimeoutException' }
-        'Renci.SshNet.Common.SshAuthenticationException' { return 'SshAuthenticationException' }
-        'Renci.SshNet.Common.SshConnectionException' { return 'SshConnectionException' }
-        'Renci.SshNet.Common.SshException' { return 'SshException' }
-        'System.TimeoutException' { return 'TimeoutException' }
-        'System.InvalidOperationException' { return 'InvalidOperationException' }
-        'System.ObjectDisposedException' { return 'ObjectDisposedException' }
-        default { return 'OtherException' }
+    try {
+        $typeName = $Exception.GetType().FullName
+        if ([string]::IsNullOrEmpty($typeName) -or $typeName.Length -gt 128 -or
+            $typeName -cnotmatch '\A[A-Za-z_][A-Za-z0-9_.+`]{0,127}\z') {
+            return 'OtherException'
+        }
+        return $typeName
+    } catch {
+        return 'OtherException'
     }
 }
 
@@ -1356,14 +1356,17 @@ try {
                 DestinationState = 'Unknown'
                 FailureStage = 'SshConnection'
                 RemoteExitCode = $null
+                RemoteExitCodeReadStatus = 'NotRead'
                 ExceptionType = 'None'
-                StderrSummary = '未執行遠端命令。'
+                StderrSummary = '尚未讀取。'
+                StderrReadStatus = 'NotRead'
                 Reason = 'SSH 連線失敗；詳細例外資訊不記錄。'
                 DiagnosticStage = $workContext.SshDiagnosticStage
                 ErrorCategory = 'Failed'
                 AuthenticationSucceeded = $workContext.SshAuthenticationSucceeded
             }
             $command = $null
+            $remoteCommandAttempted = $false
             try {
                 if ($workContext.CancelRequested) {
                     $workContext.SshDiagnosticStage = 'CancelledBeforeConnection'
@@ -1405,7 +1408,7 @@ try {
                             if ($workerRequest.Action -eq 'BackupDestinationPreflight') {
                                 $workContext.Stage = '唯讀檢查備份目的地'
                                 $workContext.SshDiagnosticStage = 'Other'
-                                $sshResult.FailureStage = 'RemoteCommand'
+                                $sshResult.FailureStage = 'OtherRemoteProcessing'
                                 $remoteCheck = @(
                                     'cd -- ''/home/zhe/pets'' || exit 90'
                                     'if [ -n "${BACKUP_DIR:-}" ]; then'
@@ -1432,11 +1435,23 @@ try {
                                     'fi'
                                     'printf ''DESTINATION_SOURCE=%s\nDESTINATION_PATH=%s\nDESTINATION_STATE=%s\nDESTINATION_CANONICAL=%s\n'' "$source" "$destination" "$state" "$canonical"'
                                 ) -join "`n"
+                                $sshResult.FailureStage = 'CreateCommand'
                                 $command = $client.CreateCommand($remoteCheck)
+                                $sshResult.FailureStage = 'OtherRemoteProcessing'
                                 $command.CommandTimeout = [TimeSpan]::FromSeconds(15)
+                                $sshResult.FailureStage = 'Execute'
+                                $remoteCommandAttempted = $true
                                 $commandOutput = $command.Execute()
+                                $sshResult.FailureStage = 'ReadExitStatus'
                                 $sshResult.RemoteExitCode = $command.ExitStatus
-                                $sshResult.StderrSummary = Get-PreflightStderrSummary -Text $command.Error
+                                $sshResult.RemoteExitCodeReadStatus = 'Read'
+                                $sshResult.FailureStage = 'ReadStderr'
+                                $stderrText = $command.Error
+                                $sshResult.StderrReadStatus = 'Read'
+                                $sshResult.StderrSummary = '讀取成功；摘要尚未產生。'
+                                $sshResult.FailureStage = 'OtherRemoteProcessing'
+                                $sshResult.StderrSummary = Get-PreflightStderrSummary -Text $stderrText
+                                $sshResult.FailureStage = 'ParseRemoteOutput'
                                 $reportedStateLines = @($commandOutput -split "`r?`n" |
                                     Where-Object { $_ -cmatch '^DESTINATION_STATE=(READY|SYMLINK|MISSING|NOT_DIRECTORY|NOT_WRITABLE|UNCONFIRMED)$' })
                                 if ($reportedStateLines.Count -eq 1) {
@@ -1447,13 +1462,14 @@ try {
                                     $sshResult.DestinationStatus = 'NotRun'
                                     $sshResult.FailureStage = 'Cancelled'
                                     $sshResult.Reason = '唯讀備份目的地驗證已取消。'
-                                } elseif ($null -eq $command.ExitStatus) {
-                                    $sshResult.FailureStage = 'RemoteCommandExitCode'
+                                } elseif ($null -eq $sshResult.RemoteExitCode) {
+                                    $sshResult.FailureStage = 'ReadExitStatus'
                                     $sshResult.Reason = '唯讀檢查命令未回報退出碼；備份維持阻擋。'
-                                } elseif ($command.ExitStatus -ne 0) {
+                                } elseif ($sshResult.RemoteExitCode -ne 0) {
                                     $sshResult.FailureStage = 'RemoteCommandExitCode'
                                     $sshResult.Reason = '唯讀檢查命令失敗；備份維持阻擋。'
                                 } else {
+                                    $sshResult.FailureStage = 'ParseRemoteOutput'
                                     $sourceLines = @($commandOutput -split "`r?`n" |
                                         Where-Object { $_ -cmatch '^DESTINATION_SOURCE=(BACKUP_DIR|DEFAULT)$' })
                                     $pathLines = @($commandOutput -split "`r?`n" |
@@ -1509,10 +1525,38 @@ try {
                     }
                 }
             } catch {
-                $sshResult.ExceptionType = Get-PreflightExceptionType -Exception $_.Exception
-                if ($command) {
-                    $sshResult.RemoteExitCode = $command.ExitStatus
-                    $sshResult.StderrSummary = Get-PreflightStderrSummary -Text $command.Error
+                $originalException = $_.Exception
+                $originalFailureStage = $sshResult.FailureStage
+                $sshResult.ExceptionType = Get-PreflightExceptionType -Exception $originalException
+                if ($command -and $remoteCommandAttempted) {
+                    if ($sshResult.RemoteExitCodeReadStatus -eq 'NotRead') {
+                        if ($originalFailureStage -eq 'ReadExitStatus') {
+                            $sshResult.RemoteExitCodeReadStatus = 'ReadFailed'
+                        } else {
+                            try {
+                                $sshResult.RemoteExitCode = $command.ExitStatus
+                                $sshResult.RemoteExitCodeReadStatus = 'Read'
+                            } catch {
+                                $sshResult.RemoteExitCodeReadStatus = 'ReadFailed'
+                            }
+                        }
+                    }
+                    if ($sshResult.StderrReadStatus -eq 'NotRead') {
+                        if ($originalFailureStage -eq 'ReadStderr') {
+                            $sshResult.StderrReadStatus = 'ReadFailed'
+                            $sshResult.StderrSummary = '讀取失敗；原始內容未記錄。'
+                        } else {
+                            try {
+                                $stderrText = $command.Error
+                                $sshResult.StderrReadStatus = 'Read'
+                                $sshResult.StderrSummary = '讀取成功；摘要尚未產生。'
+                                $sshResult.StderrSummary = Get-PreflightStderrSummary -Text $stderrText
+                            } catch {
+                                $sshResult.StderrReadStatus = 'ReadFailed'
+                                $sshResult.StderrSummary = '讀取失敗；原始內容未記錄。'
+                            }
+                        }
+                    }
                 }
                 if ($workContext.CancelRequested) {
                     $sshResult.AuthStatus = 'Cancelled'
@@ -1528,18 +1572,17 @@ try {
                     $sshResult.FailureStage = 'HostKeyVerification'
                     $sshResult.Reason = '伺服器主機金鑰未知或與已信任指紋不符；已拒絕連線。'
                     $workContext.SshDiagnosticStage = 'HostKeyVerification'
-                } elseif ($_.Exception.GetType().FullName -eq 'Renci.SshNet.Common.SshOperationTimeoutException' -or
-                    $_.Exception -is [System.TimeoutException]) {
+                } elseif ($originalException.GetType().FullName -eq 'Renci.SshNet.Common.SshOperationTimeoutException' -or
+                    $originalException -is [System.TimeoutException]) {
                     if ($sshResult.AuthStatus -eq 'Succeeded') {
                         $sshResult.DestinationStatus = 'TimedOut'
-                        $sshResult.FailureStage = 'RemoteCommandException'
                     } else {
                         $sshResult.AuthStatus = 'TimedOut'
                         $sshResult.DestinationStatus = 'NotRun'
                         $sshResult.FailureStage = 'SshConnection'
                     }
                     $sshResult.Reason = 'SSH 連線或唯讀檢查逾時；備份維持阻擋。'
-                } elseif ($_.Exception.GetType().FullName -eq 'Renci.SshNet.Common.SshAuthenticationException') {
+                } elseif ($originalException.GetType().FullName -eq 'Renci.SshNet.Common.SshAuthenticationException') {
                     $sshResult.AuthStatus = 'AuthenticationFailed'
                     $sshResult.DestinationStatus = 'NotRun'
                     $sshResult.FailureStage = 'SshAuthentication'
@@ -1547,11 +1590,6 @@ try {
                     $workContext.SshDiagnosticStage = 'PasswordAuthentication'
                 } elseif ($sshResult.AuthStatus -eq 'Succeeded') {
                     $sshResult.DestinationStatus = 'Failed'
-                    $sshResult.FailureStage = if ($sshResult.FailureStage -eq 'RemoteCommand') {
-                        'RemoteCommandException'
-                    } else {
-                        $sshResult.FailureStage
-                    }
                     $sshResult.Reason = 'SSH 認證成功，但備份目的地唯讀驗證失敗；備份維持阻擋。'
                 } else {
                     $sshResult.AuthStatus = 'Failed'
@@ -1560,10 +1598,10 @@ try {
                     $sshResult.Reason = if ($workerRequest.Action -eq 'BackupDestinationPreflight') {
                         'SSH 連線失敗；已抑制例外內容。'
                     } else {
-                        if ($_.Exception.InnerException) {
-                            "$($_.Exception.GetType().FullName) (InnerException: $($_.Exception.InnerException.GetType().FullName))"
+                        if ($originalException.InnerException) {
+                            "$($originalException.GetType().FullName) (InnerException: $($originalException.InnerException.GetType().FullName))"
                         } else {
-                            $_.Exception.GetType().FullName
+                            $originalException.GetType().FullName
                         }
                     }
                 }
@@ -2077,8 +2115,10 @@ try {
                                     "清理失敗：$(if ($result.CleanupFailed) { '是' } else { '否' })",
                                     "失敗階段：$($result.FailureStage)",
                                     "遠端命令退出碼：$(if ($null -eq $result.RemoteExitCode) { '未取得' } else { $result.RemoteExitCode })",
+                                    "退出碼讀取狀態：$($result.RemoteExitCodeReadStatus)",
                                     "遠端目的地狀態：$($result.DestinationState)",
                                     "例外類型：$($result.ExceptionType)",
+                                    "stderr 讀取狀態：$($result.StderrReadStatus)",
                                     "遠端 stderr 摘要：$($result.StderrSummary)",
                                     $result.Reason
                                 )
