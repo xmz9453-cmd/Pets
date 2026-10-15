@@ -340,6 +340,29 @@ function Get-PreflightExceptionType {
     }
 }
 
+function Get-PreflightInnerExceptionTypes {
+    param([Parameter(Mandatory = $true)][System.Exception]$Exception)
+
+    $typeNames = New-Object System.Collections.Generic.List[string]
+    $currentException = $Exception
+    for ($depth = 1; $depth -le 3; $depth++) {
+        try {
+            $currentException = $currentException.InnerException
+        } catch {
+            return '讀取失敗'
+        }
+        if ($null -eq $currentException) {
+            break
+        }
+        $typeNames.Add((Get-PreflightExceptionType -Exception $currentException))
+    }
+
+    if ($typeNames.Count -eq 0) {
+        return '無內層例外'
+    }
+    return $typeNames -join ' -> '
+}
+
 function Clear-SshCredential {
     param([System.Security.SecureString]$Credential)
 
@@ -1257,6 +1280,7 @@ function Start-BackgroundOperation {
         'Protect-SensitiveText',
         'Get-PreflightStderrSummary',
         'Get-PreflightExceptionType',
+        'Get-PreflightInnerExceptionTypes',
         'ConvertTo-PosixShellSingleQuotedString',
         'Clear-SshCredential',
         'New-VerifiedSshClient',
@@ -1358,6 +1382,7 @@ try {
                 RemoteExitCode = $null
                 RemoteExitCodeReadStatus = 'NotRead'
                 ExceptionType = 'None'
+                InnerExceptionTypes = '尚未讀取'
                 StderrSummary = '尚未讀取。'
                 StderrReadStatus = 'NotRead'
                 Reason = 'SSH 連線失敗；詳細例外資訊不記錄。'
@@ -1528,6 +1553,11 @@ try {
                 $originalException = $_.Exception
                 $originalFailureStage = $sshResult.FailureStage
                 $sshResult.ExceptionType = Get-PreflightExceptionType -Exception $originalException
+                try {
+                    $sshResult.InnerExceptionTypes = Get-PreflightInnerExceptionTypes -Exception $originalException
+                } catch {
+                    $sshResult.InnerExceptionTypes = '讀取失敗'
+                }
                 if ($command -and $remoteCommandAttempted) {
                     if ($sshResult.RemoteExitCodeReadStatus -eq 'NotRead') {
                         if ($originalFailureStage -eq 'ReadExitStatus') {
@@ -2118,6 +2148,7 @@ try {
                                     "退出碼讀取狀態：$($result.RemoteExitCodeReadStatus)",
                                     "遠端目的地狀態：$($result.DestinationState)",
                                     "例外類型：$($result.ExceptionType)",
+                                    "內層例外類型（最多 3 層）：$($result.InnerExceptionTypes)",
                                     "stderr 讀取狀態：$($result.StderrReadStatus)",
                                     "遠端 stderr 摘要：$($result.StderrSummary)",
                                     $result.Reason
