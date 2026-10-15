@@ -363,6 +363,45 @@ function Get-PreflightInnerExceptionTypes {
     return $typeNames -join ' -> '
 }
 
+function Get-PreflightSshExceptionCategory {
+    param([Parameter(Mandatory = $true)][System.Exception]$Exception)
+
+    $currentException = $Exception
+    for ($depth = 0; $depth -le 3; $depth++) {
+        try {
+            if ($null -eq $currentException) {
+                return 'NotApplicable'
+            }
+            $exceptionType = $currentException.GetType()
+            $isSshException = $false
+            for ($typeDepth = 0; $typeDepth -lt 8 -and $null -ne $exceptionType; $typeDepth++) {
+                if ($exceptionType.FullName -ceq 'Renci.SshNet.Common.SshException') {
+                    $isSshException = $true
+                    break
+                }
+                $exceptionType = $exceptionType.BaseType
+            }
+            if ($isSshException) {
+                $message = $currentException.Message
+                if ($message -ceq 'Client is not connected.') {
+                    return 'ConnectionLost'
+                }
+                if ($message -ceq 'Operation has timed out.') {
+                    return 'Timeout'
+                }
+                return 'Unknown'
+            }
+            $currentException = $currentException.InnerException
+        } catch {
+            return 'Unknown'
+        }
+    }
+    if ($null -eq $currentException) {
+        return 'NotApplicable'
+    }
+    return 'Unknown'
+}
+
 function Clear-SshCredential {
     param([System.Security.SecureString]$Credential)
 
@@ -1281,6 +1320,7 @@ function Start-BackgroundOperation {
         'Get-PreflightStderrSummary',
         'Get-PreflightExceptionType',
         'Get-PreflightInnerExceptionTypes',
+        'Get-PreflightSshExceptionCategory',
         'ConvertTo-PosixShellSingleQuotedString',
         'Clear-SshCredential',
         'New-VerifiedSshClient',
@@ -1383,6 +1423,7 @@ try {
                 RemoteExitCodeReadStatus = 'NotRead'
                 ExceptionType = 'None'
                 InnerExceptionTypes = '尚未讀取'
+                SshExceptionCategory = 'NotApplicable'
                 StderrSummary = '尚未讀取。'
                 StderrReadStatus = 'NotRead'
                 Reason = 'SSH 連線失敗；詳細例外資訊不記錄。'
@@ -1557,6 +1598,13 @@ try {
                     $sshResult.InnerExceptionTypes = Get-PreflightInnerExceptionTypes -Exception $originalException
                 } catch {
                     $sshResult.InnerExceptionTypes = '讀取失敗'
+                }
+                if ($originalFailureStage -eq 'Execute') {
+                    try {
+                        $sshResult.SshExceptionCategory = Get-PreflightSshExceptionCategory -Exception $originalException
+                    } catch {
+                        $sshResult.SshExceptionCategory = 'Unknown'
+                    }
                 }
                 if ($command -and $remoteCommandAttempted) {
                     if ($sshResult.RemoteExitCodeReadStatus -eq 'NotRead') {
@@ -2149,6 +2197,7 @@ try {
                                     "遠端目的地狀態：$($result.DestinationState)",
                                     "例外類型：$($result.ExceptionType)",
                                     "內層例外類型（最多 3 層）：$($result.InnerExceptionTypes)",
+                                    "SSH Execute 例外分類：$($result.SshExceptionCategory)",
                                     "stderr 讀取狀態：$($result.StderrReadStatus)",
                                     "遠端 stderr 摘要：$($result.StderrSummary)",
                                     $result.Reason
