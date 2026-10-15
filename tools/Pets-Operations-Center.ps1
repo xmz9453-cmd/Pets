@@ -298,6 +298,48 @@ function Protect-SensitiveText {
     return $safeText
 }
 
+function Get-PreflightStderrSummary {
+    param([AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return '無'
+    }
+
+    $signatures = @()
+    if ($Text -match '(?i)\bpermission denied\b') { $signatures += 'PermissionDenied' }
+    if ($Text -match '(?i)\bno such file or directory\b') { $signatures += 'MissingPath' }
+    if ($Text -match '(?i)\bnot a directory\b') { $signatures += 'NotDirectory' }
+    if ($Text -match '(?i)\bread-only file system\b') { $signatures += 'ReadOnlyFileSystem' }
+    if ($Text -match '(?i)\boperation not permitted\b') { $signatures += 'OperationNotPermitted' }
+    if ($Text -match '(?i)\bdisk quota exceeded\b') { $signatures += 'DiskQuotaExceeded' }
+    if ($Text -match '(?i)\binput/output error\b') { $signatures += 'InputOutputError' }
+    if ($Text -match '(?i)\btoo many levels of symbolic links\b') { $signatures += 'SymlinkLoop' }
+    if ($Text -match '(?i)\b(connection timed out|operation timed out)\b') { $signatures += 'TimedOut' }
+    if ($Text -match '(?i)\b(connection refused|could not resolve hostname|name or service not known)\b') {
+        $signatures += 'ConnectionFailure'
+    }
+
+    if ($signatures.Count -eq 0) {
+        return '有；內容已抑制，沒有符合的診斷特徵。'
+    }
+    return "有；辨識特徵：$($signatures -join ', ')；原文已抑制。"
+}
+
+function Get-PreflightExceptionType {
+    param([Parameter(Mandatory = $true)][System.Exception]$Exception)
+
+    switch ($Exception.GetType().FullName) {
+        'Renci.SshNet.Common.SshOperationTimeoutException' { return 'SshOperationTimeoutException' }
+        'Renci.SshNet.Common.SshAuthenticationException' { return 'SshAuthenticationException' }
+        'Renci.SshNet.Common.SshConnectionException' { return 'SshConnectionException' }
+        'Renci.SshNet.Common.SshException' { return 'SshException' }
+        'System.TimeoutException' { return 'TimeoutException' }
+        'System.InvalidOperationException' { return 'InvalidOperationException' }
+        'System.ObjectDisposedException' { return 'ObjectDisposedException' }
+        default { return 'OtherException' }
+    }
+}
+
 function Clear-SshCredential {
     param([System.Security.SecureString]$Credential)
 
@@ -1213,6 +1255,8 @@ function Start-BackgroundOperation {
     $functionNames = @(
         'ConvertTo-ProcessArgument',
         'Protect-SensitiveText',
+        'Get-PreflightStderrSummary',
+        'Get-PreflightExceptionType',
         'ConvertTo-PosixShellSingleQuotedString',
         'Clear-SshCredential',
         'New-VerifiedSshClient',
@@ -1309,6 +1353,11 @@ try {
                 Destination = $null
                 DestinationCanonical = $null
                 DestinationSource = $null
+                DestinationState = 'Unknown'
+                FailureStage = 'SshConnection'
+                RemoteExitCode = $null
+                ExceptionType = 'None'
+                StderrSummary = '未執行遠端命令。'
                 Reason = 'SSH 連線失敗；詳細例外資訊不記錄。'
                 DiagnosticStage = $workContext.SshDiagnosticStage
                 ErrorCategory = 'Failed'
@@ -1320,6 +1369,7 @@ try {
                     $workContext.SshDiagnosticStage = 'CancelledBeforeConnection'
                     $sshResult.AuthStatus = 'Cancelled'
                     $sshResult.DestinationStatus = 'NotRun'
+                    $sshResult.FailureStage = 'Cancelled'
                     $sshResult.Reason = '使用者取消；SSH 尚未連線。'
                 } else {
                     $workContext.Stage = '建立 SSH 密碼認證連線'
@@ -1331,6 +1381,7 @@ try {
                         $workContext.SshDiagnosticStage = 'CancelledBeforeConnection'
                         $sshResult.AuthStatus = 'Cancelled'
                         $sshResult.DestinationStatus = 'NotRun'
+                        $sshResult.FailureStage = 'Cancelled'
                         $sshResult.Reason = '使用者取消；SSH 尚未連線。'
                     } else {
                         $workContext.SshDiagnosticStage = 'ConnectionHandshake'
@@ -1344,6 +1395,7 @@ try {
                         if ($workContext.CancelRequested) {
                             $sshResult.AuthStatus = 'Cancelled'
                             $sshResult.DestinationStatus = 'NotRun'
+                            $sshResult.FailureStage = 'Cancelled'
                             $sshResult.Reason = '使用者取消 SSH 連線。'
                         } elseif (-not $workContext.HostKeyVerified) {
                             throw 'HostKeyVerificationUnconfirmed'
@@ -1353,6 +1405,7 @@ try {
                             if ($workerRequest.Action -eq 'BackupDestinationPreflight') {
                                 $workContext.Stage = '唯讀檢查備份目的地'
                                 $workContext.SshDiagnosticStage = 'Other'
+                                $sshResult.FailureStage = 'RemoteCommand'
                                 $remoteCheck = @(
                                     'cd -- ''/home/zhe/pets'' || exit 90'
                                     'if [ -n "${BACKUP_DIR:-}" ]; then'
@@ -1382,11 +1435,23 @@ try {
                                 $command = $client.CreateCommand($remoteCheck)
                                 $command.CommandTimeout = [TimeSpan]::FromSeconds(15)
                                 $commandOutput = $command.Execute()
+                                $sshResult.RemoteExitCode = $command.ExitStatus
+                                $sshResult.StderrSummary = Get-PreflightStderrSummary -Text $command.Error
+                                $reportedStateLines = @($commandOutput -split "`r?`n" |
+                                    Where-Object { $_ -cmatch '^DESTINATION_STATE=(READY|SYMLINK|MISSING|NOT_DIRECTORY|NOT_WRITABLE|UNCONFIRMED)$' })
+                                if ($reportedStateLines.Count -eq 1) {
+                                    $sshResult.DestinationState = $reportedStateLines[0].Substring('DESTINATION_STATE='.Length)
+                                }
                                 if ($workContext.CancelRequested) {
                                     $sshResult.AuthStatus = 'Cancelled'
                                     $sshResult.DestinationStatus = 'NotRun'
+                                    $sshResult.FailureStage = 'Cancelled'
                                     $sshResult.Reason = '唯讀備份目的地驗證已取消。'
+                                } elseif ($null -eq $command.ExitStatus) {
+                                    $sshResult.FailureStage = 'RemoteCommandExitCode'
+                                    $sshResult.Reason = '唯讀檢查命令未回報退出碼；備份維持阻擋。'
                                 } elseif ($command.ExitStatus -ne 0) {
+                                    $sshResult.FailureStage = 'RemoteCommandExitCode'
                                     $sshResult.Reason = '唯讀檢查命令失敗；備份維持阻擋。'
                                 } else {
                                     $sourceLines = @($commandOutput -split "`r?`n" |
@@ -1399,32 +1464,41 @@ try {
                                         Where-Object { $_.StartsWith('DESTINATION_CANONICAL=', [StringComparison]::Ordinal) })
                                     if ($sourceLines.Count -ne 1 -or $pathLines.Count -ne 1 -or
                                         $stateLines.Count -ne 1 -or $canonicalLines.Count -ne 1) {
+                                        $sshResult.FailureStage = 'OutputParsing'
                                         $sshResult.Reason = '遠端未回報可確認的備份目的地；備份維持阻擋。'
                                     } else {
                                         $destination = $pathLines[0].Substring('DESTINATION_PATH='.Length)
-                                        $canonicalDestination = $canonicalLines[0].Substring('DESTINATION_CANONICAL='.Length)
-                                        if ([string]::IsNullOrWhiteSpace($destination) -or $destination.Length -gt 4096 -or
-                                            $destination -match '[\x00-\x1F\x7F]' -or
-                                            $canonicalDestination.Length -gt 4096 -or
-                                            $canonicalDestination -notmatch '\A/' -or
-                                            $canonicalDestination -match '[\x00-\x1F\x7F]') {
+                                        $destinationState = $stateLines[0].Substring('DESTINATION_STATE='.Length)
+                                        $sshResult.DestinationState = $destinationState
+                                        if ($destinationState -cne 'READY') {
+                                            $sshResult.FailureStage = 'DestinationState'
+                                            $sshResult.Reason = switch ($destinationState) {
+                                                'SYMLINK' { '備份目的地是符號連結；拒絕驗證。' }
+                                                'MISSING' { '備份目的地尚不存在；唯讀預檢不會建立目錄。' }
+                                                'NOT_DIRECTORY' { '備份目的地不是目錄。' }
+                                                'NOT_WRITABLE' { '目前 SSH 帳號無法讀取、寫入或進入備份目錄。' }
+                                                'UNCONFIRMED' { '無法確認備份目的地的實際絕對路徑。' }
+                                                default { '備份目的地狀態無法確認。' }
+                                            }
+                                        } elseif ([string]::IsNullOrWhiteSpace($destination) -or
+                                            $destination.Length -gt 4096 -or
+                                            $destination -match '[\x00-\x1F\x7F]') {
+                                            $sshResult.FailureStage = 'OutputParsing'
                                             $sshResult.Reason = '備份目的地格式無效或包含不允許的路徑字元；備份維持阻擋。'
                                         } else {
-                                            $destinationState = $stateLines[0].Substring('DESTINATION_STATE='.Length)
-                                            if ($destinationState -cne 'READY') {
-                                                $sshResult.Reason = switch ($destinationState) {
-                                                    'SYMLINK' { '備份目的地是符號連結；拒絕驗證。' }
-                                                    'MISSING' { '備份目的地尚不存在；唯讀預檢不會建立目錄。' }
-                                                    'NOT_DIRECTORY' { '備份目的地不是目錄。' }
-                                                    'NOT_WRITABLE' { '目前 SSH 帳號無法讀取、寫入或進入備份目錄。' }
-                                                    'UNCONFIRMED' { '無法確認備份目的地的實際絕對路徑。' }
-                                                    default { '備份目的地狀態無法確認。' }
-                                                }
+                                            $canonicalDestination = $canonicalLines[0].Substring('DESTINATION_CANONICAL='.Length)
+                                            if ([string]::IsNullOrWhiteSpace($canonicalDestination) -or
+                                                $canonicalDestination.Length -gt 4096 -or
+                                                $canonicalDestination -notmatch '\A/' -or
+                                                $canonicalDestination -match '[\x00-\x1F\x7F]') {
+                                                $sshResult.FailureStage = 'CanonicalPathValidation'
+                                                $sshResult.Reason = '備份目的地實際路徑無效或無法確認；備份維持阻擋。'
                                             } else {
                                                 $sshResult.DestinationStatus = 'Verified'
                                                 $sshResult.Destination = $destination
                                                 $sshResult.DestinationCanonical = $canonicalDestination
                                                 $sshResult.DestinationSource = $sourceLines[0].Substring('DESTINATION_SOURCE='.Length)
+                                                $sshResult.FailureStage = 'None'
                                                 $sshResult.Reason = 'SSH 認證成功，且備份目的地已完成唯讀驗證。'
                                             }
                                         }
@@ -1435,9 +1509,15 @@ try {
                     }
                 }
             } catch {
+                $sshResult.ExceptionType = Get-PreflightExceptionType -Exception $_.Exception
+                if ($command) {
+                    $sshResult.RemoteExitCode = $command.ExitStatus
+                    $sshResult.StderrSummary = Get-PreflightStderrSummary -Text $command.Error
+                }
                 if ($workContext.CancelRequested) {
                     $sshResult.AuthStatus = 'Cancelled'
                     $sshResult.DestinationStatus = 'NotRun'
+                    $sshResult.FailureStage = 'Cancelled'
                     $sshResult.Reason = 'SSH 操作已取消。'
                     if ($workContext.SshDiagnosticStage -eq 'SshClientInitialization') {
                         $workContext.SshDiagnosticStage = 'CancelledBeforeConnection'
@@ -1445,41 +1525,46 @@ try {
                 } elseif ($workContext.HostKeyRejected) {
                     $sshResult.AuthStatus = 'HostKeyRejected'
                     $sshResult.DestinationStatus = 'NotRun'
+                    $sshResult.FailureStage = 'HostKeyVerification'
                     $sshResult.Reason = '伺服器主機金鑰未知或與已信任指紋不符；已拒絕連線。'
                     $workContext.SshDiagnosticStage = 'HostKeyVerification'
                 } elseif ($_.Exception.GetType().FullName -eq 'Renci.SshNet.Common.SshOperationTimeoutException' -or
                     $_.Exception -is [System.TimeoutException]) {
                     if ($sshResult.AuthStatus -eq 'Succeeded') {
                         $sshResult.DestinationStatus = 'TimedOut'
+                        $sshResult.FailureStage = 'RemoteCommandException'
                     } else {
                         $sshResult.AuthStatus = 'TimedOut'
                         $sshResult.DestinationStatus = 'NotRun'
+                        $sshResult.FailureStage = 'SshConnection'
                     }
                     $sshResult.Reason = 'SSH 連線或唯讀檢查逾時；備份維持阻擋。'
                 } elseif ($_.Exception.GetType().FullName -eq 'Renci.SshNet.Common.SshAuthenticationException') {
                     $sshResult.AuthStatus = 'AuthenticationFailed'
                     $sshResult.DestinationStatus = 'NotRun'
+                    $sshResult.FailureStage = 'SshAuthentication'
                     $sshResult.Reason = 'SSH 帳號或密碼認證失敗。'
                     $workContext.SshDiagnosticStage = 'PasswordAuthentication'
                 } elseif ($sshResult.AuthStatus -eq 'Succeeded') {
                     $sshResult.DestinationStatus = 'Failed'
+                    $sshResult.FailureStage = if ($sshResult.FailureStage -eq 'RemoteCommand') {
+                        'RemoteCommandException'
+                    } else {
+                        $sshResult.FailureStage
+                    }
                     $sshResult.Reason = 'SSH 認證成功，但備份目的地唯讀驗證失敗；備份維持阻擋。'
                 } else {
                     $sshResult.AuthStatus = 'Failed'
                     $sshResult.DestinationStatus = 'NotRun'
-                    $sshResult.Reason = if ($_.Exception.InnerException) {
-                        "$($_.Exception.GetType().FullName) (InnerException: $($_.Exception.InnerException.GetType().FullName))"
+                    $sshResult.FailureStage = 'SshConnection'
+                    $sshResult.Reason = if ($workerRequest.Action -eq 'BackupDestinationPreflight') {
+                        'SSH 連線失敗；已抑制例外內容。'
                     } else {
-                        $_.Exception.GetType().FullName
-                    }
-                    $fileNotFoundException = if ($_.Exception -is [System.IO.FileNotFoundException]) {
-                        $_.Exception
-                    } elseif ($_.Exception.InnerException -is [System.IO.FileNotFoundException]) {
-                        $_.Exception.InnerException
-                    }
-                    if ($fileNotFoundException -and
-                        -not [string]::IsNullOrWhiteSpace($fileNotFoundException.FileName)) {
-                        $sshResult.Reason += " (FileName: $($fileNotFoundException.FileName))"
+                        if ($_.Exception.InnerException) {
+                            "$($_.Exception.GetType().FullName) (InnerException: $($_.Exception.InnerException.GetType().FullName))"
+                        } else {
+                            $_.Exception.GetType().FullName
+                        }
                     }
                 }
             } finally {
@@ -1613,6 +1698,8 @@ try {
                 $result.DiagnosticStage = 'Other'
                 $result.DestinationStatus = 'Failed'
                 $result.Destination = $null
+                $result.FailureStage = 'SshCleanup'
+                $result.ExceptionType = 'CleanupFailure'
                 $result.Reason = 'SSH 認證已完成，但連線或認證資源清理未能確認；備份維持阻擋。'
             } elseif ($result.AuthStatus -ne 'Cancelled' -and $workContext.SshDisconnectFailed) {
                 $result.AuthStatus = 'CleanupFailed'
@@ -1620,6 +1707,8 @@ try {
                 $result.DiagnosticStage = 'Other'
                 $result.DestinationStatus = 'Failed'
                 $result.Destination = $null
+                $result.FailureStage = 'SshCleanup'
+                $result.ExceptionType = 'CleanupFailure'
                 $result.Reason = 'SSH 連線已完成，但關閉連線未能確認；備份維持阻擋。'
             }
         }
@@ -1986,6 +2075,11 @@ try {
                                     "SSH 認證狀態：$($result.AuthStatus)",
                                     "錯誤類別：$($result.ErrorCategory)",
                                     "清理失敗：$(if ($result.CleanupFailed) { '是' } else { '否' })",
+                                    "失敗階段：$($result.FailureStage)",
+                                    "遠端命令退出碼：$(if ($null -eq $result.RemoteExitCode) { '未取得' } else { $result.RemoteExitCode })",
+                                    "遠端目的地狀態：$($result.DestinationState)",
+                                    "例外類型：$($result.ExceptionType)",
+                                    "遠端 stderr 摘要：$($result.StderrSummary)",
                                     $result.Reason
                                 )
                         }
