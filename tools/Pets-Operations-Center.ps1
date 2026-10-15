@@ -383,6 +383,10 @@ function Get-PreflightSshExceptionCategory {
             }
             if ($isSshException) {
                 $message = $currentException.Message
+                if ($currentException.GetType().FullName -ceq 'Renci.SshNet.Common.SshException' -and
+                    $message -cmatch '\AFailed to open a channel after [0-9]+ attempts\.\z') {
+                    return 'ChannelOpenFailed'
+                }
                 if ($message -ceq 'Client is not connected.') {
                     return 'ConnectionLost'
                 }
@@ -453,7 +457,7 @@ function New-VerifiedSshClient {
             [object[]]@($HostName, 22, $Username, $authenticationMethods)
         )
         $connectionInfo.Timeout = [TimeSpan]::FromSeconds(15)
-        $connectionInfo.RetryAttempts = 0
+        $connectionInfo.RetryAttempts = 1
 
         $clientType = $SshAssembly.GetType('Renci.SshNet.SshClient', $true)
         $clientConstructor = $clientType.GetConstructor([type[]]@($connectionInfoType))
@@ -1839,6 +1843,8 @@ try {
     $completionSetOperationButtonsEnabled = (Get-Command Set-OperationButtonsEnabled -CommandType Function -ErrorAction Stop).ScriptBlock
     $completionStartBackgroundOperation = (Get-Command Start-BackgroundOperation -CommandType Function -ErrorAction Stop).ScriptBlock
 
+    $completionProductionSshHost = $script:ProductionSshHost
+    $completionProductionSshUser = $script:ProductionSshUser
     $completionHandler = {
         param($eventArgs)
         $workContext = $completedRequest.Context
@@ -2155,10 +2161,20 @@ try {
                         default { '失敗：SSH 連線未完成' }
                     }
                     if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
-                        if ($result.DestinationStatus -eq 'Verified' -and
-                            $result.CleanupSucceeded -and
-                            $completedRequest.SshHost -ceq $script:ProductionSshHost -and
-                            $completedRequest.SshUsername -ceq $script:ProductionSshUser) {
+                        $destinationVerified = $result.DestinationStatus -eq 'Verified'
+                        $cleanupSucceeded = [bool]$result.CleanupSucceeded
+                        $hostMatches = $completedRequest.SshHost -ceq $completionProductionSshHost
+                        $usernameMatches = $completedRequest.SshUsername -ceq $completionProductionSshUser
+                        $preflightSucceeded = $destinationVerified -and
+                            $cleanupSucceeded -and $hostMatches -and $usernameMatches
+                        $preflightDiagnostics = @(
+                            "DestinationStatus 為 Verified：$(if ($destinationVerified) { '是' } else { '否' })",
+                            "CleanupSucceeded 為 true：$(if ($cleanupSucceeded) { '是' } else { '否' })",
+                            "主機比對：$(if ($hostMatches) { '通過' } else { '未通過' })",
+                            "帳號比對：$(if ($usernameMatches) { '通過' } else { '未通過' })",
+                            "最終成功判定：$(if ($preflightSucceeded) { '通過' } else { '未通過' })"
+                        )
+                        if ($preflightSucceeded) {
                             $script:VerifiedBackupDirectory = $result.DestinationCanonical
                             $script:VerifiedBackupHost = $completedRequest.SshHost
                             $script:VerifiedBackupUser = $completedRequest.SshUsername
@@ -2167,13 +2183,13 @@ try {
                             $completedUi.BackupButton.Text = '備份'
                             $completedUi.ActivityLabel.Text = '備份目的地唯讀驗證成功；尚未執行備份'
                             & $completionAddOperationLog -Operation $completedRequest.Operation -Status '驗證成功；尚未執行備份' `
-                                -Output @(
+                                -Output ($preflightDiagnostics + @(
                                     'SSH 認證成功，且伺服器主機指紋已確認。',
                                     "備份目的地實際路徑：$($result.DestinationCanonical)",
                                     "backup.sh 使用的 BACKUP_DIR：$($result.Destination)",
                                     "BACKUP_DIR 來源：$($result.DestinationSource)",
                                     '只檢查既有目錄狀態；未建立目錄、變更權限、建立備份或刪除檔案。'
-                                )
+                                ))
                         } else {
                             $script:VerifiedBackupDirectory = $null
                             $script:VerifiedBackupHost = $null
@@ -2187,7 +2203,7 @@ try {
                                 "唯讀驗證備份目的地：$($result.DestinationStatus)"
                             }
                             & $completionAddOperationLog -Operation $completedRequest.Operation `
-                                -Status '目的地未驗證；備份維持阻擋' -Output @(
+                                -Status '目的地未驗證；備份維持阻擋' -Output ($preflightDiagnostics + @(
                                     "SSH 認證狀態：$($result.AuthStatus)",
                                     "錯誤類別：$($result.ErrorCategory)",
                                     "清理失敗：$(if ($result.CleanupFailed) { '是' } else { '否' })",
@@ -2201,7 +2217,7 @@ try {
                                     "stderr 讀取狀態：$($result.StderrReadStatus)",
                                     "遠端 stderr 摘要：$($result.StderrSummary)",
                                     $result.Reason
-                                )
+                                ))
                         }
                     } else {
                         $completedUi.ActivityLabel.Text = switch ($result.AuthStatus) {
