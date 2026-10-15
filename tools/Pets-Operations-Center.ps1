@@ -12,9 +12,16 @@ $script:SshPath = if ($env:WINDIR) {
 }
 $script:SshKey = Join-Path $HOME '.ssh\pets3_production'
 $script:SshTarget = 'zhe@175.183.34.91'
+$script:ProductionSshHost = '175.183.34.91'
+$script:ProductionSshUser = 'zhe'
+$script:ExpectedProductionHostFingerprint = 'SHA256:YWPE7arZLZ8/67Ta6hLRdBj73eNdk24klgUo+rRBm6s'
+$script:SshNetCacheRoot = Join-Path $env:LOCALAPPDATA 'Pets-Operations-Center\sshnet-2026.0.0'
+$script:SshNetAssembly = $null
 $script:ProductionRoot = '/home/zhe/pets'
 $script:BackupScript = '/home/zhe/pets/deploy/backup.sh'
 $script:VerifiedBackupDirectory = $null
+$script:VerifiedBackupHost = $null
+$script:VerifiedBackupUser = $null
 $script:GitPath = $null
 $script:Controls = @{}
 $script:OperationState = @{
@@ -44,6 +51,210 @@ if (-not $gitCommand) {
     throw '找不到 git.exe。請先安裝 Git for Windows，並確認 git.exe 位於 PATH。'
 }
 $script:GitPath = $gitCommand.Source
+
+function Initialize-SshNetAssemblies {
+    $packageRoot = Join-Path $script:SshNetCacheRoot 'packages'
+    $assemblyRelativePaths = @(
+        'System.Runtime.CompilerServices.Unsafe.6.1.2\lib\net462\System.Runtime.CompilerServices.Unsafe.dll',
+        'System.Buffers.4.6.1\lib\net462\System.Buffers.dll',
+        'System.Numerics.Vectors.4.6.1\lib\net462\System.Numerics.Vectors.dll',
+        'System.Memory.4.6.3\lib\net462\System.Memory.dll',
+        'System.Threading.Tasks.Extensions.4.5.4\lib\net461\System.Threading.Tasks.Extensions.dll',
+        'System.Formats.Asn1.10.0.10\lib\net462\System.Formats.Asn1.dll',
+        'Microsoft.Bcl.AsyncInterfaces.8.0.0\lib\net462\Microsoft.Bcl.AsyncInterfaces.dll',
+        'Microsoft.Extensions.DependencyInjection.Abstractions.8.0.2\lib\net462\Microsoft.Extensions.DependencyInjection.Abstractions.dll',
+        'Microsoft.Extensions.Logging.Abstractions.8.0.3\lib\net462\Microsoft.Extensions.Logging.Abstractions.dll',
+        'BouncyCastle.Cryptography.2.7.0\lib\net461\BouncyCastle.Cryptography.dll',
+        'Microsoft.Bcl.Cryptography.10.0.10\lib\net462\Microsoft.Bcl.Cryptography.dll',
+        'SSH.NET.2026.0.0\lib\net462\Renci.SshNet.dll'
+    )
+    $assemblyPaths = @()
+    foreach ($relativePath in $assemblyRelativePaths) {
+        $assemblyPath = Join-Path $packageRoot $relativePath
+        if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
+            throw "SSH.NET 2026.0.0 相依組件不存在：$relativePath"
+        }
+        $assemblyPaths += $assemblyPath
+    }
+
+    if (-not ('PetsOperations.SshAssemblyResolver' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Reflection;
+using System.Security.Cryptography;
+
+namespace PetsOperations
+{
+    public static class SshAssemblyResolver
+    {
+        private static readonly object Sync = new object();
+        private static Dictionary<string, string> AssemblyPaths;
+        private static HashSet<string> ReferencedIdentities;
+
+        public static void Register(string[] paths)
+        {
+            var assemblyPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var path in paths)
+            {
+                var name = AssemblyName.GetAssemblyName(path);
+                if (assemblyPaths.ContainsKey(name.Name))
+                    throw new InvalidOperationException("Duplicate SSH.NET dependency assembly: " + name.Name);
+                assemblyPaths.Add(name.Name, Path.GetFullPath(path));
+            }
+
+            foreach (var path in paths)
+            {
+                var packageAssembly = Assembly.ReflectionOnlyLoadFrom(path);
+                foreach (var reference in packageAssembly.GetReferencedAssemblies())
+                {
+                    string candidatePath;
+                    if (!assemblyPaths.TryGetValue(reference.Name, out candidatePath))
+                        continue;
+
+                    var candidate = AssemblyName.GetAssemblyName(candidatePath);
+                    var referenceToken = GetToken(reference);
+                    if (referenceToken.Length == 0 || referenceToken != GetToken(candidate))
+                        continue;
+                    if (candidate.Version < reference.Version)
+                        throw new InvalidOperationException(
+                            "SSH.NET dependency version is older than its package reference: " +
+                            reference.FullName + " -> " + candidate.FullName);
+
+                    identities.Add(GetIdentityKey(reference));
+                }
+            }
+
+            lock (Sync)
+            {
+                if (AssemblyPaths != null)
+                {
+                    foreach (var entry in assemblyPaths)
+                    {
+                        string registeredPath;
+                        if (!AssemblyPaths.TryGetValue(entry.Key, out registeredPath) ||
+                            !String.Equals(registeredPath, entry.Value, StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidOperationException("SSH.NET assembly resolver was already registered for a different cache.");
+                    }
+                    return;
+                }
+
+                AssemblyPaths = assemblyPaths;
+                ReferencedIdentities = identities;
+                AppDomain.CurrentDomain.AssemblyResolve += ResolveAssembly;
+            }
+        }
+
+        private static Assembly ResolveAssembly(object sender, ResolveEventArgs eventArgs)
+        {
+            var requested = new AssemblyName(eventArgs.Name);
+            if (!ReferencedIdentities.Contains(GetIdentityKey(requested)))
+                return null;
+
+            string path;
+            if (!AssemblyPaths.TryGetValue(requested.Name, out path))
+                return null;
+
+            var expected = AssemblyName.GetAssemblyName(path);
+            if (GetToken(requested) != GetToken(expected) || requested.Version > expected.Version)
+                return null;
+
+            foreach (var loaded in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (!loaded.IsDynamic &&
+                    String.Equals(loaded.FullName, expected.FullName, StringComparison.OrdinalIgnoreCase) &&
+                    String.Equals(loaded.Location, path, StringComparison.OrdinalIgnoreCase))
+                    return loaded;
+            }
+
+            return Assembly.LoadFrom(path);
+        }
+
+        private static string GetIdentityKey(AssemblyName name)
+        {
+            return name.Name + "|" + name.Version + "|" + GetToken(name) + "|" + (name.CultureName ?? String.Empty);
+        }
+
+        private static string GetToken(AssemblyName name)
+        {
+            var token = name.GetPublicKeyToken();
+            return token == null ? String.Empty : BitConverter.ToString(token).Replace("-", String.Empty);
+        }
+    }
+
+    public sealed class SshHostKeyVerifier
+    {
+        private readonly IDictionary context;
+        private readonly string expectedFingerprint;
+
+        public SshHostKeyVerifier(IDictionary context, string expectedFingerprint)
+        {
+            this.context = context;
+            this.expectedFingerprint = expectedFingerprint;
+        }
+
+        public void OnHostKeyReceived(object sender, EventArgs eventArgs)
+        {
+            context["SshDiagnosticStage"] = "HostKeyVerification";
+            var eventType = eventArgs.GetType();
+            var hostKeyProperty = eventType.GetProperty("HostKey");
+            var canTrustProperty = eventType.GetProperty("CanTrust");
+            if (hostKeyProperty == null || canTrustProperty == null)
+                throw new InvalidOperationException("SSH.NET host-key event arguments are missing required properties.");
+
+            var hostKey = (byte[])hostKeyProperty.GetValue(eventArgs, null);
+            string actualFingerprint;
+            using (var sha256 = SHA256.Create())
+            {
+                actualFingerprint = "SHA256:" +
+                    Convert.ToBase64String(sha256.ComputeHash(hostKey)).TrimEnd('=');
+            }
+
+            var canTrust = String.Equals(actualFingerprint, expectedFingerprint, StringComparison.Ordinal);
+            canTrustProperty.SetValue(eventArgs, canTrust, null);
+            context["HostKeyVerified"] = canTrust;
+            context["HostKeyRejected"] = !canTrust;
+            if (canTrust)
+                context["SshDiagnosticStage"] = "Other";
+        }
+    }
+}
+'@
+    }
+    [PetsOperations.SshAssemblyResolver]::Register([string[]]$assemblyPaths)
+
+    $sshAssembly = $null
+    foreach ($assemblyPath in $assemblyPaths) {
+        $expectedName = [System.Reflection.AssemblyName]::GetAssemblyName($assemblyPath)
+        $assembly = [System.Reflection.Assembly]::LoadFrom($assemblyPath)
+        if ($assembly.GetName().FullName -cne $expectedName.FullName -or
+            [System.IO.Path]::GetFullPath($assembly.Location) -ine [System.IO.Path]::GetFullPath($assemblyPath)) {
+            throw "SSH.NET 相依組件載入身分或路徑衝突：$($expectedName.FullName)"
+        }
+        if ($assembly.GetName().Name -eq 'Renci.SshNet') {
+            $sshAssembly = $assembly
+        }
+    }
+    if (-not $sshAssembly) {
+        throw '無法載入 SSH.NET 2026.0.0 組件。'
+    }
+    foreach ($typeName in @(
+        'Renci.SshNet.SshClient',
+        'Renci.SshNet.PasswordAuthenticationMethod',
+        'Renci.SshNet.Common.HostKeyEventArgs'
+    )) {
+        if (-not $sshAssembly.GetType($typeName, $false)) {
+            throw "SSH.NET 組件缺少必要類型：$typeName"
+        }
+    }
+    return $sshAssembly
+}
+
+$script:SshNetAssembly = Initialize-SshNetAssemblies
 
 function ConvertTo-ProcessArgument {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
@@ -85,6 +296,89 @@ function Protect-SensitiveText {
     $safeText = $Text -replace '(?i)(https?://)[^/@\s]+@', '$1[REDACTED]@'
     $safeText = $safeText -replace '(?i)\b(DB_PASSWORD|PASSWORD|PASSWD|PASSPHRASE|TOKEN|SECRET|API_KEY|CONTRACT_STORAGE_ROOT)\s*=\s*[^\s,;]+', '$1=[REDACTED]'
     return $safeText
+}
+
+function Clear-SshCredential {
+    param([System.Security.SecureString]$Credential)
+
+    if ($null -ne $Credential) {
+        try {
+            $Credential.Clear()
+        } finally {
+            $Credential.Dispose()
+        }
+    }
+}
+
+function ConvertTo-PosixShellSingleQuotedString {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    return "'" + $Value.Replace("'", "'\''") + "'"
+}
+
+function New-VerifiedSshClient {
+    param(
+        [Parameter(Mandatory = $true)][string]$HostName,
+        [Parameter(Mandatory = $true)][string]$Username,
+        [Parameter(Mandatory = $true)][System.Security.SecureString]$Credential,
+        [Parameter(Mandatory = $true)][System.Reflection.Assembly]$SshAssembly,
+        [Parameter(Mandatory = $true)][hashtable]$Context
+    )
+
+    $passwordPointer = [IntPtr]::Zero
+    $password = $null
+    try {
+        $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Credential)
+        $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
+        $authenticationType = $SshAssembly.GetType('Renci.SshNet.PasswordAuthenticationMethod', $true)
+        $authenticationConstructor = $authenticationType.GetConstructor([type[]]@([string], [string]))
+        $authentication = $authenticationConstructor.Invoke([object[]]@($Username, $password))
+        $Context.SshAuthentication = $authentication
+
+        $authenticationMethods = [Array]::CreateInstance($authenticationType, 1)
+        $authenticationMethods.SetValue($authentication, 0)
+        $connectionInfoType = $SshAssembly.GetType('Renci.SshNet.ConnectionInfo', $true)
+        $connectionInfoConstructor = $connectionInfoType.GetConstructor(
+            [type[]]@([string], [int], [string], $authenticationType.MakeArrayType())
+        )
+        $connectionInfo = $connectionInfoConstructor.Invoke(
+            [object[]]@($HostName, 22, $Username, $authenticationMethods)
+        )
+        $connectionInfo.Timeout = [TimeSpan]::FromSeconds(15)
+        $connectionInfo.RetryAttempts = 0
+
+        $clientType = $SshAssembly.GetType('Renci.SshNet.SshClient', $true)
+        $clientConstructor = $clientType.GetConstructor([type[]]@($connectionInfoType))
+        $client = $clientConstructor.Invoke([object[]]@($connectionInfo))
+        $Context.SshClient = $client
+        $Context.HostKeyVerified = $false
+        $Context.HostKeyRejected = $false
+
+        $expectedFingerprint = $script:ExpectedProductionHostFingerprint
+        $hostKeyVerifier = [PetsOperations.SshHostKeyVerifier]::new($Context, $expectedFingerprint)
+        $hostKeyEvent = $clientType.GetEvent('HostKeyReceived')
+        if (-not $hostKeyEvent) {
+            throw 'SSH.NET client does not expose the HostKeyReceived event.'
+        }
+        $hostKeyHandler = [System.Delegate]::CreateDelegate(
+            $hostKeyEvent.EventHandlerType,
+            $hostKeyVerifier,
+            [PetsOperations.SshHostKeyVerifier].GetMethod('OnHostKeyReceived')
+        )
+        $hostKeyEvent.AddEventHandler($client, $hostKeyHandler)
+        $Context.SshHostKeyVerifier = $hostKeyVerifier
+        $Context.SshHostKeyHandler = $hostKeyHandler
+        return $client
+    } finally {
+        if ($passwordPointer -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
+        }
+        $password = $null
+    }
 }
 
 function Stop-StartedProcessTree {
@@ -686,9 +980,9 @@ function Get-BackupProcessOutcome {
         }
     }
 
-    $directory = $ExpectedDirectory.TrimEnd('/')
-    $directoryPattern = '\A/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*)\z'
-    if ([string]::IsNullOrWhiteSpace($directory) -or $directory -cnotmatch $directoryPattern) {
+    $directory = $ExpectedDirectory
+    if ([string]::IsNullOrWhiteSpace($directory) -or $directory.Length -gt 4096 -or
+        $directory -match '[\x00-\x1F\x7F]') {
         return [pscustomobject]@{
             Success = $false
             BackupFile = $null
@@ -768,7 +1062,7 @@ function Confirm-BackupRequest {
 
 function Request-BackupOperation {
     $destinationText = if ($script:VerifiedBackupDirectory) {
-        $script:VerifiedBackupDirectory
+        $script:Controls.BackupDestinationValue.Text
     } else {
         '尚未驗證；正式備份禁止執行'
     }
@@ -780,9 +1074,9 @@ SSH 主機：$($script:SshTarget)
 有效備份目的地：$destinationText
 
 備份腳本會刪除備份目錄中符合命名條件且超過 30 天的舊備份。
-目前無法驗證遠端實際生效的 BACKUP_DIR；即使確認，本次仍會拒絕執行，不會建立背景工作或呼叫 SSH。
+只有經 SSH 主機金鑰驗證及備份目的地唯讀預檢後，才會允許執行備份。
 
-是否繼續檢查？
+是否繼續執行正式環境備份？
 "@
     $confirmation = Confirm-BackupRequest -Message $confirmationMessage
     if ($confirmation -ne [System.Windows.Forms.DialogResult]::OK) {
@@ -791,7 +1085,11 @@ SSH 主機：$($script:SshTarget)
         return
     }
 
-    if ([string]::IsNullOrWhiteSpace($script:VerifiedBackupDirectory)) {
+    if ([string]::IsNullOrWhiteSpace($script:VerifiedBackupDirectory) -or
+        $script:VerifiedBackupDirectory -cnotmatch '\A/' -or
+        $script:VerifiedBackupDirectory -match '[\x00-\x1F\x7F]' -or
+        $script:VerifiedBackupHost -cne $script:ProductionSshHost -or
+        $script:VerifiedBackupUser -cne $script:ProductionSshUser) {
         $script:Controls.ActivityLabel.Text = '正式環境備份：已阻擋（目的地未驗證）'
         Add-OperationLog -Operation '正式環境備份' -Status '已阻擋；備份目的地未驗證' -Output @(
             "SSH 主機：$($script:SshTarget)",
@@ -813,19 +1111,49 @@ function Set-OperationButtonsEnabled {
     $script:Controls.GitHubButton.Enabled = $Enabled
     $script:Controls.PushButton.Enabled = $Enabled
     $script:Controls.DeploymentPreflightButton.Enabled = $Enabled
-    $script:Controls.BackupButton.Enabled = $Enabled
+    $script:Controls.SshTestButton.Enabled = $Enabled
+    $script:Controls.BackupDestinationButton.Enabled = $Enabled
+    $script:Controls.SshHostInput.Enabled = $Enabled
+    $script:Controls.SshUsernameInput.Enabled = $Enabled
+    $script:Controls.SshPasswordInput.Enabled = $Enabled
+    $script:Controls.CancelOperationButton.Enabled = -not $Enabled
+    $script:Controls.BackupButton.Enabled = $Enabled -and
+        -not [string]::IsNullOrWhiteSpace($script:VerifiedBackupDirectory) -and
+        $script:VerifiedBackupHost -ceq $script:ProductionSshHost -and
+        $script:VerifiedBackupUser -ceq $script:ProductionSshUser
 }
 
 function Start-BackgroundOperation {
     param(
         [Parameter(Mandatory = $true)][string]$Operation,
-        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster', 'DeploymentPreflight', 'Backup')][string]$Action,
+        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster', 'DeploymentPreflight', 'Backup', 'SshTest', 'BackupDestinationPreflight')][string]$Action,
         [string]$ExpectedHeadSha,
         [string]$ExpectedRemoteSha,
-        [string]$BackupDestination
+        [string]$BackupDestination,
+        [string]$SshHost,
+        [string]$SshUsername,
+        [System.Security.SecureString]$SshPassword
     )
+    if ($Action -eq 'Backup' -and (
+        [string]::IsNullOrWhiteSpace($BackupDestination) -or
+        $BackupDestination -cnotmatch '\A/' -or
+        $BackupDestination.Length -gt 4096 -or
+        $BackupDestination -match '[\x00-\x1F\x7F]' -or
+        $script:VerifiedBackupDirectory -cne $BackupDestination -or
+        $script:VerifiedBackupHost -cne $script:ProductionSshHost -or
+        $script:VerifiedBackupUser -cne $script:ProductionSshUser
+    )) {
+        $script:Controls.ActivityLabel.Text = "$Operation：已阻擋（目的地驗證狀態無效）"
+        Add-OperationLog -Operation $Operation -Status '已阻擋；目的地與有效驗證狀態不一致' -Output @(
+            '未建立背景工作或呼叫 SSH。'
+        )
+        return
+    }
     if ($script:OperationState.IsBusy -or
         ($script:OperationState.ActiveOperation -and $script:OperationState.ActiveOperation.StopUnconfirmed)) {
+        if ($SshPassword) {
+            Clear-SshCredential -Credential $SshPassword
+        }
         return
     }
 
@@ -847,6 +1175,17 @@ function Start-BackgroundOperation {
         AsyncResult = $null
         CompletionHandled = $false
         CompletionHandler = $null
+        SshClient = $null
+        SshAuthentication = $null
+        SshHostKeyVerifier = $null
+        SshHostKeyHandler = $null
+        SshPassword = $SshPassword
+        HostKeyVerified = $false
+        HostKeyRejected = $false
+        SshDiagnosticStage = 'SshClientInitialization'
+        SshAuthenticationSucceeded = $false
+        SshDisconnectFailed = $false
+        SshCleanupFailed = $false
     }
     $script:OperationState.ActiveOperation = $context
     $request = @{
@@ -861,6 +1200,11 @@ function Start-BackgroundOperation {
         BackupSshTarget = $script:SshTarget
         BackupProductionRoot = $script:ProductionRoot
         BackupScript = $script:BackupScript
+        SshNetAssembly = $script:SshNetAssembly
+        ExpectedProductionHostFingerprint = $script:ExpectedProductionHostFingerprint
+        SshHost = $SshHost
+        SshUsername = $SshUsername
+        SshPassword = $SshPassword
     }
     $completedRequest = $request
     $completedUi = $script:Controls
@@ -869,6 +1213,9 @@ function Start-BackgroundOperation {
     $functionNames = @(
         'ConvertTo-ProcessArgument',
         'Protect-SensitiveText',
+        'ConvertTo-PosixShellSingleQuotedString',
+        'Clear-SshCredential',
+        'New-VerifiedSshClient',
         'Stop-StartedProcessTree',
         'Invoke-CapturedProcess',
         'Invoke-GitReadOnly',
@@ -886,6 +1233,8 @@ $ErrorActionPreference = 'Stop'
 $script:ProjectRoot = $args[0]
 $script:GitPath = $args[1]
 $workerRequest = $args[2]
+$script:SshNetAssembly = $workerRequest.SshNetAssembly
+$script:ExpectedProductionHostFingerprint = $workerRequest.ExpectedProductionHostFingerprint
 $workContext = $null
 try {
     if ($null -eq $workerRequest -or $workerRequest -isnot [System.Collections.IDictionary]) {
@@ -928,9 +1277,9 @@ try {
         }
         'Backup' {
             $destination = [string]$workerRequest.BackupDestination
-            $directoryPattern = '\A/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*)\z'
             if ([string]::IsNullOrWhiteSpace($destination) -or
-                $destination -cnotmatch $directoryPattern) {
+                $destination -cnotmatch '\A/' -or $destination.Length -gt 4096 -or
+                $destination -match '[\x00-\x1F\x7F]') {
                 throw '有效備份目的地未驗證；拒絕啟動 SSH。'
             }
             if (-not (Test-Path -LiteralPath $script:SshPath -PathType Leaf) -or
@@ -938,7 +1287,8 @@ try {
                 throw '正式環境 SSH 程式或金鑰不存在；未啟動 SSH。'
             }
 
-            $remoteCommand = "cd -- '$($script:ProductionRoot)' && exec bash '$($script:BackupScript)'"
+            $quotedDestination = ConvertTo-PosixShellSingleQuotedString -Value $destination
+            $remoteCommand = "cd -- '$($script:ProductionRoot)' && BACKUP_DIR=$quotedDestination exec bash '$($script:BackupScript)'"
             $result = Invoke-CapturedProcess -FilePath $script:SshPath `
                 -Arguments @(
                     '-T', '-i', $script:SshKey,
@@ -950,6 +1300,205 @@ try {
                 ) `
                 -WorkingDirectory $script:ProjectRoot -Context $workContext `
                 -Stage '執行正式環境 backup.sh' -TimeoutMilliseconds 3600000
+            break
+        }
+        { $_ -in @('SshTest', 'BackupDestinationPreflight') } {
+            $sshResult = [ordered]@{
+                AuthStatus = 'Failed'
+                DestinationStatus = if ($workerRequest.Action -eq 'BackupDestinationPreflight') { 'Failed' } else { 'NotRun' }
+                Destination = $null
+                DestinationCanonical = $null
+                DestinationSource = $null
+                Reason = 'SSH 連線失敗；詳細例外資訊不記錄。'
+                DiagnosticStage = $workContext.SshDiagnosticStage
+                ErrorCategory = 'Failed'
+                AuthenticationSucceeded = $workContext.SshAuthenticationSucceeded
+            }
+            $command = $null
+            try {
+                if ($workContext.CancelRequested) {
+                    $workContext.SshDiagnosticStage = 'CancelledBeforeConnection'
+                    $sshResult.AuthStatus = 'Cancelled'
+                    $sshResult.DestinationStatus = 'NotRun'
+                    $sshResult.Reason = '使用者取消；SSH 尚未連線。'
+                } else {
+                    $workContext.Stage = '建立 SSH 密碼認證連線'
+                    $workContext.SshDiagnosticStage = 'SshClientInitialization'
+                    $client = New-VerifiedSshClient -HostName $workerRequest.SshHost `
+                        -Username $workerRequest.SshUsername -Credential $workerRequest.SshPassword `
+                        -SshAssembly $script:SshNetAssembly -Context $workContext
+                    if ($workContext.CancelRequested) {
+                        $workContext.SshDiagnosticStage = 'CancelledBeforeConnection'
+                        $sshResult.AuthStatus = 'Cancelled'
+                        $sshResult.DestinationStatus = 'NotRun'
+                        $sshResult.Reason = '使用者取消；SSH 尚未連線。'
+                    } else {
+                        $workContext.SshDiagnosticStage = 'ConnectionHandshake'
+                        $client.Connect()
+                        if ($workContext.HostKeyVerified) {
+                            $workContext.SshAuthenticationSucceeded = $true
+                            $workContext.SshDiagnosticStage = 'AuthenticationSucceeded'
+                        } else {
+                            $workContext.SshDiagnosticStage = 'HostKeyVerification'
+                        }
+                        if ($workContext.CancelRequested) {
+                            $sshResult.AuthStatus = 'Cancelled'
+                            $sshResult.DestinationStatus = 'NotRun'
+                            $sshResult.Reason = '使用者取消 SSH 連線。'
+                        } elseif (-not $workContext.HostKeyVerified) {
+                            throw 'HostKeyVerificationUnconfirmed'
+                        } else {
+                            $sshResult.AuthStatus = 'Succeeded'
+                            $sshResult.Reason = 'SSH 認證成功。'
+                            if ($workerRequest.Action -eq 'BackupDestinationPreflight') {
+                                $workContext.Stage = '唯讀檢查備份目的地'
+                                $workContext.SshDiagnosticStage = 'Other'
+                                $remoteCheck = @(
+                                    'cd -- ''/home/zhe/pets'' || exit 90'
+                                    'if [ -n "${BACKUP_DIR:-}" ]; then'
+                                    '  destination="$BACKUP_DIR"'
+                                    '  source="BACKUP_DIR"'
+                                    'else'
+                                    '  destination="/home/zhe/pets-backups"'
+                                    '  source="DEFAULT"'
+                                    'fi'
+                                    'if [ -L "$destination" ]; then'
+                                    '  state="SYMLINK"'
+                                    'elif [ ! -e "$destination" ]; then'
+                                    '  state="MISSING"'
+                                    'elif [ ! -d "$destination" ]; then'
+                                    '  state="NOT_DIRECTORY"'
+                                    'elif [ ! -r "$destination" ] || [ ! -w "$destination" ] || [ ! -x "$destination" ]; then'
+                                    '  state="NOT_WRITABLE"'
+                                    'else'
+                                    '  state="READY"'
+                                    'fi'
+                                    'canonical=""'
+                                    'if [ "$state" = "READY" ]; then'
+                                    '  canonical="$(cd -- "$destination" && pwd -P)" || state="UNCONFIRMED"'
+                                    'fi'
+                                    'printf ''DESTINATION_SOURCE=%s\nDESTINATION_PATH=%s\nDESTINATION_STATE=%s\nDESTINATION_CANONICAL=%s\n'' "$source" "$destination" "$state" "$canonical"'
+                                ) -join "`n"
+                                $command = $client.CreateCommand($remoteCheck)
+                                $command.CommandTimeout = [TimeSpan]::FromSeconds(15)
+                                $commandOutput = $command.Execute()
+                                if ($workContext.CancelRequested) {
+                                    $sshResult.AuthStatus = 'Cancelled'
+                                    $sshResult.DestinationStatus = 'NotRun'
+                                    $sshResult.Reason = '唯讀備份目的地驗證已取消。'
+                                } elseif ($command.ExitStatus -ne 0) {
+                                    $sshResult.Reason = '唯讀檢查命令失敗；備份維持阻擋。'
+                                } else {
+                                    $sourceLines = @($commandOutput -split "`r?`n" |
+                                        Where-Object { $_ -cmatch '^DESTINATION_SOURCE=(BACKUP_DIR|DEFAULT)$' })
+                                    $pathLines = @($commandOutput -split "`r?`n" |
+                                        Where-Object { $_.StartsWith('DESTINATION_PATH=', [StringComparison]::Ordinal) })
+                                    $stateLines = @($commandOutput -split "`r?`n" |
+                                        Where-Object { $_ -cmatch '^DESTINATION_STATE=(READY|SYMLINK|MISSING|NOT_DIRECTORY|NOT_WRITABLE|UNCONFIRMED)$' })
+                                    $canonicalLines = @($commandOutput -split "`r?`n" |
+                                        Where-Object { $_.StartsWith('DESTINATION_CANONICAL=', [StringComparison]::Ordinal) })
+                                    if ($sourceLines.Count -ne 1 -or $pathLines.Count -ne 1 -or
+                                        $stateLines.Count -ne 1 -or $canonicalLines.Count -ne 1) {
+                                        $sshResult.Reason = '遠端未回報可確認的備份目的地；備份維持阻擋。'
+                                    } else {
+                                        $destination = $pathLines[0].Substring('DESTINATION_PATH='.Length)
+                                        $canonicalDestination = $canonicalLines[0].Substring('DESTINATION_CANONICAL='.Length)
+                                        if ([string]::IsNullOrWhiteSpace($destination) -or $destination.Length -gt 4096 -or
+                                            $destination -match '[\x00-\x1F\x7F]' -or
+                                            $canonicalDestination.Length -gt 4096 -or
+                                            $canonicalDestination -notmatch '\A/' -or
+                                            $canonicalDestination -match '[\x00-\x1F\x7F]') {
+                                            $sshResult.Reason = '備份目的地格式無效或包含不允許的路徑字元；備份維持阻擋。'
+                                        } else {
+                                            $destinationState = $stateLines[0].Substring('DESTINATION_STATE='.Length)
+                                            if ($destinationState -cne 'READY') {
+                                                $sshResult.Reason = switch ($destinationState) {
+                                                    'SYMLINK' { '備份目的地是符號連結；拒絕驗證。' }
+                                                    'MISSING' { '備份目的地尚不存在；唯讀預檢不會建立目錄。' }
+                                                    'NOT_DIRECTORY' { '備份目的地不是目錄。' }
+                                                    'NOT_WRITABLE' { '目前 SSH 帳號無法讀取、寫入或進入備份目錄。' }
+                                                    'UNCONFIRMED' { '無法確認備份目的地的實際絕對路徑。' }
+                                                    default { '備份目的地狀態無法確認。' }
+                                                }
+                                            } else {
+                                                $sshResult.DestinationStatus = 'Verified'
+                                                $sshResult.Destination = $destination
+                                                $sshResult.DestinationCanonical = $canonicalDestination
+                                                $sshResult.DestinationSource = $sourceLines[0].Substring('DESTINATION_SOURCE='.Length)
+                                                $sshResult.Reason = 'SSH 認證成功，且備份目的地已完成唯讀驗證。'
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch {
+                if ($workContext.CancelRequested) {
+                    $sshResult.AuthStatus = 'Cancelled'
+                    $sshResult.DestinationStatus = 'NotRun'
+                    $sshResult.Reason = 'SSH 操作已取消。'
+                    if ($workContext.SshDiagnosticStage -eq 'SshClientInitialization') {
+                        $workContext.SshDiagnosticStage = 'CancelledBeforeConnection'
+                    }
+                } elseif ($workContext.HostKeyRejected) {
+                    $sshResult.AuthStatus = 'HostKeyRejected'
+                    $sshResult.DestinationStatus = 'NotRun'
+                    $sshResult.Reason = '伺服器主機金鑰未知或與已信任指紋不符；已拒絕連線。'
+                    $workContext.SshDiagnosticStage = 'HostKeyVerification'
+                } elseif ($_.Exception.GetType().FullName -eq 'Renci.SshNet.Common.SshOperationTimeoutException' -or
+                    $_.Exception -is [System.TimeoutException]) {
+                    if ($sshResult.AuthStatus -eq 'Succeeded') {
+                        $sshResult.DestinationStatus = 'TimedOut'
+                    } else {
+                        $sshResult.AuthStatus = 'TimedOut'
+                        $sshResult.DestinationStatus = 'NotRun'
+                    }
+                    $sshResult.Reason = 'SSH 連線或唯讀檢查逾時；備份維持阻擋。'
+                } elseif ($_.Exception.GetType().FullName -eq 'Renci.SshNet.Common.SshAuthenticationException') {
+                    $sshResult.AuthStatus = 'AuthenticationFailed'
+                    $sshResult.DestinationStatus = 'NotRun'
+                    $sshResult.Reason = 'SSH 帳號或密碼認證失敗。'
+                    $workContext.SshDiagnosticStage = 'PasswordAuthentication'
+                } elseif ($sshResult.AuthStatus -eq 'Succeeded') {
+                    $sshResult.DestinationStatus = 'Failed'
+                    $sshResult.Reason = 'SSH 認證成功，但備份目的地唯讀驗證失敗；備份維持阻擋。'
+                } else {
+                    $sshResult.AuthStatus = 'Failed'
+                    $sshResult.DestinationStatus = 'NotRun'
+                    $sshResult.Reason = if ($_.Exception.InnerException) {
+                        "$($_.Exception.GetType().FullName) (InnerException: $($_.Exception.InnerException.GetType().FullName))"
+                    } else {
+                        $_.Exception.GetType().FullName
+                    }
+                    $fileNotFoundException = if ($_.Exception -is [System.IO.FileNotFoundException]) {
+                        $_.Exception
+                    } elseif ($_.Exception.InnerException -is [System.IO.FileNotFoundException]) {
+                        $_.Exception.InnerException
+                    }
+                    if ($fileNotFoundException -and
+                        -not [string]::IsNullOrWhiteSpace($fileNotFoundException.FileName)) {
+                        $sshResult.Reason += " (FileName: $($fileNotFoundException.FileName))"
+                    }
+                }
+            } finally {
+                if ($command) {
+                    $command.Dispose()
+                }
+            }
+            $sshResult.DiagnosticStage = $workContext.SshDiagnosticStage
+            $sshResult.ErrorCategory = if ($sshResult.AuthStatus -eq 'Succeeded') {
+                switch ($sshResult.DestinationStatus) {
+                    'TimedOut' { 'TimedOut' }
+                    'Failed' { 'Failed' }
+                    default { 'Succeeded' }
+                }
+            } else {
+                $sshResult.AuthStatus
+            }
+            $sshResult.AuthenticationSucceeded = $workContext.SshAuthenticationSucceeded
+            $result = [pscustomobject]$sshResult
             break
         }
         'PushMasterPreflight' {
@@ -1009,6 +1558,72 @@ try {
         $workContext.Stage = "背景工作錯誤：$($workContext.Stage)"
     }
     throw
+} finally {
+    if ($workContext -is [System.Collections.IDictionary]) {
+        if ($workContext.SshClient) {
+            try {
+                if ($workContext.SshClient.IsConnected) {
+                    try {
+                        $workContext.SshClient.Disconnect()
+                    } catch {
+                        $workContext.SshDisconnectFailed = $true
+                    }
+                }
+            } catch {
+                $workContext.SshCleanupFailed = $true
+            } finally {
+                try {
+                    $workContext.SshClient.Dispose()
+                } catch {
+                    $workContext.SshCleanupFailed = $true
+                }
+                $workContext.SshClient = $null
+                $workContext.SshHostKeyHandler = $null
+                $workContext.SshHostKeyVerifier = $null
+            }
+        }
+        if ($workContext.SshAuthentication) {
+            try {
+                $workContext.SshAuthentication.Dispose()
+            } catch {
+                $workContext.SshCleanupFailed = $true
+            } finally {
+                $workContext.SshAuthentication = $null
+            }
+        }
+        if ($workerRequest.SshPassword) {
+            try {
+                Clear-SshCredential -Credential $workerRequest.SshPassword
+            } catch {
+                $workContext.SshCleanupFailed = $true
+            } finally {
+                $workerRequest.SshPassword = $null
+                $workContext.SshPassword = $null
+            }
+        }
+        if ($workerRequest.Action -in @('SshTest', 'BackupDestinationPreflight') -and $result) {
+            $cleanupFailed = $workContext.SshCleanupFailed -or $workContext.SshDisconnectFailed
+            $result | Add-Member -NotePropertyName CleanupFailed `
+                -NotePropertyValue $cleanupFailed -Force
+            $result | Add-Member -NotePropertyName CleanupSucceeded `
+                -NotePropertyValue (-not $cleanupFailed) -Force
+            if ($result.AuthStatus -ne 'Cancelled' -and $workContext.SshCleanupFailed) {
+                $result.AuthStatus = 'CleanupFailed'
+                $result.ErrorCategory = 'Failed'
+                $result.DiagnosticStage = 'Other'
+                $result.DestinationStatus = 'Failed'
+                $result.Destination = $null
+                $result.Reason = 'SSH 認證已完成，但連線或認證資源清理未能確認；備份維持阻擋。'
+            } elseif ($result.AuthStatus -ne 'Cancelled' -and $workContext.SshDisconnectFailed) {
+                $result.AuthStatus = 'CleanupFailed'
+                $result.ErrorCategory = 'Failed'
+                $result.DiagnosticStage = 'Other'
+                $result.DestinationStatus = 'Failed'
+                $result.Destination = $null
+                $result.Reason = 'SSH 連線已完成，但關閉連線未能確認；備份維持阻擋。'
+            }
+        }
+    }
 }
 '@
     $workerScript = ($functionDefinitions -join "`r`n") + "`r`n" + $workerScript
@@ -1029,7 +1644,29 @@ try {
             if ($eventArgs.Error) {
                 $workError = $eventArgs.Error
                 $exceptionDetails = New-Object System.Collections.Generic.List[string]
-                if ($null -ne $workError) {
+                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
+                    $exceptionDetails.Add('SSH 工作未完成；為避免認證資料外洩，不記錄例外內容或堆疊。')
+                    $diagnosticStage = if ($workContext.SshDiagnosticStage -in @(
+                        'SshClientInitialization',
+                        'ConnectionHandshake',
+                        'HostKeyVerification',
+                        'PasswordAuthentication',
+                        'AuthenticationSucceeded',
+                        'CancelledBeforeConnection',
+                        'Other'
+                    )) {
+                        $workContext.SshDiagnosticStage
+                    } else {
+                        'Other'
+                    }
+                    $authenticationConfirmed = if ($workContext.SshAuthenticationSucceeded) { '是' } else { '否（未確認）' }
+                    $exceptionDetails.Add("診斷階段：$diagnosticStage")
+                    $errorCategory = if ($workContext.CancelRequested) { 'Cancelled' } else { 'Failed' }
+                    $exceptionDetails.Add("錯誤類別：$errorCategory")
+                    $exceptionDetails.Add("SSH 認證成功已確認：$authenticationConfirmed")
+                    $cleanupFailed = $workContext.SshCleanupFailed -or $workContext.SshDisconnectFailed
+                    $exceptionDetails.Add("清理失敗：$(if ($cleanupFailed) { '是' } else { '否' })")
+                } elseif ($null -ne $workError) {
                     $message = & $completionProtectSensitiveText -Text $workError.Message
                     $exceptionDetails.Add("例外類型：$($workError.GetType().FullName)")
                     $exceptionDetails.Add("例外訊息：$message")
@@ -1058,11 +1695,33 @@ try {
                         "執行階段：$($workContext.Stage)"
                     )
                 } elseif ($workContext.CancelRequested) {
+                    if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
+                        $completedUi.SshAuthenticationValue.Text = '已取消'
+                        if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
+                            $script:VerifiedBackupDirectory = $null
+                            $script:VerifiedBackupHost = $null
+                            $script:VerifiedBackupUser = $null
+                            $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
+                            $completedUi.BackupStateValue.Text = '目的地預檢已取消'
+                        }
+                    }
                     $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：已取消"
                     & $completionAddOperationLog -Operation $completedRequest.Operation -Status '已取消並確認無活動子程序' -Output @(
                         $exceptionDetails.ToArray(),
                         "執行階段：$($workContext.Stage)"
                     )
+                } elseif ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
+                    $completedUi.SshAuthenticationValue.Text = '失敗：SSH 工作未完成'
+                    if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
+                        $script:VerifiedBackupDirectory = $null
+                        $script:VerifiedBackupHost = $null
+                        $script:VerifiedBackupUser = $null
+                        $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
+                        $completedUi.BackupStateValue.Text = '目的地預檢失敗'
+                    }
+                    $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：失敗"
+                    & $completionAddOperationLog -Operation $completedRequest.Operation -Status '失敗；錯誤內容已抑制' `
+                        -Output $exceptionDetails.ToArray()
                 } else {
                     $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：失敗"
                     & $completionAddOperationLog -Operation $completedRequest.Operation -Status '失敗' -Output @(
@@ -1279,15 +1938,131 @@ try {
                     & $completionAddOperationLog -Operation $completedRequest.Operation `
                         -Status $completion.Status -Output $completion.Output
                 }
+                { $_ -in @('SshTest', 'BackupDestinationPreflight') } {
+                    $result = $eventArgs.Result
+                    $completedUi.SshAuthenticationValue.Text = switch ($result.AuthStatus) {
+                        'Succeeded' { '成功：SSH 認證通過；主機指紋已確認' }
+                        'AuthenticationFailed' { '失敗：帳號或密碼認證失敗' }
+                        'HostKeyRejected' { '失敗：主機金鑰未知或不符' }
+                        'TimedOut' { '逾時：SSH 連線未完成' }
+                        'Cancelled' { '已取消' }
+                        'CleanupFailed' { '認證完成但連線清理未確認' }
+                        default { '失敗：SSH 連線未完成' }
+                    }
+                    if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
+                        if ($result.DestinationStatus -eq 'Verified' -and
+                            $result.CleanupSucceeded -and
+                            $completedRequest.SshHost -ceq $script:ProductionSshHost -and
+                            $completedRequest.SshUsername -ceq $script:ProductionSshUser) {
+                            $script:VerifiedBackupDirectory = $result.DestinationCanonical
+                            $script:VerifiedBackupHost = $completedRequest.SshHost
+                            $script:VerifiedBackupUser = $completedRequest.SshUsername
+                            $completedUi.BackupDestinationValue.Text = "$($result.DestinationCanonical)（BACKUP_DIR=$($result.Destination)；來源：$($result.DestinationSource)）"
+                            $completedUi.BackupStateValue.Text = '備份目的地唯讀驗證成功'
+                            $completedUi.BackupButton.Text = '備份'
+                            $completedUi.ActivityLabel.Text = '備份目的地唯讀驗證成功；尚未執行備份'
+                            & $completionAddOperationLog -Operation $completedRequest.Operation -Status '驗證成功；尚未執行備份' `
+                                -Output @(
+                                    'SSH 認證成功，且伺服器主機指紋已確認。',
+                                    "備份目的地實際路徑：$($result.DestinationCanonical)",
+                                    "backup.sh 使用的 BACKUP_DIR：$($result.Destination)",
+                                    "BACKUP_DIR 來源：$($result.DestinationSource)",
+                                    '只檢查既有目錄狀態；未建立目錄、變更權限、建立備份或刪除檔案。'
+                                )
+                        } else {
+                            $script:VerifiedBackupDirectory = $null
+                            $script:VerifiedBackupHost = $null
+                            $script:VerifiedBackupUser = $null
+                            $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
+                            $completedUi.BackupStateValue.Text = '目的地預檢失敗'
+                            $completedUi.BackupButton.Text = '備份（目的地未驗證）'
+                            $completedUi.ActivityLabel.Text = if ($result.DestinationStatus -eq 'TimedOut') {
+                                '唯讀驗證備份目的地：逾時'
+                            } else {
+                                "唯讀驗證備份目的地：$($result.DestinationStatus)"
+                            }
+                            & $completionAddOperationLog -Operation $completedRequest.Operation `
+                                -Status '目的地未驗證；備份維持阻擋' -Output @(
+                                    "SSH 認證狀態：$($result.AuthStatus)",
+                                    "錯誤類別：$($result.ErrorCategory)",
+                                    "清理失敗：$(if ($result.CleanupFailed) { '是' } else { '否' })",
+                                    $result.Reason
+                                )
+                        }
+                    } else {
+                        $completedUi.ActivityLabel.Text = switch ($result.AuthStatus) {
+                            'Succeeded' { 'SSH 認證成功；備份目的地尚未驗證' }
+                            'AuthenticationFailed' { 'SSH 認證失敗' }
+                            'HostKeyRejected' { 'SSH 主機金鑰驗證失敗' }
+                            'TimedOut' { 'SSH 連線逾時' }
+                            'Cancelled' { 'SSH 連線已取消' }
+                            'CleanupFailed' { 'SSH 認證完成但連線清理未確認' }
+                            default { 'SSH 連線失敗' }
+                        }
+                        $diagnosticStage = if ($result.DiagnosticStage -in @(
+                            'SshClientInitialization',
+                            'ConnectionHandshake',
+                            'HostKeyVerification',
+                            'PasswordAuthentication',
+                            'AuthenticationSucceeded',
+                            'CancelledBeforeConnection',
+                            'Other'
+                        )) {
+                            $result.DiagnosticStage
+                        } else {
+                            'Other'
+                        }
+                        $errorCategory = if ($result.ErrorCategory -in @(
+                            'HostKeyRejected',
+                            'AuthenticationFailed',
+                            'TimedOut',
+                            'Cancelled',
+                            'Failed',
+                            'Succeeded'
+                        )) {
+                            $result.ErrorCategory
+                        } else {
+                            'Failed'
+                        }
+                        & $completionAddOperationLog -Operation $completedRequest.Operation `
+                            -Status $result.AuthStatus -Output @(
+                                "診斷階段：$diagnosticStage",
+                                "錯誤類別：$errorCategory",
+                                "清理失敗：$(if ($result.CleanupFailed) { '是' } else { '否' })",
+                                "SSH 認證成功已確認：$(if ($result.AuthenticationSucceeded) { '是' } else { '否（未確認）' })",
+                                $result.Reason
+                            )
+                    }
+                }
                 }
             }
         } catch {
-            $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：完成處理失敗"
-            & $completionAddOperationLog -Operation $completedRequest.Operation -Status '完成處理失敗' -Output @(
-                (& $completionProtectSensitiveText -Text $_.Exception.Message)
-            )
+            if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
+                $completedUi.SshAuthenticationValue.Text = '失敗：完成處理未能確認'
+                $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
+                $completedUi.BackupStateValue.Text = '目的地預檢失敗'
+                $script:VerifiedBackupDirectory = $null
+                $script:VerifiedBackupHost = $null
+                $script:VerifiedBackupUser = $null
+                $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：完成處理失敗"
+                & $completionAddOperationLog -Operation $completedRequest.Operation -Status '完成處理失敗；錯誤內容已抑制' `
+                    -Output @('SSH 完成處理例外資訊不記錄。')
+            } else {
+                $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：完成處理失敗"
+                & $completionAddOperationLog -Operation $completedRequest.Operation -Status '完成處理失敗' -Output @(
+                    (& $completionProtectSensitiveText -Text $_.Exception.Message)
+                )
+            }
         } finally {
             try {
+                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
+                    if ($completedRequest.SshPassword) {
+                        Clear-SshCredential -Credential $completedRequest.SshPassword
+                        $completedRequest.SshPassword = $null
+                        $workContext.SshPassword = $null
+                    }
+                    $completedUi.SshPasswordInput.Clear()
+                }
                 if ($workContext.PowerShell) {
                     $workContext.PowerShell.Dispose()
                 }
@@ -1298,7 +2073,7 @@ try {
                     $workContext.Runspace.Dispose()
                 }
             } catch {
-                if ($completedRequest.Action -eq 'ReadOnlySshPreflight') {
+                if ($completedRequest.Action -in @('ReadOnlySshPreflight', 'SshTest', 'BackupDestinationPreflight')) {
                     & $completionAddOperationLog -Operation $completedRequest.Operation `
                         -Status '背景工作資源清理失敗' -Output @(
                             '清理失敗；例外訊息與堆疊未記錄。'
@@ -1351,9 +2126,18 @@ try {
         $script:OperationState.ActiveOperation = $null
         Set-OperationButtonsEnabled -Enabled $true
         $script:Controls.ActivityLabel.Text = "$Operation：無法啟動"
-        Add-OperationLog -Operation $Operation -Status '無法啟動' -Output @(
-            (Protect-SensitiveText -Text $_.Exception.Message)
-        )
+        if ($Action -in @('SshTest', 'BackupDestinationPreflight')) {
+            Add-OperationLog -Operation $Operation -Status 'SSH 工作無法啟動' -Output @(
+                '診斷階段：Other',
+                '錯誤類別：Failed',
+                'SSH 認證成功已確認：否（未確認）',
+                '例外內容與堆疊未記錄。'
+            )
+        } else {
+            Add-OperationLog -Operation $Operation -Status '無法啟動' -Output @(
+                (Protect-SensitiveText -Text $_.Exception.Message)
+            )
+        }
         if ($context.PowerShell) {
             $context.PowerShell.Dispose()
             $context.PowerShell = $null
@@ -1364,6 +2148,102 @@ try {
             }
             $context.Runspace.Dispose()
             $context.Runspace = $null
+        }
+        if ($request.SshPassword) {
+            Clear-SshCredential -Credential $request.SshPassword
+            $request.SshPassword = $null
+            $context.SshPassword = $null
+            $script:Controls.SshPasswordInput.Clear()
+        }
+    }
+}
+
+function Start-SshUiOperation {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('SshTest', 'BackupDestinationPreflight')]
+        [string]$Action
+    )
+
+    $hostName = $script:Controls.SshHostInput.Text.Trim()
+    $username = $script:Controls.SshUsernameInput.Text.Trim()
+    if ($hostName -cnotmatch '^[A-Za-z0-9.-]{1,253}$' -or
+        $username -cnotmatch '^[A-Za-z_][A-Za-z0-9._-]{0,63}$') {
+        $script:Controls.SshPasswordInput.Clear()
+        $script:Controls.SshAuthenticationValue.Text = '失敗：主機或帳號格式無效'
+        $script:Controls.ActivityLabel.Text = 'SSH：輸入格式無效'
+        return
+    }
+    if ($Action -eq 'BackupDestinationPreflight' -and
+        ($hostName -cne $script:ProductionSshHost -or $username -cne $script:ProductionSshUser)) {
+        $script:Controls.SshPasswordInput.Clear()
+        $script:Controls.BackupDestinationValue.Text = '未驗證；預檢僅允許正式環境主機與帳號'
+        $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
+        $script:Controls.ActivityLabel.Text = '備份目的地預檢：已阻擋（主機或帳號不符）'
+        $script:VerifiedBackupDirectory = $null
+        $script:VerifiedBackupHost = $null
+        $script:VerifiedBackupUser = $null
+        Set-OperationButtonsEnabled -Enabled $true
+        return
+    }
+
+    $passwordCharacters = $script:Controls.SshPasswordInput.Text.ToCharArray()
+    $script:Controls.SshPasswordInput.Clear()
+    if ($passwordCharacters.Length -eq 0) {
+        $script:Controls.SshAuthenticationValue.Text = '尚未連線：請輸入密碼'
+        $script:Controls.ActivityLabel.Text = 'SSH：尚未連線'
+        return
+    }
+
+    $securePassword = New-Object System.Security.SecureString
+    try {
+        foreach ($character in $passwordCharacters) {
+            $securePassword.AppendChar($character)
+        }
+    } catch {
+        Clear-SshCredential -Credential $securePassword
+        throw
+    } finally {
+        [Array]::Clear($passwordCharacters, 0, $passwordCharacters.Length)
+        $passwordCharacters = $null
+    }
+
+    $script:Controls.SshAuthenticationValue.Text = '連線中…'
+    if ($Action -eq 'BackupDestinationPreflight') {
+        $script:VerifiedBackupDirectory = $null
+        $script:VerifiedBackupHost = $null
+        $script:VerifiedBackupUser = $null
+        $script:Controls.BackupDestinationValue.Text = '驗證中…'
+        $script:Controls.BackupStateValue.Text = '目的地驗證中；備份仍受阻擋'
+        $script:Controls.BackupButton.Enabled = $false
+    }
+    $operation = if ($Action -eq 'SshTest') { '測試 SSH 連線' } else { '唯讀驗證備份目的地' }
+    try {
+        Start-BackgroundOperation -Operation $operation -Action $Action `
+            -SshHost $hostName -SshUsername $username -SshPassword $securePassword
+    } catch {
+        Clear-SshCredential -Credential $securePassword
+        $script:Controls.SshAuthenticationValue.Text = '失敗：無法啟動 SSH 工作'
+        if ($Action -eq 'BackupDestinationPreflight') {
+            $script:Controls.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
+            $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
+        }
+        $script:Controls.ActivityLabel.Text = "$operation：無法啟動"
+    }
+}
+
+function Request-ActiveOperationCancellation {
+    $context = $script:OperationState.ActiveOperation
+    if (-not $context) {
+        return
+    }
+    $context.CancelRequested = $true
+    $context.Stage = '取消目前操作'
+    if ($context.SshClient) {
+        try {
+            $context.SshClient.Disconnect()
+        } catch {
+            $context.SshDisconnectFailed = $true
         }
     }
 }
@@ -1392,6 +2272,35 @@ function New-InfoRow {
     $Table.Controls.Add($valueControl, 1, $row)
     $script:Controls[$ControlName] = $valueControl
     return $valueControl
+}
+
+function New-TextInputRow {
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.TableLayoutPanel]$Table,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$ControlName,
+        [string]$InitialValue = '',
+        [switch]$Password
+    )
+
+    $row = $Table.RowCount
+    $Table.RowCount++
+    $Table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    $labelControl = New-Object System.Windows.Forms.Label
+    $labelControl.Text = $Label
+    $labelControl.AutoSize = $true
+    $labelControl.Margin = New-Object System.Windows.Forms.Padding(4, 7, 8, 5)
+    $inputControl = New-Object System.Windows.Forms.TextBox
+    $inputControl.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $inputControl.Text = $InitialValue
+    $inputControl.Margin = New-Object System.Windows.Forms.Padding(4, 5, 4, 5)
+    if ($Password) {
+        $inputControl.UseSystemPasswordChar = $true
+    }
+    $Table.Controls.Add($labelControl, 0, $row)
+    $Table.Controls.Add($inputControl, 1, $row)
+    $script:Controls[$ControlName] = $inputControl
+    return $inputControl
 }
 
 function New-ActionButton {
@@ -1515,15 +2424,25 @@ $serverTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([Syst
 $serverTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void](New-InfoRow -Table $serverTable -Label '備份' -Value '正式操作待目的地驗證' -ControlName 'BackupStateValue')
 [void](New-InfoRow -Table $serverTable -Label '備份目的地' -Value '未驗證；正式備份禁止執行' -ControlName 'BackupDestinationValue')
+[void](New-InfoRow -Table $serverTable -Label 'SSH 認證' -Value '尚未連線' -ControlName 'SshAuthenticationValue')
+[void](New-TextInputRow -Table $serverTable -Label 'SSH 主機' -InitialValue $script:ProductionSshHost -ControlName 'SshHostInput')
+[void](New-TextInputRow -Table $serverTable -Label 'SSH 帳號' -InitialValue $script:ProductionSshUser -ControlName 'SshUsernameInput')
+[void](New-TextInputRow -Table $serverTable -Label 'SSH 密碼' -ControlName 'SshPasswordInput' -Password)
 [void](New-InfoRow -Table $serverTable -Label '還原' -Value '已有 deploy/restore.sh；未接線' -ControlName 'RestoreStateValue')
 [void](New-InfoRow -Table $serverTable -Label '伺服器重建' -Value '尚無完整重建流程' -ControlName 'RebuildStateValue')
 $serverButtons = New-Object System.Windows.Forms.FlowLayoutPanel
 $serverButtons.AutoSize = $true
 $serverButtons.Dock = [System.Windows.Forms.DockStyle]::Fill
-$backupButton = New-ActionButton -Text '備份（目的地未驗證）'
+$script:Controls.SshTestButton = New-ActionButton -Text '測試 SSH 連線'
+$script:Controls.BackupDestinationButton = New-ActionButton -Text '唯讀驗證備份目的地'
+$script:Controls.CancelOperationButton = New-ActionButton -Text '取消目前操作' -Enabled $false
+$backupButton = New-ActionButton -Text '備份（目的地未驗證）' -Enabled $false
 $script:Controls.BackupButton = $backupButton
 $restoreButton = New-ActionButton -Text '還原（尚未接線）' -Enabled $false
 $rebuildButton = New-ActionButton -Text '重建（尚未接線）' -Enabled $false
+$serverButtons.Controls.Add($script:Controls.SshTestButton)
+$serverButtons.Controls.Add($script:Controls.BackupDestinationButton)
+$serverButtons.Controls.Add($script:Controls.CancelOperationButton)
 $serverButtons.Controls.Add($backupButton)
 $serverButtons.Controls.Add($restoreButton)
 $serverButtons.Controls.Add($rebuildButton)
@@ -1574,6 +2493,41 @@ $script:Controls.PushButton.Add_Click({
 $script:Controls.BackupButton.Add_Click({
     Request-BackupOperation
 })
+$script:Controls.SshTestButton.Add_Click({
+    Start-SshUiOperation -Action 'SshTest'
+})
+$script:Controls.BackupDestinationButton.Add_Click({
+    Start-SshUiOperation -Action 'BackupDestinationPreflight'
+})
+$script:Controls.CancelOperationButton.Add_Click({
+    $context = $script:OperationState.ActiveOperation
+    if ($context) {
+        Request-ActiveOperationCancellation
+        $script:Controls.ActivityLabel.Text = "正在取消：$($context.Stage)"
+    }
+})
+$script:Controls.SshHostInput.Add_TextChanged({
+    $script:VerifiedBackupDirectory = $null
+    $script:VerifiedBackupHost = $null
+    $script:VerifiedBackupUser = $null
+    $script:Controls.BackupDestinationValue.Text = '未驗證；正式備份禁止執行'
+    $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
+    $script:Controls.BackupButton.Text = '備份（目的地未驗證）'
+    if (-not $script:OperationState.IsBusy) {
+        $script:Controls.BackupButton.Enabled = $false
+    }
+})
+$script:Controls.SshUsernameInput.Add_TextChanged({
+    $script:VerifiedBackupDirectory = $null
+    $script:VerifiedBackupHost = $null
+    $script:VerifiedBackupUser = $null
+    $script:Controls.BackupDestinationValue.Text = '未驗證；正式備份禁止執行'
+    $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
+    $script:Controls.BackupButton.Text = '備份（目的地未驗證）'
+    if (-not $script:OperationState.IsBusy) {
+        $script:Controls.BackupButton.Enabled = $false
+    }
+})
 $script:Controls.DeploymentPreflightButton.Add_Click({
     $script:Controls.BranchValue.Text = '檢查中…'
     $script:Controls.HeadValue.Text = '檢查中…'
@@ -1605,8 +2559,8 @@ $form.Add_FormClosing({
         )
         if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) {
             $script:OperationState.ActiveOperation.CloseWhenDone = $true
-            $script:OperationState.ActiveOperation.CancelRequested = $true
-            $script:Controls.ActivityLabel.Text = "正在取消並停止本機程序：$($script:OperationState.ActiveOperation.Stage)"
+            Request-ActiveOperationCancellation
+            $script:Controls.ActivityLabel.Text = "正在取消目前操作：$($script:OperationState.ActiveOperation.Stage)"
         } else {
             $script:Controls.ActivityLabel.Text = "繼續等待：$($script:OperationState.ActiveOperation.Operation)"
         }
