@@ -19,9 +19,6 @@ $script:SshNetCacheRoot = Join-Path $env:LOCALAPPDATA 'Pets-Operations-Center\ss
 $script:SshNetAssembly = $null
 $script:ProductionRoot = '/home/zhe/pets'
 $script:BackupScript = '/home/zhe/pets/deploy/backup.sh'
-$script:VerifiedBackupDirectory = $null
-$script:VerifiedBackupHost = $null
-$script:VerifiedBackupUser = $null
 $script:GitPath = $null
 $script:Controls = @{}
 $script:OperationState = @{
@@ -30,6 +27,9 @@ $script:OperationState = @{
     GitHubMasterSha = $null
     ActiveOperation = $null
     AllowClose = $false
+    VerifiedBackupDirectory = $null
+    VerifiedBackupHost = $null
+    VerifiedBackupUser = $null
 }
 
 if (-not $env:WINDIR -or -not (Test-Path -LiteralPath $script:ProjectRoot -PathType Container)) {
@@ -1053,6 +1053,18 @@ function Add-OperationLog {
     $script:Controls.LogBox.ScrollToCaret()
 }
 
+function Write-BackupButtonDiagnostic {
+    param(
+        [Parameter(Mandatory = $true)][string]$Status,
+        [string[]]$Output = @()
+    )
+
+    try {
+        Add-OperationLog -Operation 'Backup 按鈕診斷' -Status $Status -Output $Output
+    } catch {
+    }
+}
+
 function Format-ProcessOutput {
     param([Parameter(Mandatory = $true)]$Result)
     $lines = New-Object System.Collections.Generic.List[string]
@@ -1169,7 +1181,7 @@ function Confirm-BackupRequest {
 }
 
 function Request-BackupOperation {
-    $destinationText = if ($script:VerifiedBackupDirectory) {
+    $destinationText = if ($script:OperationState.VerifiedBackupDirectory) {
         $script:Controls.BackupDestinationValue.Text
     } else {
         '尚未驗證；正式備份禁止執行'
@@ -1193,11 +1205,11 @@ SSH 主機：$($script:SshTarget)
         return
     }
 
-    if ([string]::IsNullOrWhiteSpace($script:VerifiedBackupDirectory) -or
-        $script:VerifiedBackupDirectory -cnotmatch '\A/' -or
-        $script:VerifiedBackupDirectory -match '[\x00-\x1F\x7F]' -or
-        $script:VerifiedBackupHost -cne $script:ProductionSshHost -or
-        $script:VerifiedBackupUser -cne $script:ProductionSshUser) {
+    if ([string]::IsNullOrWhiteSpace($script:OperationState.VerifiedBackupDirectory) -or
+        $script:OperationState.VerifiedBackupDirectory -cnotmatch '\A/' -or
+        $script:OperationState.VerifiedBackupDirectory -match '[\x00-\x1F\x7F]' -or
+        $script:OperationState.VerifiedBackupHost -cne $script:ProductionSshHost -or
+        $script:OperationState.VerifiedBackupUser -cne $script:ProductionSshUser) {
         $script:Controls.ActivityLabel.Text = '正式環境備份：已阻擋（目的地未驗證）'
         Add-OperationLog -Operation '正式環境備份' -Status '已阻擋；備份目的地未驗證' -Output @(
             "SSH 主機：$($script:SshTarget)",
@@ -1209,26 +1221,81 @@ SSH 主機：$($script:SshTarget)
     }
 
     Start-BackgroundOperation -Operation '正式環境備份' -Action 'Backup' `
-        -BackupDestination $script:VerifiedBackupDirectory
+        -BackupDestination $script:OperationState.VerifiedBackupDirectory
 }
 
 function Set-OperationButtonsEnabled {
-    param([bool]$Enabled)
-    $script:Controls.RefreshButton.Enabled = $Enabled
-    $script:Controls.TestButton.Enabled = $Enabled
-    $script:Controls.GitHubButton.Enabled = $Enabled
-    $script:Controls.PushButton.Enabled = $Enabled
-    $script:Controls.DeploymentPreflightButton.Enabled = $Enabled
-    $script:Controls.SshTestButton.Enabled = $Enabled
-    $script:Controls.BackupDestinationButton.Enabled = $Enabled
-    $script:Controls.SshHostInput.Enabled = $Enabled
-    $script:Controls.SshUsernameInput.Enabled = $Enabled
-    $script:Controls.SshPasswordInput.Enabled = $Enabled
-    $script:Controls.CancelOperationButton.Enabled = -not $Enabled
-    $script:Controls.BackupButton.Enabled = $Enabled -and
-        -not [string]::IsNullOrWhiteSpace($script:VerifiedBackupDirectory) -and
-        $script:VerifiedBackupHost -ceq $script:ProductionSshHost -and
-        $script:VerifiedBackupUser -ceq $script:ProductionSshUser
+    param(
+        [bool]$Enabled,
+        [bool]$UnconfirmedProcess = $false
+    )
+    $destinationVerified = 'not-evaluated'
+    $hostMatches = 'not-evaluated'
+    $usernameMatches = 'not-evaluated'
+    $isBusy = 'unavailable'
+    $backupEnabledBefore = 'unavailable'
+    $backupEnabledAfter = 'unavailable'
+    try {
+        $script:Controls.RefreshButton.Enabled = $Enabled
+        $script:Controls.TestButton.Enabled = $Enabled
+        $script:Controls.GitHubButton.Enabled = $Enabled
+        $script:Controls.PushButton.Enabled = $Enabled
+        $script:Controls.DeploymentPreflightButton.Enabled = $Enabled
+        $script:Controls.SshTestButton.Enabled = $Enabled
+        $script:Controls.BackupDestinationButton.Enabled = $Enabled
+        $script:Controls.SshHostInput.Enabled = $Enabled
+        $script:Controls.SshUsernameInput.Enabled = $Enabled
+        $script:Controls.SshPasswordInput.Enabled = $Enabled
+        $script:Controls.CancelOperationButton.Enabled = -not $Enabled
+        try {
+            $isBusy = [bool]$script:OperationState.IsBusy
+        } catch {
+        }
+        try {
+            $backupEnabledBefore = $script:Controls.BackupButton.Enabled
+        } catch {
+        }
+        $destinationVerified = -not [string]::IsNullOrWhiteSpace($script:OperationState.VerifiedBackupDirectory)
+        $hostMatches = $script:OperationState.VerifiedBackupHost -ceq $script:ProductionSshHost
+        $usernameMatches = $script:OperationState.VerifiedBackupUser -ceq $script:ProductionSshUser
+        $script:Controls.BackupButton.Enabled = $Enabled -and
+            $destinationVerified -and $hostMatches -and $usernameMatches
+        try {
+            $backupEnabledAfter = $script:Controls.BackupButton.Enabled
+        } catch {
+        }
+    } catch {
+        try {
+            $exceptionType = $_.Exception.GetType().FullName
+            try {
+                $backupEnabledAfter = $script:Controls.BackupButton.Enabled
+            } catch {
+            }
+            Write-BackupButtonDiagnostic -Status '按鈕狀態更新例外' -Output @(
+                "ExceptionType: $exceptionType",
+                "Enabled: $Enabled",
+                "DestinationVerified: $destinationVerified",
+                "HostMatches: $hostMatches",
+                "UsernameMatches: $usernameMatches",
+                "IsBusy: $isBusy",
+                "UnconfirmedProcess: $UnconfirmedProcess",
+                "BackupEnabledBefore: $backupEnabledBefore",
+                "BackupEnabledAfter: $backupEnabledAfter"
+            )
+        } catch {
+        }
+        throw
+    }
+    Write-BackupButtonDiagnostic -Status '按鈕狀態更新' -Output @(
+        "Enabled: $Enabled",
+        "DestinationVerified: $destinationVerified",
+        "HostMatches: $hostMatches",
+        "UsernameMatches: $usernameMatches",
+        "IsBusy: $isBusy",
+        "UnconfirmedProcess: $UnconfirmedProcess",
+        "BackupEnabledBefore: $backupEnabledBefore",
+        "BackupEnabledAfter: $backupEnabledAfter"
+    )
 }
 
 function Start-BackgroundOperation {
@@ -1247,9 +1314,9 @@ function Start-BackgroundOperation {
         $BackupDestination -cnotmatch '\A/' -or
         $BackupDestination.Length -gt 4096 -or
         $BackupDestination -match '[\x00-\x1F\x7F]' -or
-        $script:VerifiedBackupDirectory -cne $BackupDestination -or
-        $script:VerifiedBackupHost -cne $script:ProductionSshHost -or
-        $script:VerifiedBackupUser -cne $script:ProductionSshUser
+        $script:OperationState.VerifiedBackupDirectory -cne $BackupDestination -or
+        $script:OperationState.VerifiedBackupHost -cne $script:ProductionSshHost -or
+        $script:OperationState.VerifiedBackupUser -cne $script:ProductionSshUser
     )) {
         $script:Controls.ActivityLabel.Text = "$Operation：已阻擋（目的地驗證狀態無效）"
         Add-OperationLog -Operation $Operation -Status '已阻擋；目的地與有效驗證狀態不一致' -Output @(
@@ -1909,9 +1976,9 @@ try {
                     if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
                         $completedUi.SshAuthenticationValue.Text = '已取消'
                         if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
-                            $script:VerifiedBackupDirectory = $null
-                            $script:VerifiedBackupHost = $null
-                            $script:VerifiedBackupUser = $null
+                            $completedState.VerifiedBackupDirectory = $null
+                            $completedState.VerifiedBackupHost = $null
+                            $completedState.VerifiedBackupUser = $null
                             $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
                             $completedUi.BackupStateValue.Text = '目的地預檢已取消'
                         }
@@ -1924,9 +1991,9 @@ try {
                 } elseif ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
                     $completedUi.SshAuthenticationValue.Text = '失敗：SSH 工作未完成'
                     if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
-                        $script:VerifiedBackupDirectory = $null
-                        $script:VerifiedBackupHost = $null
-                        $script:VerifiedBackupUser = $null
+                        $completedState.VerifiedBackupDirectory = $null
+                        $completedState.VerifiedBackupHost = $null
+                        $completedState.VerifiedBackupUser = $null
                         $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
                         $completedUi.BackupStateValue.Text = '目的地預檢失敗'
                     }
@@ -2175,9 +2242,9 @@ try {
                             "最終成功判定：$(if ($preflightSucceeded) { '通過' } else { '未通過' })"
                         )
                         if ($preflightSucceeded) {
-                            $script:VerifiedBackupDirectory = $result.DestinationCanonical
-                            $script:VerifiedBackupHost = $completedRequest.SshHost
-                            $script:VerifiedBackupUser = $completedRequest.SshUsername
+                            $completedState.VerifiedBackupDirectory = $result.DestinationCanonical
+                            $completedState.VerifiedBackupHost = $completedRequest.SshHost
+                            $completedState.VerifiedBackupUser = $completedRequest.SshUsername
                             $completedUi.BackupDestinationValue.Text = "$($result.DestinationCanonical)（BACKUP_DIR=$($result.Destination)；來源：$($result.DestinationSource)）"
                             $completedUi.BackupStateValue.Text = '備份目的地唯讀驗證成功'
                             $completedUi.BackupButton.Text = '備份'
@@ -2191,9 +2258,9 @@ try {
                                     '只檢查既有目錄狀態；未建立目錄、變更權限、建立備份或刪除檔案。'
                                 ))
                         } else {
-                            $script:VerifiedBackupDirectory = $null
-                            $script:VerifiedBackupHost = $null
-                            $script:VerifiedBackupUser = $null
+                            $completedState.VerifiedBackupDirectory = $null
+                            $completedState.VerifiedBackupHost = $null
+                            $completedState.VerifiedBackupUser = $null
                             $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
                             $completedUi.BackupStateValue.Text = '目的地預檢失敗'
                             $completedUi.BackupButton.Text = '備份（目的地未驗證）'
@@ -2271,9 +2338,9 @@ try {
                 $completedUi.SshAuthenticationValue.Text = '失敗：完成處理未能確認'
                 $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
                 $completedUi.BackupStateValue.Text = '目的地預檢失敗'
-                $script:VerifiedBackupDirectory = $null
-                $script:VerifiedBackupHost = $null
-                $script:VerifiedBackupUser = $null
+                $completedState.VerifiedBackupDirectory = $null
+                $completedState.VerifiedBackupHost = $null
+                $completedState.VerifiedBackupUser = $null
                 $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：完成處理失敗"
                 & $completionAddOperationLog -Operation $completedRequest.Operation -Status '完成處理失敗；錯誤內容已抑制' `
                     -Output @('SSH 完成處理例外資訊不記錄。')
@@ -2322,9 +2389,11 @@ try {
                 $completedState.IsBusy = $false
                 if (-not $unconfirmedProcess) {
                     $completedState.ActiveOperation = $null
-                    & $completionSetOperationButtonsEnabled -Enabled $true
+                    & $completionSetOperationButtonsEnabled -Enabled $true `
+                        -UnconfirmedProcess ([bool]$unconfirmedProcess)
                 } else {
-                    & $completionSetOperationButtonsEnabled -Enabled $false
+                    & $completionSetOperationButtonsEnabled -Enabled $false `
+                        -UnconfirmedProcess ([bool]$unconfirmedProcess)
                 }
             }
             if ($closeAfterCompletion -and -not $unconfirmedProcess) {
@@ -2410,9 +2479,9 @@ function Start-SshUiOperation {
         $script:Controls.BackupDestinationValue.Text = '未驗證；預檢僅允許正式環境主機與帳號'
         $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
         $script:Controls.ActivityLabel.Text = '備份目的地預檢：已阻擋（主機或帳號不符）'
-        $script:VerifiedBackupDirectory = $null
-        $script:VerifiedBackupHost = $null
-        $script:VerifiedBackupUser = $null
+        $script:OperationState.VerifiedBackupDirectory = $null
+        $script:OperationState.VerifiedBackupHost = $null
+        $script:OperationState.VerifiedBackupUser = $null
         Set-OperationButtonsEnabled -Enabled $true
         return
     }
@@ -2440,9 +2509,9 @@ function Start-SshUiOperation {
 
     $script:Controls.SshAuthenticationValue.Text = '連線中…'
     if ($Action -eq 'BackupDestinationPreflight') {
-        $script:VerifiedBackupDirectory = $null
-        $script:VerifiedBackupHost = $null
-        $script:VerifiedBackupUser = $null
+        $script:OperationState.VerifiedBackupDirectory = $null
+        $script:OperationState.VerifiedBackupHost = $null
+        $script:OperationState.VerifiedBackupUser = $null
         $script:Controls.BackupDestinationValue.Text = '驗證中…'
         $script:Controls.BackupStateValue.Text = '目的地驗證中；備份仍受阻擋'
         $script:Controls.BackupButton.Enabled = $false
@@ -2737,26 +2806,42 @@ $script:Controls.CancelOperationButton.Add_Click({
     }
 })
 $script:Controls.SshHostInput.Add_TextChanged({
-    $script:VerifiedBackupDirectory = $null
-    $script:VerifiedBackupHost = $null
-    $script:VerifiedBackupUser = $null
+    $script:OperationState.VerifiedBackupDirectory = $null
+    $script:OperationState.VerifiedBackupHost = $null
+    $script:OperationState.VerifiedBackupUser = $null
     $script:Controls.BackupDestinationValue.Text = '未驗證；正式備份禁止執行'
     $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
     $script:Controls.BackupButton.Text = '備份（目的地未驗證）'
     if (-not $script:OperationState.IsBusy) {
         $script:Controls.BackupButton.Enabled = $false
     }
+    $isBusy = 'unavailable'
+    try {
+        $isBusy = [bool]$script:OperationState.IsBusy
+    } catch {
+    }
+    Write-BackupButtonDiagnostic -Status 'SSH 主機欄位變更' -Output @(
+        "IsBusy: $isBusy"
+    )
 })
 $script:Controls.SshUsernameInput.Add_TextChanged({
-    $script:VerifiedBackupDirectory = $null
-    $script:VerifiedBackupHost = $null
-    $script:VerifiedBackupUser = $null
+    $script:OperationState.VerifiedBackupDirectory = $null
+    $script:OperationState.VerifiedBackupHost = $null
+    $script:OperationState.VerifiedBackupUser = $null
     $script:Controls.BackupDestinationValue.Text = '未驗證；正式備份禁止執行'
     $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
     $script:Controls.BackupButton.Text = '備份（目的地未驗證）'
     if (-not $script:OperationState.IsBusy) {
         $script:Controls.BackupButton.Enabled = $false
     }
+    $isBusy = 'unavailable'
+    try {
+        $isBusy = [bool]$script:OperationState.IsBusy
+    } catch {
+    }
+    Write-BackupButtonDiagnostic -Status 'SSH 帳號欄位變更' -Output @(
+        "IsBusy: $isBusy"
+    )
 })
 $script:Controls.DeploymentPreflightButton.Add_Click({
     $script:Controls.BranchValue.Text = '檢查中…'
