@@ -1347,6 +1347,7 @@ function Get-PushPreflight {
         Branch = $status.Branch
         Head = $status.Head
         RemoteHead = $remoteSha
+        IsClean = $status.IsClean
     }
 }
 
@@ -2624,7 +2625,7 @@ try {
                     $preflight = $completionPayload.Result
                     $confirmation = [System.Windows.Forms.MessageBox]::Show(
                         $completedUi.Form,
-                        "推送前檢查通過。`r`n`r`n本機分支：$($preflight.Branch)`r`n本機 HEAD：$($preflight.Head)`r`nGitHub origin/master：$($preflight.RemoteHead)`r`n`r`n即將執行：git push origin master`r`n`r`n不會自動建立 commit，也不會自動 pull、merge、rebase、reset 或 force push。`r`n`r`n是否繼續？",
+                        "推送前檢查通過。`r`n`r`n本機分支：$($preflight.Branch)`r`n本機 HEAD：$($preflight.Head)`r`nGitHub origin/master：$($preflight.RemoteHead)`r`n工作目錄狀態：$(if ($preflight.IsClean) { '乾淨' } else { '有未提交變更' })`r`n`r`n此次推送只會上傳已提交的 Git commit；未提交變更不會隨此次推送上傳。`r`n`r`n即將執行：git push origin master`r`n`r`n不會自動建立 commit，也不會自動 pull、merge、rebase、reset 或 force push。`r`n`r`n是否繼續？",
                         '確認推送到 GitHub',
                         [System.Windows.Forms.MessageBoxButtons]::YesNo,
                         [System.Windows.Forms.MessageBoxIcon]::Warning,
