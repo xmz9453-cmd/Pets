@@ -437,6 +437,109 @@ function Test-RestoreBundlePath {
     return $Path -cmatch '\A/home/zhe/pets-backups/pets_backup_\d{8}_\d{6}\.tar\.gz\z'
 }
 
+function Invoke-RestoreRemoteCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$RemoteCommand,
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [Parameter(Mandatory = $true)][string]$Stage,
+        [ValidateRange(1, 3600000)][int]$TimeoutMilliseconds = 30000,
+        [AllowEmptyString()][string]$StandardInputText,
+        [bool]$TestMode = $false,
+        [scriptblock]$MockExecutor
+    )
+
+    $invokeArguments = @{
+        RemoteCommand = $RemoteCommand
+        Context = $Context
+        Stage = $Stage
+        TimeoutMilliseconds = $TimeoutMilliseconds
+    }
+    if ($PSBoundParameters.ContainsKey('StandardInputText')) {
+        $invokeArguments.StandardInputText = $StandardInputText
+    }
+
+    if ($TestMode) {
+        if ($null -eq $MockExecutor) {
+            throw 'Restore 測試模式未注入 Mock 遠端執行器；拒絕執行。'
+        }
+        if ($MockExecutor.Ast.EndBlock.Statements.Count -eq 0) {
+            throw 'Restore 測試模式的 Mock 遠端執行器為空；拒絕執行。'
+        }
+        return & $MockExecutor @invokeArguments
+    }
+    if ($null -ne $MockExecutor) {
+        throw '未啟用 Restore 測試模式；拒絕使用 Mock 遠端執行器。'
+    }
+
+    return Invoke-ProductionOpenSsh @invokeArguments
+}
+
+function Invoke-RestoreConfirmationGate {
+    param(
+        [Parameter(Mandatory = $true)][string]$BundlePath,
+        [Parameter(Mandatory = $true)][string]$DatabaseName,
+        [Parameter(Mandatory = $true)][bool]$WarningConfirmed,
+        [Parameter(Mandatory = $true)][bool]$ServicesStoppedConfirmed,
+        [AllowEmptyString()][string]$RestoreConfirmation,
+        [Parameter(Mandatory = $true)][scriptblock]$ScheduleRestore
+    )
+
+    $rejectionReason = if (-not (Test-RestoreBundlePath -Path $BundlePath)) {
+        'InvalidBundlePath'
+    } elseif (-not $WarningConfirmed) {
+        'WarningDeclined'
+    } elseif (-not $ServicesStoppedConfirmed) {
+        'ServicesNotConfirmedStopped'
+    } elseif ($RestoreConfirmation -cne 'RESTORE') {
+        'ConfirmationMismatch'
+    } else {
+        $null
+    }
+    if ($rejectionReason) {
+        return [pscustomobject]@{
+            Accepted = $false
+            RejectionReason = $rejectionReason
+            Request = $null
+        }
+    }
+
+    $request = [pscustomobject]@{
+        BundlePath = $BundlePath
+        Confirmation = $RestoreConfirmation
+        DatabaseName = $DatabaseName
+    }
+    [void](& $ScheduleRestore $request)
+    return [pscustomobject]@{
+        Accepted = $true
+        RejectionReason = $null
+        Request = $request
+    }
+}
+
+function Get-RestoreCompletionVerdict {
+    param([AllowNull()][object]$Result)
+
+    if ($null -eq $Result) {
+        return 'Unknown'
+    }
+    if ($Result.TimedOut -or $Result.Cancelled) {
+        return 'Unconfirmed'
+    }
+    $successMarker = $Result.ExitCode -eq 0 -and
+        $Result.Stdout -cmatch '(?m)^\[restore\.sh SUCCESS\] Database and \d+ Contract PDF file\(s\) restored and verified\.$'
+    if ($successMarker) {
+        return 'Success'
+    }
+    $scriptReportedError = ($Result.Stdout + "`n" + $Result.Stderr) -cmatch '(?m)^\[restore\.sh ERROR\]'
+    if ($Result.ExitCode -ne 0 -and $scriptReportedError) {
+        return 'Failure'
+    }
+    if ($Result.ExitCode -ne 0) {
+        return 'Unconfirmed'
+    }
+    return 'Unknown'
+}
+
 function Show-RestoreBundleSelectionDialog {
     param([Parameter(Mandatory = $true)][string[]]$BundlePaths)
 
@@ -590,6 +693,9 @@ function Request-RestoreConfirmation {
         [System.Windows.Forms.MessageBoxDefaultButton]::Button2
     )
     if ($confirmation -ne [System.Windows.Forms.DialogResult]::Yes) {
+        [void](Invoke-RestoreConfirmationGate -BundlePath $BundlePath -DatabaseName $DatabaseName `
+            -WarningConfirmed $false -ServicesStoppedConfirmed $false -RestoreConfirmation '' `
+            -ScheduleRestore { param($request) })
         $script:Controls.RestoreStateValue.Text = '還原已取消'
         Add-OperationLog -Operation '正式環境還原' -Status '使用者取消；未建立還原工作或呼叫還原命令' -Output @(
             "目標資料庫：$DatabaseName",
@@ -607,6 +713,9 @@ function Request-RestoreConfirmation {
         [System.Windows.Forms.MessageBoxDefaultButton]::Button2
     )
     if ($servicesStoppedConfirmation -ne [System.Windows.Forms.DialogResult]::Yes) {
+        [void](Invoke-RestoreConfirmationGate -BundlePath $BundlePath -DatabaseName $DatabaseName `
+            -WarningConfirmed $true -ServicesStoppedConfirmed $false -RestoreConfirmation '' `
+            -ScheduleRestore { param($request) })
         $script:Controls.RestoreStateValue.Text = '還原已取消：未確認應用服務均已停止'
         Add-OperationLog -Operation '正式環境還原' `
             -Status '停服確認未通過；未建立還原工作或呼叫還原命令' -Output @(
@@ -619,6 +728,9 @@ function Request-RestoreConfirmation {
 
     $restoreConfirmation = Request-ExactRestoreConfirmation
     if ($restoreConfirmation -cne 'RESTORE') {
+        [void](Invoke-RestoreConfirmationGate -BundlePath $BundlePath -DatabaseName $DatabaseName `
+            -WarningConfirmed $true -ServicesStoppedConfirmed $true `
+            -RestoreConfirmation $restoreConfirmation -ScheduleRestore { param($request) })
         $script:Controls.RestoreStateValue.Text = '還原已取消：未輸入精確 RESTORE'
         Add-OperationLog -Operation '正式環境還原' -Status '第二次確認取消或輸入不符；未建立還原工作或呼叫還原命令' -Output @(
             "目標資料庫：$DatabaseName",
@@ -628,11 +740,14 @@ function Request-RestoreConfirmation {
     }
 
     $script:Controls.RestoreStateValue.Text = '已確認；準備執行還原預檢'
-    return [pscustomobject]@{
-        BundlePath = $BundlePath
-        Confirmation = $restoreConfirmation
-        DatabaseName = $DatabaseName
+    $decision = Invoke-RestoreConfirmationGate -BundlePath $BundlePath -DatabaseName $DatabaseName `
+        -WarningConfirmed $true -ServicesStoppedConfirmed $true `
+        -RestoreConfirmation $restoreConfirmation `
+        -ScheduleRestore { param($request) }
+    if ($decision.Accepted) {
+        return $decision.Request
     }
+    return $null
 }
 
 function New-VerifiedSshClient {
@@ -1894,10 +2009,26 @@ function Start-BackgroundOperation {
         [string]$BackupDestination,
         [string]$RestoreBundlePath,
         [string]$RestoreConfirmation,
+        [switch]$RestoreTestMode,
+        [scriptblock]$RestoreRemoteExecutor,
         [string]$SshHost,
         [string]$SshUsername,
         [System.Security.SecureString]$SshPassword
     )
+    if ($Action -in @('RestoreList', 'Restore') -and (
+        ($RestoreTestMode -and $null -eq $RestoreRemoteExecutor) -or
+        (-not $RestoreTestMode -and $null -ne $RestoreRemoteExecutor)
+    )) {
+        $script:Controls.RestoreStateValue.Text = '已阻擋：Restore 測試模式與 Mock 執行器設定不一致'
+        Add-OperationLog -Operation $Operation -Status '已阻擋；Restore 遠端執行器設定無效' -Output @(
+            'Restore 測試模式必須明確注入 Mock 執行器；未建立背景工作或呼叫 SSH。'
+        )
+        return
+    }
+    if ($Action -notin @('RestoreList', 'Restore') -and
+        ($RestoreTestMode -or $null -ne $RestoreRemoteExecutor)) {
+        throw 'Restore 測試執行器只允許 RestoreList 或 Restore 背景工作。'
+    }
     if ($Action -eq 'Backup' -and (
         [string]::IsNullOrWhiteSpace($BackupDestination) -or
         $BackupDestination -cnotmatch '\A/' -or
@@ -1973,6 +2104,12 @@ function Start-BackgroundOperation {
         BackupDestination = $BackupDestination
         RestoreBundlePath = $RestoreBundlePath
         RestoreConfirmation = $RestoreConfirmation
+        RestoreTestMode = [bool]$RestoreTestMode
+        RestoreRemoteExecutorScript = if ($RestoreRemoteExecutor) {
+            $RestoreRemoteExecutor.ToString()
+        } else {
+            $null
+        }
         BackupSshPath = $script:SshPath
         BackupSshKey = $script:SshKey
         BackupSshTarget = $script:SshTarget
@@ -2003,6 +2140,7 @@ function Start-BackgroundOperation {
         'Stop-StartedProcessTree',
         'Invoke-CapturedProcess',
         'Invoke-ProductionOpenSsh',
+        'Invoke-RestoreRemoteCommand',
         'Test-ProductionOpenSshAuthentication',
         'Invoke-GitReadOnly',
         'Get-LocalProjectStatus',
@@ -2038,6 +2176,13 @@ try {
     $script:BackupScript = $workerRequest.BackupScript
     $script:RestoreScript = $workerRequest.RestoreScript
     $script:RestoreBackupDirectory = $workerRequest.RestoreBackupDirectory
+    $restoreRemoteExecutor = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$workerRequest.RestoreRemoteExecutorScript)) {
+        $restoreRemoteExecutor = [scriptblock]::Create($workerRequest.RestoreRemoteExecutorScript)
+    }
+    if ($workerRequest.RestoreTestMode -and $null -eq $restoreRemoteExecutor) {
+        throw 'Restore 測試模式未在背景 Runspace 收到 Mock 遠端執行器；拒絕執行。'
+    }
     $workContext.Stage = '解析背景工作請求完成'
     switch ($workerRequest.Action) {
         'LocalStatus' {
@@ -2089,8 +2234,9 @@ try {
             break
         }
         'RestoreList' {
-            if (-not (Test-Path -LiteralPath $script:SshPath -PathType Leaf) -or
-                -not (Test-Path -LiteralPath $script:SshKey -PathType Leaf)) {
+            if (-not $workerRequest.RestoreTestMode -and
+                (-not (Test-Path -LiteralPath $script:SshPath -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $script:SshKey -PathType Leaf))) {
                 throw '正式環境 SSH 程式或金鑰不存在；未啟動備份列舉。'
             }
             $remoteListCommand = @(
@@ -2104,9 +2250,10 @@ try {
                 'printf ''DATABASE=%s\n'' "$database"'
                 'find -- /home/zhe/pets-backups -mindepth 1 -maxdepth 1 -type f -name ''pets_backup_????????_??????.tar.gz'' -printf ''%f\n'''
             ) -join "`n"
-            $listResult = Invoke-ProductionOpenSsh -RemoteCommand $remoteListCommand `
-                -Context $workContext `
-                -Stage '唯讀列舉正式環境備份 bundle' -TimeoutMilliseconds 30000
+            $listResult = Invoke-RestoreRemoteCommand -RemoteCommand $remoteListCommand `
+                -Context $workContext -Stage '唯讀列舉正式環境備份 bundle' `
+                -TimeoutMilliseconds 30000 -TestMode $workerRequest.RestoreTestMode `
+                -MockExecutor $restoreRemoteExecutor
             if ($listResult.TimedOut) {
                 $result = $listResult
                 break
@@ -2151,16 +2298,18 @@ try {
                 $workerRequest.RestoreConfirmation -cne 'RESTORE') {
                 throw '還原備份路徑或人工確認無效；拒絕啟動 SSH。'
             }
-            if (-not (Test-Path -LiteralPath $script:SshPath -PathType Leaf) -or
-                -not (Test-Path -LiteralPath $script:SshKey -PathType Leaf)) {
+            if (-not $workerRequest.RestoreTestMode -and
+                (-not (Test-Path -LiteralPath $script:SshPath -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $script:SshKey -PathType Leaf))) {
                 throw '正式環境 SSH 程式或金鑰不存在；未啟動還原。'
             }
 
             $quotedBundlePath = ConvertTo-PosixShellSingleQuotedString -Value $bundlePath
             $remoteCommand = "cd -- '$($script:ProductionRoot)' && exec bash '$($script:RestoreScript)' $quotedBundlePath"
-            $result = Invoke-ProductionOpenSsh -RemoteCommand $remoteCommand `
+            $result = Invoke-RestoreRemoteCommand -RemoteCommand $remoteCommand `
                 -Context $workContext -Stage '執行正式環境 restore.sh' `
-                -TimeoutMilliseconds 3600000 -StandardInputText $workerRequest.RestoreConfirmation
+                -TimeoutMilliseconds 3600000 -StandardInputText $workerRequest.RestoreConfirmation `
+                -TestMode $workerRequest.RestoreTestMode -MockExecutor $restoreRemoteExecutor
             break
         }
         { $_ -in @('SshTest', 'BackupDestinationPreflight') } {
@@ -3070,10 +3219,8 @@ try {
                 'Restore' {
                     $result = $completionPayload.Result
                     $output = @(& $completionFormatProcessOutput -Result $result)
-                    $successMarker = $result.ExitCode -eq 0 -and
-                        $result.Stdout -cmatch '(?m)^\[restore\.sh SUCCESS\] Database and \d+ Contract PDF file\(s\) restored and verified\.$'
-                    $scriptReportedError = ($result.Stdout + "`n" + $result.Stderr) -cmatch '(?m)^\[restore\.sh ERROR\]'
-                    if ($result.TimedOut -or $result.Cancelled) {
+                    $restoreVerdict = Get-RestoreCompletionVerdict -Result $result
+                    if ($restoreVerdict -eq 'Unconfirmed' -and ($result.TimedOut -or $result.Cancelled)) {
                         $completedUi.RestoreStateValue.Text = '遠端還原結果未確認'
                         $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：結果未確認"
                         & $completionAddOperationLog -Operation $completedRequest.Operation `
@@ -3083,7 +3230,7 @@ try {
                                 $output,
                                 'SSH 已逾時或中斷；遠端是否仍在執行或已完成無法確認。請勿假設已取消或重試，先人工確認環境狀態。'
                             )
-                    } elseif ($successMarker) {
+                    } elseif ($restoreVerdict -eq 'Success') {
                         $completedUi.RestoreStateValue.Text = '腳本回報還原及驗證成功'
                         $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：腳本回報成功"
                         & $completionAddOperationLog -Operation $completedRequest.Operation `
@@ -3092,7 +3239,7 @@ try {
                                 "備份 bundle：$($completedRequest.RestoreBundlePath)",
                                 $output
                             )
-                    } elseif ($result.ExitCode -ne 0 -and $scriptReportedError) {
+                    } elseif ($restoreVerdict -eq 'Failure') {
                         $completedUi.RestoreStateValue.Text = '還原失敗'
                         $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：失敗（exit $($result.ExitCode)）"
                         & $completionAddOperationLog -Operation $completedRequest.Operation `
@@ -3101,7 +3248,7 @@ try {
                                 "備份 bundle：$($completedRequest.RestoreBundlePath)",
                                 $output
                             )
-                    } elseif ($result.ExitCode -ne 0) {
+                    } elseif ($restoreVerdict -eq 'Unconfirmed') {
                         $completedUi.RestoreStateValue.Text = '還原 SSH 結果未確認'
                         $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：結果未確認"
                         & $completionAddOperationLog -Operation $completedRequest.Operation `
