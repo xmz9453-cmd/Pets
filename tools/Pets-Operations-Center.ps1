@@ -811,6 +811,241 @@ function New-VerifiedSshClient {
     }
 }
 
+function Invoke-BackupSshOperation {
+    param(
+        [Parameter(Mandatory = $true)][string]$HostName,
+        [Parameter(Mandatory = $true)][string]$Username,
+        [System.Security.SecureString]$SecurePassword,
+        [Parameter(Mandatory = $true)][string]$RemoteCommand,
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [Parameter(Mandatory = $true)][AllowNull()][System.Reflection.Assembly]$SshAssembly,
+        [ValidateRange(1, 3600000)][int]$TimeoutMilliseconds = 3600000,
+        [bool]$TestMode = $false,
+        [scriptblock]$MockExecutor
+    )
+
+    if ($TestMode) {
+        if ($null -eq $MockExecutor -or $MockExecutor.Ast.EndBlock.Statements.Count -eq 0) {
+            throw 'Backup 測試模式未注入有效的 Mock 執行器；拒絕執行。'
+        }
+    } elseif ($null -ne $MockExecutor) {
+        throw '未啟用 Backup 測試模式；拒絕使用 Mock 執行器。'
+    }
+
+    $command = $null
+    $remoteCommandAttempted = $false
+    $stage = 'Authentication'
+    try {
+        if ($Context.CancelRequested) {
+            return [pscustomobject]@{
+                ExitCode = $null
+                Stdout = ''
+                Stderr = ''
+                TimedOut = $false
+                Cancelled = $true
+                ExecutionUnconfirmed = $false
+                FailureStage = 'CancelledBeforeConnection'
+            }
+        }
+
+        if ($TestMode) {
+            $connectionResult = & $MockExecutor -Phase 'Connect' -HostName $HostName `
+                -Username $Username -RemoteCommand $RemoteCommand `
+                -TimeoutMilliseconds $TimeoutMilliseconds -Context $Context
+            if ($null -eq $connectionResult -or
+                $null -eq $connectionResult.PSObject.Properties['AuthenticationSucceeded'] -or
+                $null -eq $connectionResult.PSObject.Properties['HostKeyVerified']) {
+                throw 'Backup 測試 Mock 未回傳認證及主機指紋結果。'
+            }
+            if (-not [bool]$connectionResult.AuthenticationSucceeded -or
+                -not [bool]$connectionResult.HostKeyVerified) {
+                return [pscustomobject]@{
+                    ExitCode = $null
+                    Stdout = ''
+                    Stderr = ''
+                    TimedOut = $false
+                    Cancelled = $false
+                    ExecutionUnconfirmed = $false
+                    FailureStage = if (-not $connectionResult.AuthenticationSucceeded) {
+                        'Authentication'
+                    } else {
+                        'HostKeyVerification'
+                    }
+                }
+            }
+            $Context.HostKeyVerified = $true
+            $Context.SshAuthenticationSucceeded = $true
+            if ($Context.CancelRequested) {
+                return [pscustomobject]@{
+                    ExitCode = $null
+                    Stdout = ''
+                    Stderr = ''
+                    TimedOut = $false
+                    Cancelled = $true
+                    ExecutionUnconfirmed = $false
+                    FailureStage = 'CancelledBeforeCommand'
+                }
+            }
+
+            $stage = 'RemoteCommand'
+            $remoteCommandAttempted = $true
+            $Context.BackupCommandAttempted = $true
+            $mockResult = & $MockExecutor -Phase 'Command' -HostName $HostName `
+                -Username $Username -RemoteCommand $RemoteCommand `
+                -TimeoutMilliseconds $TimeoutMilliseconds -Context $Context
+            foreach ($propertyName in @('ExitCode', 'Stdout', 'Stderr', 'TimedOut', 'Cancelled')) {
+                if ($null -eq $mockResult -or $null -eq $mockResult.PSObject.Properties[$propertyName]) {
+                    throw "Backup 測試 Mock 缺少必要結果欄位：$propertyName"
+                }
+            }
+            return [pscustomobject]@{
+                ExitCode = $mockResult.ExitCode
+                Stdout = [string]$mockResult.Stdout
+                Stderr = [string]$mockResult.Stderr
+                TimedOut = [bool]$mockResult.TimedOut
+                Cancelled = [bool]$mockResult.Cancelled -or [bool]$Context.CancelRequested
+                ExecutionUnconfirmed = [bool]$mockResult.TimedOut -or
+                    [bool]$mockResult.Cancelled -or [bool]$Context.CancelRequested
+                FailureStage = if ($mockResult.TimedOut) {
+                    'CommandTimeout'
+                } elseif ($mockResult.Cancelled -or $Context.CancelRequested) {
+                    'Cancelled'
+                } else {
+                    $null
+                }
+            }
+        }
+
+        if ($null -eq $SecurePassword) {
+            throw 'Backup SSH 密碼未提供；拒絕建立 SSH 連線。'
+        }
+        $stage = 'Connection'
+        $client = New-VerifiedSshClient -HostName $HostName -Username $Username `
+            -SecurePassword $SecurePassword -SshAssembly $SshAssembly -Context $Context
+        $client.Connect()
+        if (-not $Context.HostKeyVerified) {
+            $stage = 'HostKeyVerification'
+            throw 'HostKeyVerificationUnconfirmed'
+        }
+        $Context.SshAuthenticationSucceeded = $true
+        if ($Context.CancelRequested) {
+            return [pscustomobject]@{
+                ExitCode = $null
+                Stdout = ''
+                Stderr = ''
+                TimedOut = $false
+                Cancelled = $true
+                ExecutionUnconfirmed = $false
+                FailureStage = 'CancelledBeforeCommand'
+            }
+        }
+
+        $stage = 'RemoteCommand'
+        $command = $client.CreateCommand($RemoteCommand)
+        $Context.SshCommand = $command
+        $command.CommandTimeout = [TimeSpan]::FromMilliseconds($TimeoutMilliseconds)
+        $remoteCommandAttempted = $true
+        $Context.BackupCommandAttempted = $true
+        $stdout = $command.Execute()
+        $exitCode = $command.ExitStatus
+        $stderr = $command.Error
+        $cancelled = [bool]$Context.CancelRequested
+        return [pscustomobject]@{
+            ExitCode = if ($cancelled) { $null } else { $exitCode }
+            Stdout = [string]$stdout
+            Stderr = [string]$stderr
+            TimedOut = $false
+            Cancelled = $cancelled
+            ExecutionUnconfirmed = $cancelled
+            FailureStage = if ($cancelled) { 'Cancelled' } else { $null }
+        }
+    } catch {
+        $isTimeout = $_.Exception.GetType().FullName -eq 'Renci.SshNet.Common.SshOperationTimeoutException' -or
+            $_.Exception -is [System.TimeoutException]
+        $cancelled = [bool]$Context.CancelRequested
+        return [pscustomobject]@{
+            ExitCode = $null
+            Stdout = ''
+            Stderr = ''
+            TimedOut = $isTimeout -and -not $cancelled
+            Cancelled = $cancelled
+            ExecutionUnconfirmed = $remoteCommandAttempted
+            FailureStage = if ($cancelled) {
+                'Cancelled'
+            } elseif ($isTimeout) {
+                if ($remoteCommandAttempted) { 'CommandTimeout' } else { 'ConnectionTimeout' }
+            } else {
+                $stage
+            }
+        }
+    } finally {
+        if ($command) {
+            try {
+                $command.Dispose()
+            } catch {
+                $Context.SshCleanupFailed = $true
+            } finally {
+                $Context.SshCommand = $null
+            }
+        }
+    }
+}
+
+function Clear-BackupSshResources {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [System.Security.SecureString]$SecurePassword
+    )
+
+    $cleanupFailed = [bool]$Context.SshCleanupFailed -or [bool]$Context.SshDisconnectFailed
+    if ($Context.SshCommand) {
+        try {
+            $Context.SshCommand.Dispose()
+        } catch {
+            $cleanupFailed = $true
+        } finally {
+            $Context.SshCommand = $null
+        }
+    }
+    if ($Context.SshClient) {
+        try {
+            if ($Context.SshClient.IsConnected) {
+                $Context.SshClient.Disconnect()
+            }
+        } catch {
+            $cleanupFailed = $true
+        } finally {
+            try {
+                $Context.SshClient.Dispose()
+            } catch {
+                $cleanupFailed = $true
+            }
+            $Context.SshClient = $null
+            $Context.SshHostKeyHandler = $null
+            $Context.SshHostKeyVerifier = $null
+        }
+    }
+    if ($Context.SshAuthentication) {
+        try {
+            $Context.SshAuthentication.Dispose()
+        } catch {
+            $cleanupFailed = $true
+        } finally {
+            $Context.SshAuthentication = $null
+        }
+    }
+    if ($SecurePassword) {
+        try {
+            Clear-SshCredential -SecurePassword $SecurePassword
+        } catch {
+            $cleanupFailed = $true
+        }
+    }
+    $Context.SshPassword = $null
+    $Context.SshCleanupFailed = $cleanupFailed
+    return (-not $cleanupFailed)
+}
+
 function Stop-StartedProcessTree {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
@@ -1788,7 +2023,9 @@ function Get-BackupProcessOutcome {
         [Parameter(Mandatory = $true)][string]$ExpectedDirectory
     )
 
-    if ($Result.TimedOut -or $Result.Cancelled -or $Result.ExitCode -ne 0) {
+    if ($Result.TimedOut -or $Result.Cancelled -or
+        ($Result.PSObject.Properties['ExecutionUnconfirmed'] -and $Result.ExecutionUnconfirmed) -or
+        $Result.ExitCode -ne 0) {
         return [pscustomobject]@{
             Success = $false
             BackupFile = $null
@@ -1835,7 +2072,17 @@ function Get-BackupCompletion {
     )
 
     $outcome = Get-BackupProcessOutcome -Result $Result -ExpectedDirectory $ExpectedDirectory
-    $output = @(Format-ProcessOutput -Result $Result)
+    $output = if ($Result.TimedOut) {
+        @('備份命令逾時；遠端結果未確認，詳細輸出已抑制。')
+    } elseif ($Result.Cancelled) {
+        @('備份命令已取消；遠端結果未確認，詳細輸出已抑制。')
+    } elseif ($Result.PSObject.Properties['ExecutionUnconfirmed'] -and $Result.ExecutionUnconfirmed) {
+        @('備份命令結果未確認；詳細輸出已抑制。')
+    } elseif ($Result.ExitCode -eq 0) {
+        @('備份命令已回報成功退出碼。')
+    } else {
+        @('備份命令失敗；詳細輸出已抑制。')
+    }
     if ($outcome.Success) {
         return [pscustomobject]@{
             Success = $true
@@ -1845,13 +2092,15 @@ function Get-BackupCompletion {
         }
     }
 
-    $status = if ($Result.TimedOut -or $Result.Cancelled) {
+    $status = if ($Result.TimedOut -or $Result.Cancelled -or
+        ($Result.PSObject.Properties['ExecutionUnconfirmed'] -and $Result.ExecutionUnconfirmed)) {
         '失敗；遠端結果未確認'
     } else {
         "失敗（exit $($Result.ExitCode)）"
     }
     $details = @($outcome.Reason) + $output
-    if ($Result.TimedOut -or $Result.Cancelled) {
+    if ($Result.TimedOut -or $Result.Cancelled -or
+        ($Result.PSObject.Properties['ExecutionUnconfirmed'] -and $Result.ExecutionUnconfirmed)) {
         $details += 'SSH 中止或逾時後，遠端備份程序是否已結束無法確認；請勿據此假設備份未產生。'
     }
 
@@ -1896,6 +2145,7 @@ SSH 主機：$($script:SshTarget)
 "@
     $confirmation = Confirm-BackupRequest -Message $confirmationMessage
     if ($confirmation -ne [System.Windows.Forms.DialogResult]::OK) {
+        $script:Controls.SshPasswordInput.Clear()
         $script:Controls.ActivityLabel.Text = '正式環境備份：已取消'
         Add-OperationLog -Operation '正式環境備份' -Status '使用者取消；未建立背景工作或呼叫 SSH'
         return
@@ -1906,6 +2156,7 @@ SSH 主機：$($script:SshTarget)
         $script:OperationState.VerifiedBackupDirectory -match '[\x00-\x1F\x7F]' -or
         $script:OperationState.VerifiedBackupHost -cne $script:ProductionSshHost -or
         $script:OperationState.VerifiedBackupUser -cne $script:ProductionSshUser) {
+        $script:Controls.SshPasswordInput.Clear()
         $script:Controls.ActivityLabel.Text = '正式環境備份：已阻擋（目的地未驗證）'
         Add-OperationLog -Operation '正式環境備份' -Status '已阻擋；備份目的地未驗證' -Output @(
             "SSH 主機：$($script:SshTarget)",
@@ -1916,8 +2167,43 @@ SSH 主機：$($script:SshTarget)
         return
     }
 
-    Start-BackgroundOperation -Operation '正式環境備份' -Action 'Backup' `
-        -BackupDestination $script:OperationState.VerifiedBackupDirectory
+    $passwordCharacters = $script:Controls.SshPasswordInput.Text.ToCharArray()
+    $script:Controls.SshPasswordInput.Clear()
+    if ($passwordCharacters.Length -eq 0) {
+        $script:Controls.SshAuthenticationValue.Text = '尚未連線：請輸入密碼'
+        $script:Controls.ActivityLabel.Text = '正式環境備份：請輸入 SSH 密碼'
+        $script:Controls.SshPasswordInput.Focus()
+        return
+    }
+
+    $securePassword = $null
+    try {
+        $securePassword = New-Object System.Security.SecureString
+        foreach ($character in $passwordCharacters) {
+            $securePassword.AppendChar($character)
+        }
+    } catch {
+        if ($securePassword) {
+            Clear-SshCredential -SecurePassword $securePassword
+        }
+        throw
+    } finally {
+        [Array]::Clear($passwordCharacters, 0, $passwordCharacters.Length)
+        $passwordCharacters = $null
+    }
+
+    $script:Controls.SshAuthenticationValue.Text = '備份 SSH 認證中…'
+    try {
+        Start-BackgroundOperation -Operation '正式環境備份' -Action 'Backup' `
+            -BackupDestination $script:OperationState.VerifiedBackupDirectory `
+            -SshHost $script:ProductionSshHost -SshUsername $script:ProductionSshUser `
+            -SshPassword $securePassword
+        $securePassword = $null
+    } finally {
+        if ($securePassword) {
+            Clear-SshCredential -SecurePassword $securePassword
+        }
+    }
 }
 
 function Set-OperationButtonsEnabled {
@@ -2011,6 +2297,8 @@ function Start-BackgroundOperation {
         [string]$RestoreConfirmation,
         [switch]$RestoreTestMode,
         [scriptblock]$RestoreRemoteExecutor,
+        [switch]$BackupTestMode,
+        [scriptblock]$BackupMockExecutor,
         [string]$SshHost,
         [string]$SshUsername,
         [System.Security.SecureString]$SshPassword
@@ -2029,6 +2317,11 @@ function Start-BackgroundOperation {
         ($RestoreTestMode -or $null -ne $RestoreRemoteExecutor)) {
         throw 'Restore 測試執行器只允許 RestoreList 或 Restore 背景工作。'
     }
+    if (($Action -eq 'Backup' -and $BackupTestMode -and $null -eq $BackupMockExecutor) -or
+        ($Action -eq 'Backup' -and -not $BackupTestMode -and $null -ne $BackupMockExecutor) -or
+        ($Action -ne 'Backup' -and ($BackupTestMode -or $null -ne $BackupMockExecutor))) {
+        throw 'Backup 測試模式與 Mock 執行器設定無效；拒絕建立背景工作。'
+    }
     if ($Action -eq 'Backup' -and (
         [string]::IsNullOrWhiteSpace($BackupDestination) -or
         $BackupDestination -cnotmatch '\A/' -or
@@ -2036,12 +2329,20 @@ function Start-BackgroundOperation {
         $BackupDestination -match '[\x00-\x1F\x7F]' -or
         $script:OperationState.VerifiedBackupDirectory -cne $BackupDestination -or
         $script:OperationState.VerifiedBackupHost -cne $script:ProductionSshHost -or
-        $script:OperationState.VerifiedBackupUser -cne $script:ProductionSshUser
+        $script:OperationState.VerifiedBackupUser -cne $script:ProductionSshUser -or
+        (-not $BackupTestMode -and (
+            $SshHost -cne $script:ProductionSshHost -or
+            $SshUsername -cne $script:ProductionSshUser -or
+            $null -eq $SshPassword
+        ))
     )) {
         $script:Controls.ActivityLabel.Text = "$Operation：已阻擋（目的地驗證狀態無效）"
         Add-OperationLog -Operation $Operation -Status '已阻擋；目的地與有效驗證狀態不一致' -Output @(
             '未建立背景工作或呼叫 SSH。'
         )
+        if ($SshPassword) {
+            Clear-SshCredential -SecurePassword $SshPassword
+        }
         return
     }
     if ($Action -eq 'Restore' -and (
@@ -2110,6 +2411,12 @@ function Start-BackgroundOperation {
         } else {
             $null
         }
+        BackupTestMode = [bool]$BackupTestMode
+        BackupMockExecutorScript = if ($BackupMockExecutor) {
+            $BackupMockExecutor.ToString()
+        } else {
+            $null
+        }
         BackupSshPath = $script:SshPath
         BackupSshKey = $script:SshKey
         BackupSshTarget = $script:SshTarget
@@ -2137,6 +2444,8 @@ function Start-BackgroundOperation {
         'ConvertTo-PosixShellSingleQuotedString',
         'Clear-SshCredential',
         'New-VerifiedSshClient',
+        'Invoke-BackupSshOperation',
+        'Clear-BackupSshResources',
         'Stop-StartedProcessTree',
         'Invoke-CapturedProcess',
         'Invoke-ProductionOpenSsh',
@@ -2183,6 +2492,21 @@ try {
     if ($workerRequest.RestoreTestMode -and $null -eq $restoreRemoteExecutor) {
         throw 'Restore 測試模式未在背景 Runspace 收到 Mock 遠端執行器；拒絕執行。'
     }
+    $backupMockExecutor = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$workerRequest.BackupMockExecutorScript)) {
+        $backupMockExecutor = [scriptblock]::Create($workerRequest.BackupMockExecutorScript)
+    }
+    if ($workerRequest.Action -eq 'Backup' -and (
+        ($workerRequest.BackupTestMode -and
+            ($null -eq $backupMockExecutor -or $backupMockExecutor.Ast.EndBlock.Statements.Count -eq 0)) -or
+        (-not $workerRequest.BackupTestMode -and $null -ne $backupMockExecutor)
+    )) {
+        throw 'Backup 背景工作測試模式與 Mock 執行器設定無效；拒絕執行。'
+    }
+    if ($workerRequest.Action -ne 'Backup' -and
+        ($workerRequest.BackupTestMode -or $null -ne $backupMockExecutor)) {
+        throw 'Backup 測試執行器只允許 Backup 背景工作。'
+    }
     $workContext.Stage = '解析背景工作請求完成'
     switch ($workerRequest.Action) {
         'LocalStatus' {
@@ -2221,16 +2545,18 @@ try {
                 $destination -match '[\x00-\x1F\x7F]') {
                 throw '有效備份目的地未驗證；拒絕啟動 SSH。'
             }
-            if (-not (Test-Path -LiteralPath $script:SshPath -PathType Leaf) -or
-                -not (Test-Path -LiteralPath $script:SshKey -PathType Leaf)) {
-                throw '正式環境 SSH 程式或金鑰不存在；未啟動 SSH。'
+            if (-not $workerRequest.BackupTestMode -and $null -eq $workerRequest.SshPassword) {
+                throw 'Backup SSH 密碼未提供；拒絕建立 SSH 連線。'
             }
 
             $quotedDestination = ConvertTo-PosixShellSingleQuotedString -Value $destination
             $remoteCommand = "cd -- '$($script:ProductionRoot)' && BACKUP_DIR=$quotedDestination exec bash '$($script:BackupScript)'"
-            $result = Invoke-ProductionOpenSsh -RemoteCommand $remoteCommand `
-                -Context $workContext `
-                -Stage '執行正式環境 backup.sh' -TimeoutMilliseconds 3600000
+            $workContext.Stage = '以 SSH.NET 執行正式環境 backup.sh'
+            $result = Invoke-BackupSshOperation -HostName $workerRequest.SshHost `
+                -Username $workerRequest.SshUsername -SecurePassword $workerRequest.SshPassword `
+                -RemoteCommand $remoteCommand -Context $workContext `
+                -SshAssembly $script:SshNetAssembly -TimeoutMilliseconds 3600000 `
+                -TestMode ([bool]$workerRequest.BackupTestMode) -MockExecutor $backupMockExecutor
             break
         }
         'RestoreList' {
@@ -2371,11 +2697,18 @@ try {
                         } elseif (-not $workContext.HostKeyVerified) {
                             throw 'HostKeyVerificationUnconfirmed'
                         } else {
-                            $openSshAuthentication = Test-ProductionOpenSshAuthentication -Context $workContext
-                            if ($openSshAuthentication.Status -ne 'Succeeded') {
-                                $sshResult.AuthStatus = $openSshAuthentication.Status
+                            $secondaryAuthentication = if ($workerRequest.Action -eq 'SshTest') {
+                                Test-ProductionOpenSshAuthentication -Context $workContext
+                            } else {
+                                [pscustomobject]@{
+                                    Status = 'Succeeded'
+                                    Reason = 'SSH.NET 密碼認證及固定主機指紋驗證成功。'
+                                }
+                            }
+                            if ($secondaryAuthentication.Status -ne 'Succeeded') {
+                                $sshResult.AuthStatus = $secondaryAuthentication.Status
                                 $sshResult.DestinationStatus = 'NotRun'
-                                $sshResult.FailureStage = switch ($openSshAuthentication.Status) {
+                                $sshResult.FailureStage = switch ($secondaryAuthentication.Status) {
                                     'HostKeyRejected' { 'HostKeyVerification' }
                                     'TimedOut' { 'OpenSshAuthentication' }
                                     'Cancelled' { 'Cancelled' }
@@ -2384,15 +2717,15 @@ try {
                                     'ExecutionError' { 'ProcessExecution' }
                                     default { 'OpenSshAuthentication' }
                                 }
-                                $sshResult.Reason = $openSshAuthentication.Reason
-                                if ($openSshAuthentication.Status -eq 'HostKeyRejected') {
+                                $sshResult.Reason = $secondaryAuthentication.Reason
+                                if ($secondaryAuthentication.Status -eq 'HostKeyRejected') {
                                     $workContext.SshDiagnosticStage = 'HostKeyVerification'
                                 }
                             } else {
                                 $sshResult.AuthStatus = 'Succeeded'
-                                $sshResult.Reason = 'OpenSSH 私鑰認證成功，且 SSH.NET 固定主機指紋驗證成功。'
+                                $sshResult.Reason = $secondaryAuthentication.Reason
                             }
-                            if ($openSshAuthentication.Status -eq 'Succeeded' -and
+                            if ($secondaryAuthentication.Status -eq 'Succeeded' -and
                                 $workerRequest.Action -eq 'BackupDestinationPreflight') {
                                 $workContext.Stage = '唯讀檢查備份目的地'
                                 $workContext.SshDiagnosticStage = 'Other'
@@ -2627,9 +2960,11 @@ try {
                 $sshResult.AuthStatus
             }
             $sshResult.HostKeyVerified = [bool]$workContext.HostKeyVerified
+            $sshResult.SshNetAuthenticationSucceeded = [bool]$workContext.SshAuthenticationSucceeded
             $sshResult.OpenSshAuthenticationSucceeded = $workContext.OpenSshAuthenticationStatus -eq 'Succeeded'
             $sshResult.AuthenticationSucceeded = $sshResult.HostKeyVerified -and
-                $sshResult.OpenSshAuthenticationSucceeded
+                $sshResult.SshNetAuthenticationSucceeded -and
+                ($workerRequest.Action -ne 'SshTest' -or $sshResult.OpenSshAuthenticationSucceeded)
             $result = [pscustomobject]$sshResult
             break
         }
@@ -2692,7 +3027,23 @@ try {
     throw
 } finally {
     if ($workContext -is [System.Collections.IDictionary]) {
-        if ($workContext.SshClient) {
+        if ($workerRequest.Action -eq 'Backup') {
+            $cleanupSucceeded = Clear-BackupSshResources -Context $workContext `
+                -SecurePassword $workerRequest.SshPassword
+            $workerRequest.SshPassword = $null
+            $workContext.SshPassword = $null
+            if ($result) {
+                $result | Add-Member -NotePropertyName CleanupSucceeded `
+                    -NotePropertyValue $cleanupSucceeded -Force
+                if (-not $cleanupSucceeded) {
+                    $result.ExitCode = $null
+                    $result.Stdout = ''
+                    $result.Stderr = ''
+                    $result.ExecutionUnconfirmed = $true
+                    $result.FailureStage = 'Cleanup'
+                }
+            }
+        } elseif ($workContext.SshClient) {
             try {
                 if ($workContext.SshClient.IsConnected) {
                     try {
@@ -2723,7 +3074,7 @@ try {
                 $workContext.SshAuthentication = $null
             }
         }
-        if ($workerRequest.SshPassword) {
+        if ($workerRequest.Action -ne 'Backup' -and $workerRequest.SshPassword) {
             try {
                 Clear-SshCredential -SecurePassword $workerRequest.SshPassword
             } catch {
@@ -2786,7 +3137,7 @@ try {
             if ($completionPayload.Error) {
                 $workError = $completionPayload.Error
                 $exceptionDetails = New-Object System.Collections.Generic.List[string]
-                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
+                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
                     $exceptionDetails.Add('SSH 工作未完成；為避免認證資料外洩，不記錄例外內容或堆疊。')
                     $diagnosticStage = if ($workContext.SshDiagnosticStage -in @(
                         'SshClientInitialization',
@@ -2802,7 +3153,13 @@ try {
                     } else {
                         'Other'
                     }
-                    $authenticationConfirmed = if (
+                    $authenticationConfirmed = if ($completedRequest.Action -in @('Backup', 'BackupDestinationPreflight')) {
+                        if ($workContext.SshAuthenticationSucceeded -and $workContext.HostKeyVerified) {
+                            '是'
+                        } else {
+                            '否（未確認）'
+                        }
+                    } elseif (
                         $workContext.SshAuthenticationSucceeded -and
                         $workContext.OpenSshAuthenticationStatus -eq 'Succeeded'
                     ) { '是' } else { '否（未確認）' }
@@ -2871,7 +3228,28 @@ try {
                     if ($completedRequest.Action -eq 'RestoreList') {
                         $completedUi.RestoreStateValue.Text = '遠端備份列舉已取消'
                     }
-                    if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
+                    if ($completedRequest.Action -eq 'Backup') {
+                        $completedUi.ActivityLabel.Text = if ($workContext.BackupCommandAttempted) {
+                            "$($completedRequest.Operation)：遠端結果未確認"
+                        } else {
+                            "$($completedRequest.Operation)：已取消"
+                        }
+                        $cancelStatus = if ($workContext.BackupCommandAttempted) {
+                            '取消請求；遠端結果未確認'
+                        } else {
+                            '已取消；未送出備份命令'
+                        }
+                        & $completionAddOperationLog -Operation $completedRequest.Operation `
+                            -Status $cancelStatus -Output @(
+                                '認證資料及原始 SSH 例外內容不記錄。',
+                                $(if ($workContext.BackupCommandAttempted) {
+                                    '備份命令可能已在遠端開始；不得假設遠端已停止或重試。'
+                                } else {
+                                    '備份命令未送出。'
+                                })
+                            )
+                    }
+                    if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
                         $completedUi.SshAuthenticationValue.Text = '已取消'
                         if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
                             $completedState.VerifiedBackupDirectory = $null
@@ -2881,11 +3259,30 @@ try {
                             $completedUi.BackupStateValue.Text = '目的地預檢已取消'
                         }
                     }
-                    $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：已取消"
-                    & $completionAddOperationLog -Operation $completedRequest.Operation -Status '已取消並確認無活動子程序' -Output @(
-                        $exceptionDetails.ToArray(),
-                        "執行階段：$($workContext.Stage)"
-                    )
+                    if ($completedRequest.Action -ne 'Backup') {
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：已取消"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation -Status '已取消並確認無活動子程序' -Output @(
+                            $exceptionDetails.ToArray(),
+                            "執行階段：$($workContext.Stage)"
+                        )
+                    }
+                } elseif ($completedRequest.Action -eq 'Backup') {
+                    $backupUnconfirmed = [bool]$workContext.BackupCommandAttempted
+                    $completedUi.ActivityLabel.Text = if ($backupUnconfirmed) {
+                        "$($completedRequest.Operation)：遠端結果未確認"
+                    } else {
+                        "$($completedRequest.Operation)：失敗"
+                    }
+                    & $completionAddOperationLog -Operation $completedRequest.Operation `
+                        -Status $(if ($backupUnconfirmed) { '結果未確認' } else { '失敗；未送出備份命令' }) `
+                        -Output @(
+                            $exceptionDetails.ToArray(),
+                            $(if ($backupUnconfirmed) {
+                                'SSH 中斷後遠端備份可能仍在執行或已完成；不得假設已停止或重試。'
+                            } else {
+                                '未確認 SSH 認證完成；備份命令未送出。'
+                            })
+                        )
                 } elseif ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
                     $completedUi.SshAuthenticationValue.Text = '失敗：SSH 工作未完成'
                     if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
@@ -3169,6 +3566,21 @@ try {
                 }
                 'Backup' {
                     $result = $completionPayload.Result
+                    if ($workContext.CancelRequested -and $workContext.BackupCommandAttempted) {
+                        $result.ExitCode = $null
+                        $result.Stdout = ''
+                        $result.Cancelled = $true
+                        $result.ExecutionUnconfirmed = $true
+                    }
+                    $completedUi.SshAuthenticationValue.Text = if (
+                        $workContext.SshAuthenticationSucceeded -and $workContext.HostKeyVerified
+                    ) {
+                        '成功：SSH.NET 密碼認證及固定主機指紋驗證通過'
+                    } elseif ($workContext.CancelRequested) {
+                        '已取消'
+                    } else {
+                        '失敗：SSH 認證未完成'
+                    }
                     $completion = Get-BackupCompletion -Result $result `
                         -ExpectedDirectory $completedRequest.BackupDestination
                     $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$($completion.ActivityText)"
@@ -3273,7 +3685,7 @@ try {
                 { $_ -in @('SshTest', 'BackupDestinationPreflight') } {
                     $result = $completionPayload.Result
                     $completedUi.SshAuthenticationValue.Text = switch ($result.AuthStatus) {
-                        'Succeeded' { '成功：OpenSSH 私鑰認證及固定主機指紋驗證通過' }
+                        'Succeeded' { '成功：SSH 認證及固定主機指紋驗證通過' }
                         'AuthenticationFailed' { '失敗：SSH 密碼或私鑰認證失敗' }
                         'HostKeyRejected' { '失敗：主機金鑰未知或不符' }
                         'TimedOut' { '逾時：SSH 連線未完成' }
@@ -3285,17 +3697,17 @@ try {
                         $destinationVerified = $result.DestinationStatus -eq 'Verified'
                         $cleanupSucceeded = [bool]$result.CleanupSucceeded
                         $hostKeyVerified = [bool]$result.HostKeyVerified
-                        $privateKeyVerified = [bool]$result.OpenSshAuthenticationSucceeded
+                        $passwordAuthenticationVerified = [bool]$result.SshNetAuthenticationSucceeded
                         $hostMatches = $completedRequest.SshHost -ceq $completionProductionSshHost
                         $usernameMatches = $completedRequest.SshUsername -ceq $completionProductionSshUser
                         $preflightSucceeded = $destinationVerified -and
-                            $cleanupSucceeded -and $hostKeyVerified -and $privateKeyVerified -and
+                            $cleanupSucceeded -and $hostKeyVerified -and $passwordAuthenticationVerified -and
                             $hostMatches -and $usernameMatches
                         $preflightDiagnostics = @(
                             "DestinationStatus 為 Verified：$(if ($destinationVerified) { '是' } else { '否' })",
                             "CleanupSucceeded 為 true：$(if ($cleanupSucceeded) { '是' } else { '否' })",
                             "SSH.NET 固定主機指紋驗證：$(if ($hostKeyVerified) { '通過' } else { '未通過' })",
-                            "OpenSSH 私鑰及 known_hosts 驗證：$(if ($privateKeyVerified) { '通過' } else { '未通過' })",
+                            "SSH.NET 密碼認證：$(if ($passwordAuthenticationVerified) { '通過' } else { '未通過' })",
                             "主機比對：$(if ($hostMatches) { '通過' } else { '未通過' })",
                             "帳號比對：$(if ($usernameMatches) { '通過' } else { '未通過' })",
                             "最終成功判定：$(if ($preflightSucceeded) { '通過' } else { '未通過' })"
@@ -3310,7 +3722,7 @@ try {
                             $completedUi.ActivityLabel.Text = '備份目的地唯讀驗證成功；尚未執行備份'
                             & $completionAddOperationLog -Operation $completedRequest.Operation -Status '驗證成功；尚未執行備份' `
                                 -Output ($preflightDiagnostics + @(
-                                    'OpenSSH 私鑰認證、StrictHostKeyChecking 及 SSH.NET 固定主機指紋驗證均成功。',
+                                    'SSH.NET 密碼認證及固定主機指紋驗證均成功。',
                                     "備份目的地實際路徑：$($result.DestinationCanonical)",
                                     "backup.sh 使用的 BACKUP_DIR：$($result.Destination)",
                                     "BACKUP_DIR 來源：$($result.DestinationSource)",
@@ -3394,7 +3806,7 @@ try {
                 }
             }
         } catch {
-            if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
+            if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
                 $completedUi.SshAuthenticationValue.Text = '失敗：完成處理未能確認'
                 $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
                 $completedUi.BackupStateValue.Text = '目的地預檢失敗'
@@ -3412,12 +3824,12 @@ try {
             }
         } finally {
             try {
-                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
-                    if ($completedRequest.SshPassword) {
+                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
+                    if ($completedRequest.SshPassword -and $completedRequest.Action -ne 'Backup') {
                         Clear-SshCredential -SecurePassword $completedRequest.SshPassword
-                        $completedRequest.SshPassword = $null
-                        $workContext.SshPassword = $null
                     }
+                    $completedRequest.SshPassword = $null
+                    $workContext.SshPassword = $null
                     $completedUi.SshPasswordInput.Clear()
                 }
                 if ($workContext.PowerShell) {
@@ -3430,7 +3842,7 @@ try {
                     $workContext.Runspace.Dispose()
                 }
             } catch {
-                if ($completedRequest.Action -in @('ReadOnlySshPreflight', 'SshTest', 'BackupDestinationPreflight')) {
+                if ($completedRequest.Action -in @('ReadOnlySshPreflight', 'SshTest', 'BackupDestinationPreflight', 'Backup')) {
                     & $completionAddOperationLog -Operation $completedRequest.Operation `
                         -Status '背景工作資源清理失敗' -Output @(
                             '清理失敗；例外訊息與堆疊未記錄。'
@@ -3490,7 +3902,7 @@ try {
         $script:OperationState.ActiveOperation = $null
         Set-OperationButtonsEnabled -Enabled $true
         $script:Controls.ActivityLabel.Text = "$Operation：無法啟動"
-        if ($Action -in @('SshTest', 'BackupDestinationPreflight')) {
+        if ($Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
             Add-OperationLog -Operation $Operation -Status 'SSH 工作無法啟動' -Output @(
                 '診斷階段：Other',
                 '錯誤類別：Failed',
