@@ -409,13 +409,13 @@ function Get-PreflightSshExceptionCategory {
 }
 
 function Clear-SshCredential {
-    param([System.Security.SecureString]$Credential)
+    param([System.Security.SecureString]$SecurePassword)
 
-    if ($null -ne $Credential) {
+    if ($null -ne $SecurePassword) {
         try {
-            $Credential.Clear()
+            $SecurePassword.Clear()
         } finally {
-            $Credential.Dispose()
+            $SecurePassword.Dispose()
         }
     }
 }
@@ -527,10 +527,10 @@ function Request-ExactRestoreConfirmation {
     $label.Margin = New-Object System.Windows.Forms.Padding(8)
     $layout.Controls.Add($label, 0, 0)
 
-    $input = New-Object System.Windows.Forms.TextBox
-    $input.Dock = [System.Windows.Forms.DockStyle]::Top
-    $input.Margin = New-Object System.Windows.Forms.Padding(8)
-    $layout.Controls.Add($input, 0, 1)
+    $restoreTextBox = New-Object System.Windows.Forms.TextBox
+    $restoreTextBox.Dock = [System.Windows.Forms.DockStyle]::Top
+    $restoreTextBox.Margin = New-Object System.Windows.Forms.Padding(8)
+    $layout.Controls.Add($restoreTextBox, 0, 1)
 
     $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $buttonPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::RightToLeft
@@ -553,7 +553,7 @@ function Request-ExactRestoreConfirmation {
 
     try {
         if ($dialog.ShowDialog($script:Controls.Form) -eq [System.Windows.Forms.DialogResult]::OK) {
-            return [string]$input.Text
+            return [string]$restoreTextBox.Text
         }
         return $null
     } finally {
@@ -597,6 +597,25 @@ function Request-RestoreConfirmation {
         return
     }
 
+    $servicesStoppedConfirmation = [System.Windows.Forms.MessageBox]::Show(
+        $script:Controls.Form,
+        "啟動還原前，請先停止以下兩個應用服務：`r`n- pets-backend.service`r`n- pets-frontend.service`r`n`r`n請確認上述兩個服務均已停止。是否確認兩個服務都已停止並繼續？",
+        '確認應用服務已停止',
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning,
+        [System.Windows.Forms.MessageBoxDefaultButton]::Button2
+    )
+    if ($servicesStoppedConfirmation -ne [System.Windows.Forms.DialogResult]::Yes) {
+        $script:Controls.RestoreStateValue.Text = '還原已取消：未確認應用服務均已停止'
+        Add-OperationLog -Operation '正式環境還原' `
+            -Status '停服確認未通過；未建立還原工作或呼叫還原命令' -Output @(
+                '使用者未確認 pets-backend.service 與 pets-frontend.service 均已停止。',
+                "目標資料庫：$DatabaseName",
+                "備份 bundle：$BundlePath"
+            )
+        return
+    }
+
     $restoreConfirmation = Request-ExactRestoreConfirmation
     if ($restoreConfirmation -cne 'RESTORE') {
         $script:Controls.RestoreStateValue.Text = '還原已取消：未輸入精確 RESTORE'
@@ -619,7 +638,7 @@ function New-VerifiedSshClient {
     param(
         [Parameter(Mandatory = $true)][string]$HostName,
         [Parameter(Mandatory = $true)][string]$Username,
-        [Parameter(Mandatory = $true)][System.Security.SecureString]$Credential,
+        [Parameter(Mandatory = $true)][System.Security.SecureString]$SecurePassword,
         [Parameter(Mandatory = $true)][System.Reflection.Assembly]$SshAssembly,
         [Parameter(Mandatory = $true)][hashtable]$Context
     )
@@ -627,7 +646,7 @@ function New-VerifiedSshClient {
     $passwordPointer = [IntPtr]::Zero
     $password = $null
     try {
-        $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Credential)
+        $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
         $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
         $authenticationType = $SshAssembly.GetType('Renci.SshNet.PasswordAuthenticationMethod', $true)
         $authenticationConstructor = $authenticationType.GetConstructor([type[]]@([string], [string]))
@@ -721,7 +740,9 @@ function Stop-StartedProcessTree {
             try {
                 $stopper.Kill()
                 [void]$stopper.WaitForExit(3000)
-            } catch { }
+            } catch {
+                return $false
+            }
             return $false
         }
         [void]$stdoutTask.Result
@@ -1357,6 +1378,7 @@ function Write-BackupButtonDiagnostic {
     try {
         Add-OperationLog -Operation 'Backup 按鈕診斷' -Status $Status -Output $Output
     } catch {
+        return
     }
 }
 
@@ -1546,10 +1568,12 @@ function Set-OperationButtonsEnabled {
         try {
             $isBusy = [bool]$script:OperationState.IsBusy
         } catch {
+            $isBusy = 'unavailable'
         }
         try {
             $backupEnabledBefore = $script:Controls.BackupButton.Enabled
         } catch {
+            $backupEnabledBefore = 'unavailable'
         }
         $destinationVerified = -not [string]::IsNullOrWhiteSpace($script:OperationState.VerifiedBackupDirectory)
         $hostMatches = $script:OperationState.VerifiedBackupHost -ceq $script:ProductionSshHost
@@ -1559,6 +1583,7 @@ function Set-OperationButtonsEnabled {
         try {
             $backupEnabledAfter = $script:Controls.BackupButton.Enabled
         } catch {
+            $backupEnabledAfter = 'unavailable'
         }
     } catch {
         try {
@@ -1566,6 +1591,7 @@ function Set-OperationButtonsEnabled {
             try {
                 $backupEnabledAfter = $script:Controls.BackupButton.Enabled
             } catch {
+                $backupEnabledAfter = 'unavailable'
             }
             Write-BackupButtonDiagnostic -Status '按鈕狀態更新例外' -Output @(
                 "ExceptionType: $exceptionType",
@@ -1635,7 +1661,7 @@ function Start-BackgroundOperation {
     if ($script:OperationState.IsBusy -or
         ($script:OperationState.ActiveOperation -and $script:OperationState.ActiveOperation.StopUnconfirmed)) {
         if ($SshPassword) {
-            Clear-SshCredential -Credential $SshPassword
+            Clear-SshCredential -SecurePassword $SshPassword
         }
         return
     }
@@ -1900,7 +1926,7 @@ try {
                     $workContext.Stage = '建立 SSH 密碼認證連線'
                     $workContext.SshDiagnosticStage = 'SshClientInitialization'
                     $client = New-VerifiedSshClient -HostName $workerRequest.SshHost `
-                        -Username $workerRequest.SshUsername -Credential $workerRequest.SshPassword `
+                        -Username $workerRequest.SshUsername -SecurePassword $workerRequest.SshPassword `
                         -SshAssembly $script:SshNetAssembly -Context $workContext
                     if ($workContext.CancelRequested) {
                         $workContext.SshDiagnosticStage = 'CancelledBeforeConnection'
@@ -2279,7 +2305,7 @@ try {
         }
         if ($workerRequest.SshPassword) {
             try {
-                Clear-SshCredential -Credential $workerRequest.SshPassword
+                Clear-SshCredential -SecurePassword $workerRequest.SshPassword
             } catch {
                 $workContext.SshCleanupFailed = $true
             } finally {
@@ -2330,15 +2356,15 @@ try {
     $completionProductionSshUser = $script:ProductionSshUser
     $completionSshTarget = $script:SshTarget
     $completionHandler = {
-        param($eventArgs)
+        param($completionPayload)
         $workContext = $completedRequest.Context
         $closeAfterCompletion = $workContext.CloseWhenDone
         $unconfirmedProcess = $workContext.Process -and $workContext.StopUnconfirmed
         $nextPush = $null
         $nextRestore = $null
         try {
-            if ($eventArgs.Error) {
-                $workError = $eventArgs.Error
+            if ($completionPayload.Error) {
+                $workError = $completionPayload.Error
                 $exceptionDetails = New-Object System.Collections.Generic.List[string]
                 if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
                     $exceptionDetails.Add('SSH 工作未完成；為避免認證資料外洩，不記錄例外內容或堆疊。')
@@ -2509,7 +2535,7 @@ try {
             } else {
                 switch ($completedRequest.Action) {
                 'LocalStatus' {
-                    $status = $eventArgs.Result
+                    $status = $completionPayload.Result
                     $completedState.LocalHeadSha = $status.Head
                     $completedUi.BranchValue.Text = $status.Branch
                     $completedUi.HeadValue.Text = $status.Head
@@ -2534,7 +2560,7 @@ try {
                     & $completionAddOperationLog -Operation $completedRequest.Operation -Status '成功' -Output $details
                 }
                 'GitHubMaster' {
-                    $completedState.GitHubMasterSha = [string]$eventArgs.Result
+                    $completedState.GitHubMasterSha = [string]$completionPayload.Result
                     $completedUi.GitHubShaValue.Text = $completedState.GitHubMasterSha
                     if ($completedState.LocalHeadSha) {
                         $same = $completedState.LocalHeadSha -ceq $completedState.GitHubMasterSha
@@ -2550,7 +2576,7 @@ try {
                     )
                 }
                 'DeploymentPreflight' {
-                    $preflight = $eventArgs.Result
+                    $preflight = $completionPayload.Result
                     $completedUi.BranchValue.Text = $preflight.Branch
                     $completedUi.HeadValue.Text = $preflight.Head
                     $completedUi.WorktreeValue.Text = if ($null -eq $preflight.IsClean) {
@@ -2595,7 +2621,7 @@ try {
                     }
                 }
                 'PushMasterPreflight' {
-                    $preflight = $eventArgs.Result
+                    $preflight = $completionPayload.Result
                     $confirmation = [System.Windows.Forms.MessageBox]::Show(
                         $completedUi.Form,
                         "推送前檢查通過。`r`n`r`n本機分支：$($preflight.Branch)`r`n本機 HEAD：$($preflight.Head)`r`nGitHub origin/master：$($preflight.RemoteHead)`r`n`r`n即將執行：git push origin master`r`n`r`n不會自動建立 commit，也不會自動 pull、merge、rebase、reset 或 force push。`r`n`r`n是否繼續？",
@@ -2624,7 +2650,7 @@ try {
                     }
                 }
                 'PushMaster' {
-                    $result = $eventArgs.Result
+                    $result = $completionPayload.Result
                     $output = @(& $completionFormatProcessOutput -Result $result.ProcessResult)
                     if ($result.Phase -eq 'PushUnconfirmed') {
                         $status = if ($result.ProcessResult.TimedOut) { '逾時；結果未確認' } else { '取消；結果未確認' }
@@ -2665,7 +2691,7 @@ try {
                     }
                 }
                 'Tests' {
-                    $result = $eventArgs.Result
+                    $result = $completionPayload.Result
                     $output = @(& $completionFormatProcessOutput -Result $result)
                     if ($result.TimedOut) {
                         $timeoutMessage = "$($completedRequest.Operation) 的 $($result.Stage) 逾時（$($result.TimeoutSeconds) 秒）；已停止本機程序樹。"
@@ -2684,7 +2710,7 @@ try {
                     }
                 }
                 'Backup' {
-                    $result = $eventArgs.Result
+                    $result = $completionPayload.Result
                     $completion = Get-BackupCompletion -Result $result `
                         -ExpectedDirectory $completedRequest.BackupDestination
                     $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$($completion.ActivityText)"
@@ -2692,7 +2718,7 @@ try {
                         -Status $completion.Status -Output $completion.Output
                 }
                 'RestoreList' {
-                    $result = $eventArgs.Result
+                    $result = $completionPayload.Result
                     if ($result.TimedOut) {
                         $completedUi.RestoreStateValue.Text = '遠端備份列舉逾時'
                         $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：逾時"
@@ -2733,7 +2759,7 @@ try {
                     }
                 }
                 'Restore' {
-                    $result = $eventArgs.Result
+                    $result = $completionPayload.Result
                     $output = @(& $completionFormatProcessOutput -Result $result)
                     $successMarker = $result.ExitCode -eq 0 -and
                         $result.Stdout -cmatch '(?m)^\[restore\.sh SUCCESS\] Database and \d+ Contract PDF file\(s\) restored and verified\.$'
@@ -2789,7 +2815,7 @@ try {
                     }
                 }
                 { $_ -in @('SshTest', 'BackupDestinationPreflight') } {
-                    $result = $eventArgs.Result
+                    $result = $completionPayload.Result
                     $completedUi.SshAuthenticationValue.Text = switch ($result.AuthStatus) {
                         'Succeeded' { '成功：OpenSSH 私鑰認證及固定主機指紋驗證通過' }
                         'AuthenticationFailed' { '失敗：SSH 密碼或私鑰認證失敗' }
@@ -2932,7 +2958,7 @@ try {
             try {
                 if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
                     if ($completedRequest.SshPassword) {
-                        Clear-SshCredential -Credential $completedRequest.SshPassword
+                        Clear-SshCredential -SecurePassword $completedRequest.SshPassword
                         $completedRequest.SshPassword = $null
                         $workContext.SshPassword = $null
                     }
@@ -3032,7 +3058,7 @@ try {
             $context.Runspace = $null
         }
         if ($request.SshPassword) {
-            Clear-SshCredential -Credential $request.SshPassword
+            Clear-SshCredential -SecurePassword $request.SshPassword
             $request.SshPassword = $null
             $context.SshPassword = $null
             $script:Controls.SshPasswordInput.Clear()
@@ -3085,7 +3111,7 @@ function Start-SshUiOperation {
             $securePassword.AppendChar($character)
         }
     } catch {
-        Clear-SshCredential -Credential $securePassword
+        Clear-SshCredential -SecurePassword $securePassword
         throw
     } finally {
         [Array]::Clear($passwordCharacters, 0, $passwordCharacters.Length)
@@ -3106,7 +3132,7 @@ function Start-SshUiOperation {
         Start-BackgroundOperation -Operation $operation -Action $Action `
             -SshHost $hostName -SshUsername $username -SshPassword $securePassword
     } catch {
-        Clear-SshCredential -Credential $securePassword
+        Clear-SshCredential -SecurePassword $securePassword
         $script:Controls.SshAuthenticationValue.Text = '失敗：無法啟動 SSH 工作'
         if ($Action -eq 'BackupDestinationPreflight') {
             $script:Controls.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
@@ -3407,6 +3433,7 @@ $script:Controls.SshHostInput.Add_TextChanged({
     try {
         $isBusy = [bool]$script:OperationState.IsBusy
     } catch {
+        $isBusy = 'unavailable'
     }
     Write-BackupButtonDiagnostic -Status 'SSH 主機欄位變更' -Output @(
         "IsBusy: $isBusy"
@@ -3426,6 +3453,7 @@ $script:Controls.SshUsernameInput.Add_TextChanged({
     try {
         $isBusy = [bool]$script:OperationState.IsBusy
     } catch {
+        $isBusy = 'unavailable'
     }
     Write-BackupButtonDiagnostic -Status 'SSH 帳號欄位變更' -Output @(
         "IsBusy: $isBusy"
@@ -3446,12 +3474,12 @@ $form.Add_Shown({
 })
 
 $form.Add_FormClosing({
-    param($sender, $eventArgs)
+    param($formSender, $formClosingArgs)
     if ($script:OperationState.AllowClose) {
         return
     }
     if ($script:OperationState.IsBusy) {
-        $eventArgs.Cancel = $true
+        $formClosingArgs.Cancel = $true
         $choice = [System.Windows.Forms.MessageBox]::Show(
             $script:Controls.Form,
             "「$($script:OperationState.ActiveOperation.Operation)」仍在執行。`r`n`r`n是：取消目前操作並在確認停止後關閉`r`n否：繼續等待",
@@ -3475,7 +3503,7 @@ $form.Add_FormClosing({
         return
     }
 
-    $eventArgs.Cancel = $true
+    $formClosingArgs.Cancel = $true
     $choice = [System.Windows.Forms.MessageBox]::Show(
         $script:Controls.Form,
         "先前操作的本機程序尚未確認停止。`r`n`r`n是：再次嘗試停止該程序樹並關閉`r`n否：繼續等待",
@@ -3505,7 +3533,7 @@ $form.Add_FormClosing({
             $context.StderrTask = $null
             $script:OperationState.ActiveOperation = $null
             $script:OperationState.AllowClose = $true
-            $eventArgs.Cancel = $false
+            $formClosingArgs.Cancel = $false
             Add-OperationLog -Operation $context.Operation -Status '已取消並確認停止' `
                 -Output @('已確認本機程序樹停止且輸出管道已排空。')
             return
