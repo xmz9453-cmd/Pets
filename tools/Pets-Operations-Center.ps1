@@ -686,7 +686,7 @@ function Request-RestoreConfirmation {
 
     $confirmation = [System.Windows.Forms.MessageBox]::Show(
         $script:Controls.Form,
-        "目標環境：正式環境`r`n目標主機：$($script:SshTarget)`r`n遠端專案：$($script:ProductionRoot)`r`n目標資料庫：$DatabaseName（讀取遠端 .env；預設 psop_one）`r`n備份 bundle：$BundlePath`r`n`r`n警告：還原會取代資料庫及 Contract PDF。依部署文件，還原前必須先停止應用服務；restore.sh 不會代為停止服務。`r`n`r`n是否繼續至第二次 RESTORE 確認？",
+        "目標環境：正式環境`r`n目標主機：$($script:SshTarget)`r`n遠端專案：$($script:ProductionRoot)`r`n目標資料庫：$DatabaseName（讀取遠端 .env；預設 psop_one）`r`n備份 bundle：$BundlePath`r`n`r`n重大警告：還原會覆寫目標資料庫的現有資料，並取代 Contract PDF 資料；成功後可能清理舊 PDF 目錄。此操作具有破壞性，無法保證恢復至還原前狀態。`r`n`r`n繼續前，請核對所選備份正確，並由你確認 pets-backend.service 與 pets-frontend.service 均已停止。此程式不會自動停止或驗證服務狀態；restore.sh 也不會代為停止服務。`r`n`r`n是否繼續至第二次 RESTORE 確認？",
         '確認正式環境還原',
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Warning,
