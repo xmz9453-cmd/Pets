@@ -1266,6 +1266,166 @@ function Get-DeploymentPreflight {
     }
 }
 
+function Get-ProductionDeploymentStatus {
+    param([Parameter(Mandatory = $true)][hashtable]$Context)
+
+    $unknown = '無法確認'
+    $pathCaveat = '固定路徑尚未獨立確認為 Production 實際使用路徑。'
+    $remoteCommand = "if [ -f /home/zhe/pets-deploy-state/deployment.state ]; then cat -- /home/zhe/pets-deploy-state/deployment.state; else printf '%s\n' 'PETS_DEPLOYMENT_STATE_NOT_FOUND'; exit 44; fi"
+    $result = Invoke-ProductionOpenSsh -RemoteCommand $remoteCommand `
+        -Context $Context -Stage '唯讀查詢 Production 部署狀態' -TimeoutMilliseconds 30000
+
+    if ($result.TimedOut) {
+        return [pscustomobject]@{
+            Outcome = 'Failed'
+            Detail = "Production 狀態查詢逾時；狀態未確認。$pathCaveat"
+            Status = $unknown
+            Commit = $unknown
+            Verification = $unknown
+            Timestamp = $unknown
+        }
+    }
+    if ($result.Cancelled) {
+        return [pscustomobject]@{
+            Outcome = 'Cancelled'
+            Detail = "Production 狀態查詢已取消；狀態未確認。$pathCaveat"
+            Status = $unknown
+            Commit = $unknown
+            Verification = $unknown
+            Timestamp = $unknown
+        }
+    }
+
+    $stdout = [string]$result.Stdout
+    $outputLines = @($stdout -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+    if ($result.ExitCode -eq 44 -and
+        $outputLines.Count -eq 1 -and
+        $outputLines[0] -ceq 'PETS_DEPLOYMENT_STATE_NOT_FOUND') {
+        return [pscustomobject]@{
+            Outcome = 'Unavailable'
+            Detail = "設定路徑未回報可讀的普通狀態檔；可能不存在或無法檢查，Production 狀態未確認。$pathCaveat"
+            Status = $unknown
+            Commit = $unknown
+            Verification = $unknown
+            Timestamp = $unknown
+        }
+    }
+    if ($result.ExitCode -ne 0) {
+        $detail = "遠端狀態查詢失敗（Exit Code $($result.ExitCode)）；不能據此判定狀態檔不存在。"
+        $stderr = Protect-SensitiveText -Text ([string]$result.Stderr).Trim()
+        if ($stderr) {
+            $detail += " $stderr"
+        }
+        return [pscustomobject]@{
+            Outcome = 'Failed'
+            Detail = "$detail $pathCaveat"
+            Status = $unknown
+            Commit = $unknown
+            Verification = $unknown
+            Timestamp = $unknown
+        }
+    }
+
+    $fields = @{}
+    $parseError = $null
+    if ([string]::IsNullOrWhiteSpace($stdout)) {
+        $parseError = '狀態檔輸出為空。'
+    } else {
+        $lines = New-Object System.Collections.Generic.List[string]
+        foreach ($line in ($stdout -split "`r?`n")) {
+            $lines.Add($line)
+        }
+        while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -ceq '') {
+            $lines.RemoveAt($lines.Count - 1)
+        }
+        foreach ($line in $lines) {
+            if ($line -cnotmatch '^([a-z_]+)=(.*)$') {
+                $parseError = '狀態檔包含格式錯誤的資料列。'
+                break
+            }
+            $field = $Matches[1]
+            if ($field -cnotin @(
+                'status', 'commit', 'previous_commit', 'timestamp', 'backup',
+                'verification', 'log_file', 'verified_at'
+            )) {
+                $parseError = '狀態檔包含不支援的欄位。'
+                break
+            }
+            if ($fields.ContainsKey($field)) {
+                $parseError = '狀態檔包含重複欄位。'
+                break
+            }
+            if ([string]::IsNullOrEmpty($Matches[2])) {
+                $parseError = '狀態檔包含空欄位值。'
+                break
+            }
+            $fields[$field] = $Matches[2]
+        }
+    }
+
+    if (-not $parseError) {
+        foreach ($field in @('status', 'commit', 'verification', 'timestamp')) {
+            if (-not $fields.ContainsKey($field)) {
+                $parseError = "狀態檔缺少必要欄位：$field。"
+                break
+            }
+        }
+    }
+    if (-not $parseError -and $fields['status'] -cnotin @('RUNNING', 'FAILED', 'DEPLOYED', 'SUCCESS')) {
+        $parseError = '狀態欄位值無效。'
+    }
+    if (-not $parseError -and $fields['commit'] -cnotmatch '^(pending|NONE|[0-9a-fA-F]{40})$') {
+        $parseError = 'commit 欄位值無效。'
+    }
+    if (-not $parseError -and $fields['verification'] -cnotmatch '^(pending|failed|PASS)$') {
+        $parseError = 'verification 欄位值無效。'
+    }
+    if (-not $parseError -and $fields['timestamp'] -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+08:00$') {
+        $parseError = 'timestamp 欄位格式無效。'
+    }
+    if (-not $parseError) {
+        $hasCommitSha = $fields['commit'] -cmatch '^[0-9a-fA-F]{40}$'
+        $validCombination = switch ($fields['status']) {
+            'RUNNING' { $fields['verification'] -ceq 'pending' -and ($fields['commit'] -ceq 'pending' -or $hasCommitSha) }
+            'FAILED' { $fields['verification'] -ceq 'failed' -and ($fields['commit'] -ceq 'NONE' -or $hasCommitSha) }
+            'DEPLOYED' { $fields['verification'] -ceq 'pending' -and $hasCommitSha }
+            'SUCCESS' { $fields['verification'] -ceq 'PASS' -and $hasCommitSha }
+        }
+        if (-not $validCombination) {
+            $parseError = 'status、commit 與 verification 欄位組合不一致。'
+        }
+    }
+    if (-not $parseError -and $fields.ContainsKey('verified_at')) {
+        if ($fields['status'] -cne 'SUCCESS' -or
+            $fields['verified_at'] -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+08:00$') {
+            $parseError = 'verified_at 欄位與部署狀態不一致或格式無效。'
+        }
+    }
+    if (-not $parseError -and $fields['status'] -ceq 'SUCCESS' -and -not $fields.ContainsKey('verified_at')) {
+        $parseError = 'SUCCESS 狀態缺少 verified_at 欄位。'
+    }
+
+    if ($parseError) {
+        return [pscustomobject]@{
+            Outcome = 'Invalid'
+            Detail = "狀態檔內容無效：$parseError $pathCaveat"
+            Status = $unknown
+            Commit = $unknown
+            Verification = $unknown
+            Timestamp = $unknown
+        }
+    }
+
+    return [pscustomobject]@{
+        Outcome = 'Confirmed'
+        Detail = "Production 部署狀態已確認：遠端狀態檔輸出與必要欄位格式有效。$pathCaveat"
+        Status = $fields['status']
+        Commit = $fields['commit']
+        Verification = $fields['verification']
+        Timestamp = $fields['timestamp']
+    }
+}
+
 function Get-PushPreflight {
     param([Parameter(Mandatory = $true)][hashtable]$Context)
 
@@ -1558,6 +1718,7 @@ function Set-OperationButtonsEnabled {
         $script:Controls.TestButton.Enabled = $Enabled
         $script:Controls.GitHubButton.Enabled = $Enabled
         $script:Controls.PushButton.Enabled = $Enabled
+        $script:Controls.ProductionStateQueryButton.Enabled = $Enabled
         $script:Controls.DeploymentPreflightButton.Enabled = $Enabled
         $script:Controls.SshTestButton.Enabled = $Enabled
         $script:Controls.BackupDestinationButton.Enabled = $Enabled
@@ -1624,7 +1785,7 @@ function Set-OperationButtonsEnabled {
 function Start-BackgroundOperation {
     param(
         [Parameter(Mandatory = $true)][string]$Operation,
-        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster', 'DeploymentPreflight', 'Backup', 'RestoreList', 'Restore', 'SshTest', 'BackupDestinationPreflight')][string]$Action,
+        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster', 'DeploymentPreflight', 'ProductionStateQuery', 'Backup', 'RestoreList', 'Restore', 'SshTest', 'BackupDestinationPreflight')][string]$Action,
         [string]$ExpectedHeadSha,
         [string]$ExpectedRemoteSha,
         [string]$BackupDestination,
@@ -1744,6 +1905,7 @@ function Start-BackgroundOperation {
         'Get-LocalProjectStatus',
         'Get-GitHubMasterStatus',
         'Get-DeploymentPreflight',
+        'Get-ProductionDeploymentStatus',
         'Get-PushPreflight'
     )
     $functionDefinitions = foreach ($functionName in $functionNames) {
@@ -1788,6 +1950,11 @@ try {
         'DeploymentPreflight' {
             $workContext.Stage = '執行部署前唯讀檢查'
             $result = Get-DeploymentPreflight -Context $workContext
+            break
+        }
+        'ProductionStateQuery' {
+            $workContext.Stage = '查詢 Production 部署狀態（唯讀）'
+            $result = Get-ProductionDeploymentStatus -Context $workContext
             break
         }
         'Tests' {
@@ -2532,6 +2699,19 @@ try {
                     $completedUi.GitHubCompareValue.Text = '無法確認'
                     $completedState.LocalHeadSha = $null
                     $completedState.GitHubMasterSha = $null
+                } elseif ($completedRequest.Action -eq 'ProductionStateQuery') {
+                    $queryFailure = if ($unconfirmedProcess) {
+                        '查詢結果未確認；本機 SSH 程序停止狀態尚未確認。'
+                    } elseif ($workContext.CancelRequested) {
+                        '查詢已取消；Production 狀態未確認。'
+                    } else {
+                        "查詢失敗：$message"
+                    }
+                    $completedUi.ProductionStateQueryResultValue.Text = "$queryFailure 固定狀態檔路徑尚未獨立確認為 Production 實際使用路徑。"
+                    $completedUi.ProductionDeployStatusValue.Text = '無法確認'
+                    $completedUi.ProductionDeployCommitValue.Text = '無法確認'
+                    $completedUi.ProductionDeployVerificationValue.Text = '無法確認'
+                    $completedUi.ProductionDeployTimestampValue.Text = '無法確認'
                 }
             } else {
                 switch ($completedRequest.Action) {
@@ -2575,6 +2755,31 @@ try {
                         "與本機 HEAD：$($completedUi.GitHubCompareValue.Text)",
                         '查詢方式：git ls-remote（未執行 fetch/pull/push）'
                     )
+                }
+                'ProductionStateQuery' {
+                    $state = $completionPayload.Result
+                    $completedUi.ProductionStateQueryResultValue.Text = $state.Detail
+                    $completedUi.ProductionDeployStatusValue.Text = $state.Status
+                    $completedUi.ProductionDeployCommitValue.Text = $state.Commit
+                    $completedUi.ProductionDeployVerificationValue.Text = $state.Verification
+                    $completedUi.ProductionDeployTimestampValue.Text = $state.Timestamp
+                    $resultLabel = switch ($state.Outcome) {
+                        'Confirmed' { '已確認' }
+                        'Failed' { '查詢失敗' }
+                        'Cancelled' { '已取消' }
+                        'Unavailable' { '狀態檔不存在或無法確認' }
+                        'Invalid' { '狀態內容無效' }
+                        default { '無法確認' }
+                    }
+                    $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$resultLabel"
+                    & $completionAddOperationLog -Operation $completedRequest.Operation `
+                        -Status $resultLabel -Output @(
+                            $state.Detail,
+                            "部署狀態：$($state.Status)",
+                            "commit：$($state.Commit)",
+                            "verification：$($state.Verification)",
+                            "timestamp：$($state.Timestamp)"
+                        )
                 }
                 'DeploymentPreflight' {
                     $preflight = $completionPayload.Result
@@ -3302,7 +3507,14 @@ $productionTable.ColumnCount = 2
 $productionTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
 $productionTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void](New-InfoRow -Table $productionTable -Label '目前已知 SHA' -Value $script:KnownProductionSha -ControlName 'ProductionShaValue')
-[void](New-InfoRow -Table $productionTable -Label '即時狀態' -Value '尚未即時確認' -ControlName 'ProductionLiveValue')
+[void](New-InfoRow -Table $productionTable -Label 'Production 狀態查詢結果' `
+    -Value '尚未查詢；固定狀態檔路徑尚未在 Production 實際確認' -ControlName 'ProductionStateQueryResultValue')
+[void](New-InfoRow -Table $productionTable -Label '部署 status' -Value '尚未查詢' -ControlName 'ProductionDeployStatusValue')
+[void](New-InfoRow -Table $productionTable -Label '部署 commit' -Value '尚未查詢' -ControlName 'ProductionDeployCommitValue')
+[void](New-InfoRow -Table $productionTable -Label '部署 verification' -Value '尚未查詢' -ControlName 'ProductionDeployVerificationValue')
+[void](New-InfoRow -Table $productionTable -Label '部署 timestamp' -Value '尚未查詢' -ControlName 'ProductionDeployTimestampValue')
+[void](New-InfoRow -Table $productionTable -Label '狀態檔路徑' `
+    -Value '/home/zhe/pets-deploy-state/deployment.state（尚未在 Production 實際確認）')
 $targetLabel = New-Object System.Windows.Forms.Label
 $targetLabel.Text = '目標 SHA'
 $targetLabel.AutoSize = $true
@@ -3315,11 +3527,14 @@ $targetInput.Margin = New-Object System.Windows.Forms.Padding(4, 5, 4, 5)
 $productionTable.Controls.Add($targetLabel, 0, $productionTable.RowCount)
 $productionTable.Controls.Add($targetInput, 1, $productionTable.RowCount)
 $targetInput.AccessibleDescription = '本階段不會使用或傳送此 SHA。'
+$script:Controls.ProductionStateQueryButton = New-ActionButton -Text '查詢 Production 部署狀態（唯讀）'
+$productionTable.Controls.Add($script:Controls.ProductionStateQueryButton, 0, $productionTable.RowCount + 1)
+$productionTable.SetColumnSpan($script:Controls.ProductionStateQueryButton, 2)
 $deployButton = New-ActionButton -Text '部署（第二階段啟用）' -Enabled $false
-$productionTable.Controls.Add($deployButton, 0, $productionTable.RowCount + 1)
+$productionTable.Controls.Add($deployButton, 0, $productionTable.RowCount + 2)
 $productionTable.SetColumnSpan($deployButton, 2)
 $script:Controls.DeploymentPreflightButton = New-ActionButton -Text '部署前檢查'
-$productionTable.Controls.Add($script:Controls.DeploymentPreflightButton, 0, $productionTable.RowCount + 2)
+$productionTable.Controls.Add($script:Controls.DeploymentPreflightButton, 0, $productionTable.RowCount + 3)
 $productionTable.SetColumnSpan($script:Controls.DeploymentPreflightButton, 2)
 $productionGroup.Controls.Add($productionTable)
 $rootLayout.Controls.Add($productionGroup, 0, 1)
@@ -3412,6 +3627,14 @@ $script:Controls.SshTestButton.Add_Click({
 })
 $script:Controls.BackupDestinationButton.Add_Click({
     Start-SshUiOperation -Action 'BackupDestinationPreflight'
+})
+$script:Controls.ProductionStateQueryButton.Add_Click({
+    $script:Controls.ProductionStateQueryResultValue.Text = '查詢中…；固定狀態檔路徑尚未在 Production 實際確認'
+    $script:Controls.ProductionDeployStatusValue.Text = '尚未確認'
+    $script:Controls.ProductionDeployCommitValue.Text = '尚未確認'
+    $script:Controls.ProductionDeployVerificationValue.Text = '尚未確認'
+    $script:Controls.ProductionDeployTimestampValue.Text = '尚未確認'
+    Start-BackgroundOperation -Operation '查詢 Production 部署狀態（唯讀）' -Action 'ProductionStateQuery'
 })
 $script:Controls.CancelOperationButton.Add_Click({
     $context = $script:OperationState.ActiveOperation
