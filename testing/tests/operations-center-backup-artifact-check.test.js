@@ -1,0 +1,382 @@
+const { spawnSync } = require('child_process');
+const path = require('path');
+
+const operationsCenterPath = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'tools',
+  'Pets-Operations-Center.ps1',
+);
+
+const powershellHarness = String.raw`
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$parseErrors = $null
+$sourceAst = [System.Management.Automation.Language.Parser]::ParseFile(
+  $env:OPERATIONS_CENTER_PATH,
+  [ref]$tokens,
+  [ref]$parseErrors
+)
+if ($parseErrors.Count -gt 0) {
+  throw ($parseErrors | ForEach-Object { $_.Message } | Out-String)
+}
+
+$requiredFunctions = @(
+  'ConvertTo-PosixShellSingleQuotedString',
+  'Test-BackupArtifactFileName',
+  'New-BackupArtifactCheckCommand',
+  'Get-BackupArtifactCheckOutcome',
+  'Clear-SshCredential',
+  'Invoke-BackupSshOperation',
+  'Clear-BackupSshResources'
+)
+$functionDefinitions = @{}
+$sourceAst.FindAll({
+  param($node)
+  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $requiredFunctions -contains $node.Name
+}, $true) | ForEach-Object {
+  $functionDefinitions[$_.Name] = $_.Extent.Text
+}
+foreach ($name in $requiredFunctions) {
+  if (-not $functionDefinitions.ContainsKey($name)) {
+    throw "Required function not found: $name"
+  }
+  Invoke-Expression $functionDefinitions[$name]
+}
+
+$workerAssignment = $sourceAst.Find({
+  param($node)
+  $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -eq '$workerScript' -and
+    $node.Right -is [System.Management.Automation.Language.CommandExpressionAst]
+}, $true)
+$workerLiteral = $workerAssignment.Right.Find({
+  param($node)
+  $node -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+    $node.Value.Contains('$workerRequest = $args[2]')
+}, $true)
+if (-not $workerLiteral) {
+  throw 'Worker script literal not found.'
+}
+$workerSource = $workerLiteral.Value
+
+$script:cases = New-Object System.Collections.Generic.List[object]
+function Add-TestCase {
+  param([string]$Name, [scriptblock]$Body)
+  try {
+    & $Body
+    [void]$script:cases.Add([pscustomobject]@{ Name = $Name; Passed = $true; Error = $null })
+  } catch {
+    [void]$script:cases.Add([pscustomobject]@{ Name = $Name; Passed = $false; Error = $_.Exception.Message })
+  }
+}
+function Assert-True {
+  param([bool]$Condition, [string]$Message)
+  if (-not $Condition) { throw $Message }
+}
+
+$validName = 'pets_backup_20261017_095021.tar.gz'
+$validHash = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+$validOutput = @(
+  'ARTIFACT_STATE=OK',
+  'ARTIFACT_SIZE=12345',
+  "ARTIFACT_SHA256=$validHash",
+  'CHECKSUM_STATE=OK',
+  'CHECKSUM_FORMAT=VALID',
+  'CHECKSUM_ENTRY=FOUND',
+  'CHECKSUM_VERIFY=PASS'
+) -join [string][char]10
+function Get-TestOutcome {
+  param(
+    [AllowNull()][object]$Result,
+    [hashtable]$Context = @{
+      HostKeyVerified = $true
+      SshAuthenticationSucceeded = $true
+      BackupCommandAttempted = $true
+      SshCleanupFailed = $false
+      SshDisconnectFailed = $false
+    },
+    [string]$FileName = $validName
+  )
+  return Get-BackupArtifactCheckOutcome -Result $Result -FileName $FileName -Context $Context
+}
+function New-CheckResult {
+  param(
+    [string]$Stdout,
+    [AllowNull()][object]$ExitCode = 0,
+    [bool]$TimedOut = $false,
+    [bool]$Cancelled = $false,
+    [bool]$ExecutionUnconfirmed = $false
+  )
+  return [pscustomobject]@{
+    ExitCode = $ExitCode
+    Stdout = $Stdout
+    Stderr = ''
+    TimedOut = $TimedOut
+    Cancelled = $Cancelled
+    ExecutionUnconfirmed = $ExecutionUnconfirmed
+  }
+}
+
+Add-TestCase 'Only the prescribed filename is accepted' {
+  Assert-True (Test-BackupArtifactFileName -FileName $validName) 'Valid backup filename was rejected.'
+  foreach ($invalidName in @(
+    '/home/zhe/pets-backups/' + $validName,
+    '../' + $validName,
+    'pets_backup_20261017_095021.tar.gz;touch',
+    'pets_backup_20261017_09502.tar.gz',
+    'other_20261017_095021.tar.gz'
+  )) {
+    Assert-True (-not (Test-BackupArtifactFileName -FileName $invalidName)) "Unsafe filename accepted: $invalidName"
+  }
+}
+Add-TestCase 'Remote command is read-only and confined to the fixed backup directory' {
+  $command = New-BackupArtifactCheckCommand -FileName $validName
+  Assert-True ($command -like "*backup_dir='/home/zhe/pets-backups'*") 'Fixed backup directory is missing.'
+  Assert-True ($command.Contains('checksum_file="$backup_file.sha256"')) 'Backup checksum sidecar path is missing.'
+  Assert-True ($command -match 'checksum_lines" -ne 1') 'Command does not enforce the generated single-entry sidecar format.'
+  Assert-True ($command -match 'sha256sum -- "\$backup_file"') 'Target SHA-256 is not calculated.'
+  Assert-True ($command -notmatch '(?im)^\s*(?:mkdir|chmod|chown|rm|mv|cp|tar|curl|wget|scp|rsync)(?:\s|$)') 'Command includes a mutating, transfer, or restore operation.'
+  Assert-True ($command -notmatch '(?im)^\s*(?:ssh|sudo|bash -c)(?:\s|$)') 'Command provides a nested or arbitrary remote-command path.'
+  $threw = $false
+  try { [void](New-BackupArtifactCheckCommand -FileName '../' + $validName) } catch { $threw = $true }
+  Assert-True $threw 'Command builder accepted a path rather than a filename.'
+}
+Add-TestCase 'Missing archive is FAIL' {
+  $output = $validOutput.Replace('ARTIFACT_STATE=OK', 'ARTIFACT_STATE=MISSING')
+  $output = $output.Replace('ARTIFACT_SIZE=12345', 'ARTIFACT_SIZE=UNKNOWN')
+  $output = $output.Replace("ARTIFACT_SHA256=$validHash", 'ARTIFACT_SHA256=UNKNOWN')
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'FAIL') "Expected FAIL, got $($outcome.Verdict)."
+}
+Add-TestCase 'Empty archive is FAIL and reports zero size' {
+  $output = $validOutput.Replace('ARTIFACT_SIZE=12345', 'ARTIFACT_SIZE=0')
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'FAIL' -and $outcome.Size -eq 0) 'Zero-byte archive was not reported as FAIL with size zero.'
+}
+Add-TestCase 'Non-regular archive and checksum files are FAIL' {
+  $archiveOutput = $validOutput.Replace('ARTIFACT_STATE=OK', 'ARTIFACT_STATE=NOT_REGULAR')
+  $archiveResult = Get-TestOutcome -Result (New-CheckResult -Stdout $archiveOutput)
+  $checksumOutput = $validOutput.Replace('CHECKSUM_STATE=OK', 'CHECKSUM_STATE=NOT_REGULAR')
+  $checksumResult = Get-TestOutcome -Result (New-CheckResult -Stdout $checksumOutput)
+  Assert-True ($archiveResult.Verdict -ceq 'FAIL') 'Non-regular archive was not rejected.'
+  Assert-True ($checksumResult.Verdict -ceq 'FAIL') 'Non-regular checksum sidecar was not rejected.'
+}
+Add-TestCase 'Missing checksum sidecar is FAIL' {
+  $output = $validOutput.Replace('CHECKSUM_STATE=OK', 'CHECKSUM_STATE=MISSING')
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'FAIL') "Expected FAIL, got $($outcome.Verdict)."
+}
+Add-TestCase 'Malformed checksum format is FAIL' {
+  $output = $validOutput.Replace('CHECKSUM_FORMAT=VALID', 'CHECKSUM_FORMAT=INVALID')
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'FAIL') "Expected FAIL, got $($outcome.Verdict)."
+}
+Add-TestCase 'Unreadable archive and checksum sidecar are FAIL' {
+  $archiveOutput = $validOutput.Replace('ARTIFACT_STATE=OK', 'ARTIFACT_STATE=UNREADABLE')
+  $sidecarOutput = $validOutput.Replace('CHECKSUM_STATE=OK', 'CHECKSUM_STATE=UNREADABLE')
+  $archiveOutcome = Get-TestOutcome -Result (New-CheckResult -Stdout $archiveOutput)
+  $sidecarOutcome = Get-TestOutcome -Result (New-CheckResult -Stdout $sidecarOutput)
+  Assert-True ($archiveOutcome.Verdict -ceq 'FAIL') 'Unreadable archive was not reported as FAIL.'
+  Assert-True ($sidecarOutcome.Verdict -ceq 'FAIL') 'Unreadable checksum sidecar was not reported as FAIL.'
+}
+Add-TestCase 'Duplicate target checksum entries are FAIL' {
+  $output = $validOutput.Replace('CHECKSUM_ENTRY=FOUND', 'CHECKSUM_ENTRY=DUPLICATE')
+  $output = $output.Replace('CHECKSUM_VERIFY=PASS', 'CHECKSUM_VERIFY=NOT_RUN')
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'FAIL') "Expected FAIL, got $($outcome.Verdict)."
+}
+Add-TestCase 'Checksum entry missing from sidecar is FAIL' {
+  $output = $validOutput.Replace('CHECKSUM_ENTRY=FOUND', 'CHECKSUM_ENTRY=MISSING')
+  $output = $output.Replace('CHECKSUM_VERIFY=PASS', 'CHECKSUM_VERIFY=NOT_RUN')
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'FAIL') "Expected FAIL, got $($outcome.Verdict)."
+}
+Add-TestCase 'Checksum mismatch is FAIL' {
+  $output = $validOutput.Replace('CHECKSUM_VERIFY=PASS', 'CHECKSUM_VERIFY=FAIL')
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'FAIL') "Expected FAIL, got $($outcome.Verdict)."
+}
+Add-TestCase 'Only a complete verified checksum result is PASS' {
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $validOutput)
+  Assert-True ($outcome.Verdict -ceq 'PASS') "Expected PASS, got $($outcome.Verdict)."
+  Assert-True ($outcome.Size -eq 12345) 'Verified file size was not returned.'
+  Assert-True ($outcome.Sha256 -ceq $validHash) 'Verified archive SHA-256 was not returned.'
+}
+Add-TestCase 'Unknown or malformed artifact SHA-256 cannot produce PASS' {
+  $unknownHash = $validOutput.Replace("ARTIFACT_SHA256=$validHash", 'ARTIFACT_SHA256=UNKNOWN')
+  $unknownHashOutcome = Get-TestOutcome -Result (New-CheckResult -Stdout $unknownHash)
+  $malformedHash = $validOutput.Replace("ARTIFACT_SHA256=$validHash", 'ARTIFACT_SHA256=not-a-hash')
+  $malformedHashOutcome = Get-TestOutcome -Result (New-CheckResult -Stdout $malformedHash)
+  $missingHash = (@($validOutput -split ([string][char]10) | Where-Object { $_ -notlike 'ARTIFACT_SHA256=*' }) -join [string][char]10)
+  $missingHashOutcome = Get-TestOutcome -Result (New-CheckResult -Stdout $missingHash)
+  Assert-True ($unknownHashOutcome.Verdict -ceq 'UNCONFIRMED') 'UNKNOWN artifact hash with CHECKSUM_VERIFY=PASS was accepted.'
+  Assert-True ($malformedHashOutcome.Verdict -ceq 'UNCONFIRMED') 'Malformed artifact hash was not left unconfirmed.'
+  Assert-True ($missingHashOutcome.Verdict -ceq 'UNCONFIRMED') 'Missing artifact hash field was not left unconfirmed.'
+}
+Add-TestCase 'Timeout and incomplete remote response remain unconfirmed' {
+  $timeout = Get-TestOutcome -Result (New-CheckResult -Stdout $validOutput -TimedOut $true -ExecutionUnconfirmed $true)
+  $cancelled = Get-TestOutcome -Result (New-CheckResult -Stdout $validOutput -Cancelled $true)
+  $incomplete = Get-TestOutcome -Result $null
+  $malformed = Get-TestOutcome -Result (New-CheckResult -Stdout 'CONNECTED')
+  $notRun = Get-TestOutcome -Result (New-CheckResult -Stdout ($validOutput.Replace('CHECKSUM_VERIFY=PASS', 'CHECKSUM_VERIFY=NOT_RUN')))
+  Assert-True ($timeout.Verdict -ceq 'UNCONFIRMED') 'Timed-out inspection was not unconfirmed.'
+  Assert-True ($cancelled.Verdict -ceq 'UNCONFIRMED') 'Cancelled inspection was not unconfirmed.'
+  Assert-True ($incomplete.Verdict -ceq 'UNCONFIRMED') 'Missing inspection result was not unconfirmed.'
+  Assert-True ($malformed.Verdict -ceq 'UNCONFIRMED') 'Malformed remote output was not unconfirmed.'
+  Assert-True ($notRun.Verdict -ceq 'UNCONFIRMED') 'Unperformed checksum verification was not unconfirmed.'
+}
+Add-TestCase 'SSH connection or checksum sidecar presence alone cannot produce PASS' {
+  $connectionOnly = Get-TestOutcome -Result (New-CheckResult -Stdout 'CONNECTED')
+  $checksumOnly = Get-TestOutcome -Result (New-CheckResult -Stdout 'CHECKSUM_STATE=OK')
+  $untrustedContext = @{
+    HostKeyVerified = $false
+    SshAuthenticationSucceeded = $false
+    BackupCommandAttempted = $false
+    SshCleanupFailed = $false
+    SshDisconnectFailed = $false
+  }
+  $untrusted = Get-TestOutcome -Result (New-CheckResult -Stdout $validOutput) -Context $untrustedContext
+  Assert-True ($connectionOnly.Verdict -ceq 'UNCONFIRMED') 'SSH connection output alone was accepted.'
+  Assert-True ($checksumOnly.Verdict -ceq 'UNCONFIRMED') 'Checksum sidecar presence alone was accepted.'
+  Assert-True ($untrusted.Verdict -ceq 'FAIL') 'Unverified SSH authentication/fingerprint was accepted.'
+}
+Add-TestCase 'Cleanup failure prevents PASS' {
+  $context = @{
+    HostKeyVerified = $true
+    SshAuthenticationSucceeded = $true
+    BackupCommandAttempted = $true
+    SshCleanupFailed = $true
+    SshDisconnectFailed = $false
+  }
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $validOutput) -Context $context
+  Assert-True ($outcome.Verdict -ceq 'UNCONFIRMED') 'Cleanup failure allowed a PASS result.'
+}
+Add-TestCase 'Worker routes through mocked SSH.NET with fixed host and no fallback' {
+  $global:artifactMockCalls = New-Object System.Collections.Generic.List[string]
+  $global:artifactMockResult = New-CheckResult -Stdout $validOutput
+  $global:artifactMockClient = $null
+  $global:artifactWorkerScript = [scriptblock]::Create(
+    (($requiredFunctions | ForEach-Object { $functionDefinitions[$_] }) -join ([string][char]13 + [char]10)) +
+    ([string][char]13 + [char]10) + $workerSource
+  )
+  $mockSource = @'
+param($Phase, $HostName, $Username, $RemoteCommand, $TimeoutMilliseconds, $Context)
+$global:artifactMockCalls.Add($Phase)
+if ($Phase -ceq 'Connect') {
+  if ($global:artifactMockClient) { $Context.SshClient = $global:artifactMockClient }
+  return [pscustomobject]@{ AuthenticationSucceeded = $true; HostKeyVerified = $true }
+}
+$global:artifactCapturedCommand = $RemoteCommand
+$global:artifactCapturedHost = $HostName
+$global:artifactCapturedUsername = $Username
+$global:artifactCapturedTimeout = $TimeoutMilliseconds
+return $global:artifactMockResult
+'@
+  $request = @{
+    Action = 'BackupArtifactCheck'
+    Context = @{
+      CancelRequested = $false
+      SshCleanupFailed = $false
+      SshDisconnectFailed = $false
+      SshClient = $null
+      SshAuthentication = $null
+      SshPassword = $null
+    }
+    BackupArtifactName = $validName
+    BackupTestMode = $true
+    BackupMockExecutorScript = $mockSource
+    RestoreTestMode = $false
+    RestoreRemoteExecutorScript = $null
+    SshHost = 'mock.invalid'
+    SshUsername = 'isolated-user'
+    SshPassword = ConvertTo-SecureString -String 'isolated-test-password' -AsPlainText -Force
+    SshNetAssembly = $null
+    ExpectedProductionHostFingerprint = 'test-fingerprint'
+    BackupSshPath = 'unused'
+    BackupSshKey = 'unused'
+    BackupSshTarget = 'unused'
+    BackupProductionRoot = '/isolated/project'
+    BackupScript = '/isolated/backup.sh'
+    RestoreScript = '/isolated/restore.sh'
+    RestoreBackupDirectory = '/isolated/restore-only'
+  }
+  $workerResult = & $global:artifactWorkerScript 'D:\isolated' 'git' $request
+  Assert-True ($workerResult.ExitCode -eq 0) 'Mocked worker did not return the command result.'
+  Assert-True (($global:artifactMockCalls -join ',') -ceq 'Connect,Command') 'Worker did not authenticate before sending one command.'
+  Assert-True ($global:artifactCapturedCommand -like "*backup_dir='/home/zhe/pets-backups'*") 'Worker did not use the fixed backup directory.'
+  Assert-True ($global:artifactCapturedHost -ceq 'mock.invalid' -and $global:artifactCapturedUsername -ceq 'isolated-user') 'Worker changed the isolated mock endpoint.'
+  Assert-True ($global:artifactCapturedTimeout -eq 30000) 'Worker did not set a bounded timeout.'
+  Assert-True ($workerResult.CleanupSucceeded) 'Worker did not confirm SSH cleanup.'
+
+  $fakeClient = [pscustomobject]@{ IsConnected = $true }
+  $fakeClient | Add-Member -MemberType ScriptMethod -Name Disconnect -Value { throw 'isolated disconnect failure' }
+  $fakeClient | Add-Member -MemberType ScriptMethod -Name Dispose -Value {}
+  $global:artifactMockClient = $fakeClient
+  $cleanupRequest = $request.Clone()
+  $cleanupRequest.Context = @{
+    CancelRequested = $false
+    SshCleanupFailed = $false
+    SshDisconnectFailed = $false
+    SshClient = $null
+    SshAuthentication = $null
+    SshPassword = $null
+  }
+  $cleanupRequest.SshPassword = ConvertTo-SecureString -String 'isolated-test-password' -AsPlainText -Force
+  $cleanupResult = & $global:artifactWorkerScript 'D:\isolated' 'git' $cleanupRequest
+  $cleanupOutcome = Get-BackupArtifactCheckOutcome -Result $cleanupResult -FileName $validName -Context $cleanupRequest.Context
+  Assert-True (-not $cleanupResult.CleanupSucceeded) 'Worker reported failed SSH disconnect cleanup as successful.'
+  Assert-True ($cleanupOutcome.Verdict -ceq 'UNCONFIRMED') 'Worker cleanup failure allowed PASS.'
+}
+
+ConvertTo-Json -InputObject @($script:cases.ToArray()) -Compress -Depth 8
+`;
+
+let testResults;
+beforeAll(() => {
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '-'], {
+    encoding: 'utf8',
+    input: powershellHarness,
+    env: {
+      ...process.env,
+      OPERATIONS_CENTER_PATH: operationsCenterPath,
+    },
+    timeout: 30000,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`Isolated PowerShell harness failed:\n${result.stdout}\n${result.stderr}`);
+  }
+  testResults = JSON.parse(result.stdout.trim());
+});
+
+describe('Operations Center backup artifact check isolated behavior', () => {
+  test.each([
+    'Only the prescribed filename is accepted',
+    'Remote command is read-only and confined to the fixed backup directory',
+    'Missing archive is FAIL',
+    'Empty archive is FAIL and reports zero size',
+    'Non-regular archive and checksum files are FAIL',
+    'Missing checksum sidecar is FAIL',
+    'Malformed checksum format is FAIL',
+    'Unreadable archive and checksum sidecar are FAIL',
+    'Duplicate target checksum entries are FAIL',
+    'Checksum entry missing from sidecar is FAIL',
+    'Checksum mismatch is FAIL',
+    'Only a complete verified checksum result is PASS',
+    'Unknown or malformed artifact SHA-256 cannot produce PASS',
+    'Timeout and incomplete remote response remain unconfirmed',
+    'SSH connection or checksum sidecar presence alone cannot produce PASS',
+    'Cleanup failure prevents PASS',
+    'Worker routes through mocked SSH.NET with fixed host and no fallback',
+  ])('%s', (name) => {
+    const result = testResults.find((item) => item.Name === name);
+    expect(result).toBeDefined();
+    expect(result).toMatchObject({ Passed: true, Error: null });
+  });
+});

@@ -437,6 +437,255 @@ function Test-RestoreBundlePath {
     return $Path -cmatch '\A/home/zhe/pets-backups/pets_backup_\d{8}_\d{6}\.tar\.gz\z'
 }
 
+function Test-BackupArtifactFileName {
+    param([AllowEmptyString()][string]$FileName)
+
+    return $FileName -cmatch '\Apets_backup_\d{8}_\d{6}\.tar\.gz\z'
+}
+
+function New-BackupArtifactCheckCommand {
+    param([Parameter(Mandatory = $true)][string]$FileName)
+
+    if (-not (Test-BackupArtifactFileName -FileName $FileName)) {
+        throw '備份產物檔名不符合允許格式；拒絕建立遠端檢查命令。'
+    }
+
+    $quotedFileName = ConvertTo-PosixShellSingleQuotedString -Value $FileName
+    return @(
+        'backup_dir=''/home/zhe/pets-backups'''
+        "file_name=$quotedFileName"
+        'backup_file="$backup_dir/$file_name"'
+        'checksum_file="$backup_file.sha256"'
+        'artifact_state="UNKNOWN"'
+        'artifact_size="UNKNOWN"'
+        'artifact_hash="UNKNOWN"'
+        'if [ -L "$backup_file" ]; then'
+        '  artifact_state="NOT_REGULAR"'
+        'elif [ ! -e "$backup_file" ]; then'
+        '  artifact_state="MISSING"'
+        'elif [ ! -f "$backup_file" ]; then'
+        '  artifact_state="NOT_REGULAR"'
+        'else'
+        '  artifact_state="OK"'
+        '  artifact_size=$(stat -c ''%s'' -- "$backup_file" 2>/dev/null) || artifact_size="UNKNOWN"'
+        '  hash_line=$(sha256sum -- "$backup_file" 2>/dev/null) || hash_line=""'
+        '  artifact_hash="${hash_line%% *}"'
+        '  if [[ ! "$artifact_hash" =~ ^[0-9a-f]{64}$ ]]; then'
+        '    artifact_hash="UNKNOWN"'
+        '    artifact_state="UNREADABLE"'
+        '  fi'
+        'fi'
+        'checksum_state="UNKNOWN"'
+        'checksum_format="UNKNOWN"'
+        'checksum_entry="UNKNOWN"'
+        'checksum_verify="NOT_RUN"'
+        'if [ -L "$checksum_file" ]; then'
+        '  checksum_state="NOT_REGULAR"'
+        'elif [ ! -e "$checksum_file" ]; then'
+        '  checksum_state="MISSING"'
+        'elif [ ! -f "$checksum_file" ]; then'
+        '  checksum_state="NOT_REGULAR"'
+        'else'
+        '  if [ ! -r "$checksum_file" ]; then'
+        '    checksum_state="UNREADABLE"'
+        '  else'
+        '    checksum_state="OK"'
+        '    checksum_format="VALID"'
+        '    checksum_entry="MISSING"'
+        '    checksum_lines=0'
+        '    target_entries=0'
+        '    expected_hash=""'
+        '    while IFS= read -r checksum_line || [ -n "$checksum_line" ]; do'
+        '      checksum_lines=$((checksum_lines + 1))'
+        '      if [[ ! "$checksum_line" =~ ^([0-9a-f]{64})\ \ ([A-Za-z0-9._-]+)$ ]]; then'
+        '        checksum_format="INVALID"'
+        '        break'
+        '      fi'
+        '      if [ "${BASH_REMATCH[2]}" = "$file_name" ]; then'
+        '        target_entries=$((target_entries + 1))'
+        '        expected_hash="${BASH_REMATCH[1]}"'
+        '      fi'
+        '    done < "$checksum_file"'
+        '    if [ "$checksum_lines" -ne 1 ]; then checksum_format="INVALID"; fi'
+        '    if [ "$checksum_format" = "VALID" ]; then'
+        '      if [ "$target_entries" -eq 1 ]; then'
+        '        checksum_entry="FOUND"'
+        '        if [ "$artifact_hash" = "UNKNOWN" ]; then'
+        '          checksum_verify="NOT_RUN"'
+        '        elif [ "$artifact_hash" = "$expected_hash" ]; then'
+        '          checksum_verify="PASS"'
+        '        else'
+        '          checksum_verify="FAIL"'
+        '        fi'
+        '      elif [ "$target_entries" -gt 1 ]; then'
+        '        checksum_entry="DUPLICATE"'
+        '      fi'
+        '    fi'
+        '  fi'
+        'fi'
+        'printf ''ARTIFACT_STATE=%s\nARTIFACT_SIZE=%s\nARTIFACT_SHA256=%s\nCHECKSUM_STATE=%s\nCHECKSUM_FORMAT=%s\nCHECKSUM_ENTRY=%s\nCHECKSUM_VERIFY=%s\n'' "$artifact_state" "$artifact_size" "$artifact_hash" "$checksum_state" "$checksum_format" "$checksum_entry" "$checksum_verify"'
+    ) -join "`n"
+}
+
+function Get-BackupArtifactCheckOutcome {
+    param(
+        [AllowNull()][object]$Result,
+        [Parameter(Mandatory = $true)][string]$FileName,
+        [Parameter(Mandatory = $true)][hashtable]$Context
+    )
+
+    $outcome = [ordered]@{
+        Verdict = 'FAIL'
+        FileName = $FileName
+        Size = $null
+        Sha256 = $null
+        Detail = '遠端檢查未成功。'
+    }
+    if ($null -eq $Result) {
+        $outcome.Verdict = 'UNCONFIRMED'
+        $outcome.Detail = '未收到遠端檢查結果。'
+        return [pscustomobject]$outcome
+    }
+    if ($Result.ExecutionUnconfirmed -or $Result.TimedOut -or
+        ($Result.Cancelled -and $Context.BackupCommandAttempted) -or
+        $Context.SshCleanupFailed -or $Context.SshDisconnectFailed) {
+        $outcome.Verdict = 'UNCONFIRMED'
+        $outcome.Detail = if ($Context.SshCleanupFailed -or $Context.SshDisconnectFailed) {
+            'SSH 資源或連線清理未確認；不回報檢查成功。'
+        } elseif ($Result.TimedOut) {
+            '遠端檢查逾時；結果未確認。'
+        } elseif ($Result.Cancelled) {
+            '遠端檢查已取消；結果未確認。'
+        } else {
+            '遠端命令可能已執行，但結果未確認。'
+        }
+        return [pscustomobject]$outcome
+    }
+    if ($Result.Cancelled) {
+        $outcome.Detail = '檢查已取消；未確認遠端結果。'
+        return [pscustomobject]$outcome
+    }
+    if (-not $Context.HostKeyVerified -or -not $Context.SshAuthenticationSucceeded) {
+        $outcome.Detail = 'SSH 密碼認證或固定主機指紋未確認；未取得可信任的檢查結果。'
+        return [pscustomobject]$outcome
+    }
+    if ($null -eq $Result.PSObject.Properties['ExitCode'] -or $Result.ExitCode -ne 0) {
+        $outcome.Verdict = if ($Context.BackupCommandAttempted) { 'UNCONFIRMED' } else { 'FAIL' }
+        $outcome.Detail = if ($Context.BackupCommandAttempted) {
+            '遠端檢查未回報有效退出碼；結果未確認。'
+        } else {
+            'SSH 認證或連線未完成；未取得遠端檢查結果。'
+        }
+        return [pscustomobject]$outcome
+    }
+
+    $values = @{}
+    $allowedValues = @{
+        ARTIFACT_STATE = @('OK', 'MISSING', 'NOT_REGULAR', 'UNKNOWN', 'UNREADABLE')
+        ARTIFACT_SIZE = @('UNKNOWN')
+        ARTIFACT_SHA256 = @('UNKNOWN')
+        CHECKSUM_STATE = @('OK', 'MISSING', 'NOT_REGULAR', 'UNKNOWN', 'UNREADABLE')
+        CHECKSUM_FORMAT = @('VALID', 'INVALID', 'UNKNOWN')
+        CHECKSUM_ENTRY = @('FOUND', 'MISSING', 'DUPLICATE', 'UNKNOWN')
+        CHECKSUM_VERIFY = @('PASS', 'FAIL', 'NOT_RUN')
+    }
+    foreach ($line in @([string]$Result.Stdout -split "`r?`n")) {
+        if ($line -cnotmatch '\A(ARTIFACT_STATE|ARTIFACT_SIZE|ARTIFACT_SHA256|CHECKSUM_STATE|CHECKSUM_FORMAT|CHECKSUM_ENTRY|CHECKSUM_VERIFY)=(.*)\z') {
+            $outcome.Verdict = 'UNCONFIRMED'
+            $outcome.Detail = '遠端輸出格式無法確認；不回報檢查成功。'
+            return [pscustomobject]$outcome
+        }
+        $key = $Matches[1]
+        $value = $Matches[2]
+        if ($values.ContainsKey($key) -or
+            ($key -in @('ARTIFACT_STATE', 'CHECKSUM_STATE', 'CHECKSUM_FORMAT', 'CHECKSUM_ENTRY', 'CHECKSUM_VERIFY') -and
+                $value -notin $allowedValues[$key])) {
+            $outcome.Verdict = 'UNCONFIRMED'
+            $outcome.Detail = '遠端輸出欄位重複或不合法；不回報檢查成功。'
+            return [pscustomobject]$outcome
+        }
+        $values[$key] = $value
+    }
+    foreach ($key in $allowedValues.Keys) {
+        if (-not $values.ContainsKey($key)) {
+            $outcome.Verdict = 'UNCONFIRMED'
+            $outcome.Detail = '遠端輸出缺少必要檢查欄位；結果未確認。'
+            return [pscustomobject]$outcome
+        }
+    }
+    if ($values.ARTIFACT_SIZE -cmatch '\A[0-9]+\z') {
+        $outcome.Size = [long]$values.ARTIFACT_SIZE
+    } elseif ($values.ARTIFACT_SIZE -cne 'UNKNOWN') {
+        $outcome.Verdict = 'UNCONFIRMED'
+        $outcome.Detail = '遠端回報的檔案大小格式不合法；結果未確認。'
+        return [pscustomobject]$outcome
+    }
+    if ($values.ARTIFACT_SHA256 -cmatch '\A[0-9a-f]{64}\z') {
+        $outcome.Sha256 = $values.ARTIFACT_SHA256
+    } elseif ($values.ARTIFACT_SHA256 -cne 'UNKNOWN') {
+        $outcome.Verdict = 'UNCONFIRMED'
+        $outcome.Detail = '遠端回報的 SHA-256 格式不合法；結果未確認。'
+        return [pscustomobject]$outcome
+    }
+
+    if ($values.ARTIFACT_STATE -cne 'OK') {
+        $outcome.Detail = switch ($values.ARTIFACT_STATE) {
+            'MISSING' { '指定備份檔不存在。' }
+            'NOT_REGULAR' { '指定備份檔不是一般檔案，或是符號連結。' }
+            'UNREADABLE' { '無法讀取指定備份檔以計算 SHA-256。' }
+            default {
+                $outcome.Verdict = 'UNCONFIRMED'
+                '無法確認指定備份檔狀態。'
+            }
+        }
+    } elseif ($null -eq $outcome.Size) {
+        $outcome.Verdict = 'UNCONFIRMED'
+        $outcome.Detail = '無法確認指定備份檔大小。'
+    } elseif ($outcome.Size -le 0) {
+        $outcome.Detail = '指定備份檔大小為零。'
+    } elseif ($values.CHECKSUM_STATE -cne 'OK') {
+        $outcome.Detail = switch ($values.CHECKSUM_STATE) {
+            'MISSING' { 'checksum sidecar 不存在。' }
+            'NOT_REGULAR' { 'checksum sidecar 不是一般檔案，或是符號連結。' }
+            'UNREADABLE' { 'checksum sidecar 無法讀取。' }
+            default {
+                $outcome.Verdict = 'UNCONFIRMED'
+                '無法確認 checksum sidecar 狀態。'
+            }
+        }
+    } elseif ($values.CHECKSUM_FORMAT -cne 'VALID') {
+        $outcome.Detail = if ($values.CHECKSUM_FORMAT -ceq 'INVALID') {
+            'checksum sidecar 格式不合法。'
+        } else {
+            $outcome.Verdict = 'UNCONFIRMED'
+            'checksum sidecar 格式未能確認。'
+        }
+    } elseif ($values.CHECKSUM_ENTRY -cne 'FOUND') {
+        $outcome.Detail = switch ($values.CHECKSUM_ENTRY) {
+            'MISSING' { 'checksum sidecar 未列入指定備份檔。' }
+            'DUPLICATE' { 'checksum sidecar 重複列入指定備份檔。' }
+            default {
+                $outcome.Verdict = 'UNCONFIRMED'
+                '無法確認指定備份檔的 checksum 項目。'
+            }
+        }
+    } elseif ($null -eq $outcome.Sha256) {
+        $outcome.Verdict = 'UNCONFIRMED'
+        $outcome.Detail = '未取得有效的指定備份檔 SHA-256；結果未確認。'
+    } elseif ($values.CHECKSUM_VERIFY -cne 'PASS') {
+        $outcome.Detail = if ($values.CHECKSUM_VERIFY -ceq 'FAIL') {
+            '指定備份檔 SHA-256 與 checksum sidecar 不符。'
+        } else {
+            $outcome.Verdict = 'UNCONFIRMED'
+            '指定備份檔 SHA-256 未實際驗證成功。'
+        }
+    } else {
+        $outcome.Verdict = 'PASS'
+        $outcome.Detail = '備份檔存在、大小大於零，且 SHA-256 已依 checksum sidecar 驗證成功。'
+    }
+    return [pscustomobject]$outcome
+}
+
 function Invoke-RestoreRemoteCommand {
     param(
         [Parameter(Mandatory = $true)][string]$RemoteCommand,
@@ -603,6 +852,75 @@ function Show-RestoreBundleSelectionDialog {
             return [string]$list.SelectedItem
         }
         return $null
+    } finally {
+        $dialog.Dispose()
+    }
+}
+
+function Show-BackupArtifactSelectionDialog {
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = '檢查備份產物'
+    $dialog.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dialog.Size = New-Object System.Drawing.Size(560, 190)
+    $dialog.MinimumSize = New-Object System.Drawing.Size(500, 170)
+    $dialog.ShowInTaskbar = $false
+
+    $layout = New-Object System.Windows.Forms.TableLayoutPanel
+    $layout.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $layout.ColumnCount = 1
+    $layout.RowCount = 3
+    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "輸入 pets-backups 目錄中的備份檔名（不含路徑）。僅檢查檔案與 checksum sidecar，不會寫入或下載。"
+    $label.AutoSize = $true
+    $label.MaximumSize = New-Object System.Drawing.Size(500, 0)
+    $label.Margin = New-Object System.Windows.Forms.Padding(8)
+    $layout.Controls.Add($label, 0, 0)
+
+    $fileNameInput = New-Object System.Windows.Forms.TextBox
+    $fileNameInput.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $fileNameInput.Margin = New-Object System.Windows.Forms.Padding(8)
+    $fileNameInput.Text = 'pets_backup_20261017_095021.tar.gz'
+    $layout.Controls.Add($fileNameInput, 0, 1)
+
+    $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $buttonPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::RightToLeft
+    $buttonPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $buttonPanel.AutoSize = $true
+    $checkButton = New-Object System.Windows.Forms.Button
+    $checkButton.Text = '檢查'
+    $checkButton.AutoSize = $true
+    $checkButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Text = '取消'
+    $cancelButton.AutoSize = $true
+    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $buttonPanel.Controls.Add($checkButton)
+    $buttonPanel.Controls.Add($cancelButton)
+    $layout.Controls.Add($buttonPanel, 0, 2)
+    $dialog.Controls.Add($layout)
+    $dialog.AcceptButton = $checkButton
+    $dialog.CancelButton = $cancelButton
+
+    try {
+        if ($dialog.ShowDialog($script:Controls.Form) -ne [System.Windows.Forms.DialogResult]::OK) {
+            return $null
+        }
+        $fileName = $fileNameInput.Text.Trim()
+        if (-not (Test-BackupArtifactFileName -FileName $fileName)) {
+            [void][System.Windows.Forms.MessageBox]::Show(
+                $dialog,
+                '檔名必須符合 pets_backup_YYYYMMDD_HHMMSS.tar.gz 格式，且不可包含路徑。',
+                '備份檔名無效',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return $null
+        }
+        return $fileName
     } finally {
         $dialog.Dispose()
     }
@@ -2226,6 +2544,7 @@ function Set-OperationButtonsEnabled {
         $script:Controls.DeploymentPreflightButton.Enabled = $Enabled
         $script:Controls.SshTestButton.Enabled = $Enabled
         $script:Controls.BackupDestinationButton.Enabled = $Enabled
+        $script:Controls.BackupArtifactCheckButton.Enabled = $Enabled
         $script:Controls.RestoreButton.Enabled = $Enabled
         $script:Controls.SshHostInput.Enabled = $Enabled
         $script:Controls.SshUsernameInput.Enabled = $Enabled
@@ -2289,10 +2608,11 @@ function Set-OperationButtonsEnabled {
 function Start-BackgroundOperation {
     param(
         [Parameter(Mandatory = $true)][string]$Operation,
-        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster', 'DeploymentPreflight', 'ProductionStateQuery', 'Backup', 'RestoreList', 'Restore', 'SshTest', 'BackupDestinationPreflight')][string]$Action,
+        [Parameter(Mandatory = $true)][ValidateSet('LocalStatus', 'GitHubMaster', 'Tests', 'PushMasterPreflight', 'PushMaster', 'DeploymentPreflight', 'ProductionStateQuery', 'Backup', 'BackupArtifactCheck', 'RestoreList', 'Restore', 'SshTest', 'BackupDestinationPreflight')][string]$Action,
         [string]$ExpectedHeadSha,
         [string]$ExpectedRemoteSha,
         [string]$BackupDestination,
+        [string]$BackupArtifactName,
         [string]$RestoreBundlePath,
         [string]$RestoreConfirmation,
         [switch]$RestoreTestMode,
@@ -2317,10 +2637,29 @@ function Start-BackgroundOperation {
         ($RestoreTestMode -or $null -ne $RestoreRemoteExecutor)) {
         throw 'Restore 測試執行器只允許 RestoreList 或 Restore 背景工作。'
     }
-    if (($Action -eq 'Backup' -and $BackupTestMode -and $null -eq $BackupMockExecutor) -or
-        ($Action -eq 'Backup' -and -not $BackupTestMode -and $null -ne $BackupMockExecutor) -or
-        ($Action -ne 'Backup' -and ($BackupTestMode -or $null -ne $BackupMockExecutor))) {
+    $backupActions = @('Backup', 'BackupArtifactCheck')
+    if (($Action -in $backupActions -and $BackupTestMode -and $null -eq $BackupMockExecutor) -or
+        ($Action -in $backupActions -and -not $BackupTestMode -and $null -ne $BackupMockExecutor) -or
+        ($Action -notin $backupActions -and ($BackupTestMode -or $null -ne $BackupMockExecutor))) {
         throw 'Backup 測試模式與 Mock 執行器設定無效；拒絕建立背景工作。'
+    }
+    if ($Action -eq 'BackupArtifactCheck' -and (
+        -not (Test-BackupArtifactFileName -FileName $BackupArtifactName) -or
+        (-not $BackupTestMode -and (
+            $SshHost -cne $script:ProductionSshHost -or
+            $SshUsername -cne $script:ProductionSshUser -or
+            $null -eq $SshPassword
+        ))
+    )) {
+        if ($SshPassword) {
+            Clear-SshCredential -SecurePassword $SshPassword
+        }
+        $script:Controls.BackupArtifactStateValue.Text = 'FAIL：檔名或 SSH 主機／帳號驗證失敗'
+        $script:Controls.ActivityLabel.Text = "$Operation：FAIL"
+        Add-OperationLog -Operation $Operation -Status 'FAIL；輸入或主機／帳號核對失敗' -Output @(
+            '未建立背景工作或連線。'
+        )
+        return
     }
     if ($Action -eq 'Backup' -and (
         [string]::IsNullOrWhiteSpace($BackupDestination) -or
@@ -2403,6 +2742,7 @@ function Start-BackgroundOperation {
         ExpectedHeadSha = $ExpectedHeadSha
         ExpectedRemoteSha = $ExpectedRemoteSha
         BackupDestination = $BackupDestination
+        BackupArtifactName = $BackupArtifactName
         RestoreBundlePath = $RestoreBundlePath
         RestoreConfirmation = $RestoreConfirmation
         RestoreTestMode = [bool]$RestoreTestMode
@@ -2442,6 +2782,9 @@ function Start-BackgroundOperation {
         'Get-PreflightInnerExceptionTypes',
         'Get-PreflightSshExceptionCategory',
         'ConvertTo-PosixShellSingleQuotedString',
+        'Test-BackupArtifactFileName',
+        'New-BackupArtifactCheckCommand',
+        'Get-BackupArtifactCheckOutcome',
         'Clear-SshCredential',
         'New-VerifiedSshClient',
         'Invoke-BackupSshOperation',
@@ -2496,14 +2839,14 @@ try {
     if (-not [string]::IsNullOrWhiteSpace([string]$workerRequest.BackupMockExecutorScript)) {
         $backupMockExecutor = [scriptblock]::Create($workerRequest.BackupMockExecutorScript)
     }
-    if ($workerRequest.Action -eq 'Backup' -and (
+    if ($workerRequest.Action -in @('Backup', 'BackupArtifactCheck') -and (
         ($workerRequest.BackupTestMode -and
             ($null -eq $backupMockExecutor -or $backupMockExecutor.Ast.EndBlock.Statements.Count -eq 0)) -or
         (-not $workerRequest.BackupTestMode -and $null -ne $backupMockExecutor)
     )) {
         throw 'Backup 背景工作測試模式與 Mock 執行器設定無效；拒絕執行。'
     }
-    if ($workerRequest.Action -ne 'Backup' -and
+    if ($workerRequest.Action -notin @('Backup', 'BackupArtifactCheck') -and
         ($workerRequest.BackupTestMode -or $null -ne $backupMockExecutor)) {
         throw 'Backup 測試執行器只允許 Backup 背景工作。'
     }
@@ -2556,6 +2899,27 @@ try {
                 -Username $workerRequest.SshUsername -SecurePassword $workerRequest.SshPassword `
                 -RemoteCommand $remoteCommand -Context $workContext `
                 -SshAssembly $script:SshNetAssembly -TimeoutMilliseconds 3600000 `
+                -TestMode ([bool]$workerRequest.BackupTestMode) -MockExecutor $backupMockExecutor
+            break
+        }
+        'BackupArtifactCheck' {
+            $fileName = [string]$workerRequest.BackupArtifactName
+            if (-not (Test-BackupArtifactFileName -FileName $fileName)) {
+                throw '備份產物檔名無效；拒絕啟動 SSH。'
+            }
+            if (-not $workerRequest.BackupTestMode -and (
+                $workerRequest.SshHost -cne '175.183.34.91' -or
+                $workerRequest.SshUsername -cne 'zhe' -or
+                $null -eq $workerRequest.SshPassword
+            )) {
+                throw '備份產物檢查僅允許已核對的正式環境主機與帳號；拒絕啟動 SSH。'
+            }
+            $remoteCommand = New-BackupArtifactCheckCommand -FileName $fileName
+            $workContext.Stage = '以 SSH.NET 唯讀檢查備份產物與 checksum sidecar'
+            $result = Invoke-BackupSshOperation -HostName $workerRequest.SshHost `
+                -Username $workerRequest.SshUsername -SecurePassword $workerRequest.SshPassword `
+                -RemoteCommand $remoteCommand -Context $workContext `
+                -SshAssembly $script:SshNetAssembly -TimeoutMilliseconds 30000 `
                 -TestMode ([bool]$workerRequest.BackupTestMode) -MockExecutor $backupMockExecutor
             break
         }
@@ -3027,7 +3391,7 @@ try {
     throw
 } finally {
     if ($workContext -is [System.Collections.IDictionary]) {
-        if ($workerRequest.Action -eq 'Backup') {
+        if ($workerRequest.Action -in @('Backup', 'BackupArtifactCheck')) {
             $cleanupSucceeded = Clear-BackupSshResources -Context $workContext `
                 -SecurePassword $workerRequest.SshPassword
             $workerRequest.SshPassword = $null
@@ -3035,12 +3399,18 @@ try {
             if ($result) {
                 $result | Add-Member -NotePropertyName CleanupSucceeded `
                     -NotePropertyValue $cleanupSucceeded -Force
-                if (-not $cleanupSucceeded) {
+                if ($workerRequest.Action -eq 'Backup' -and -not $cleanupSucceeded) {
                     $result.ExitCode = $null
                     $result.Stdout = ''
                     $result.Stderr = ''
                     $result.ExecutionUnconfirmed = $true
                     $result.FailureStage = 'Cleanup'
+                } elseif ($workerRequest.Action -eq 'BackupArtifactCheck' -and -not $cleanupSucceeded) {
+                    $result | Add-Member -NotePropertyName ExecutionUnconfirmed `
+                        -NotePropertyValue $true -Force
+                    $result | Add-Member -NotePropertyName CleanupFailed `
+                        -NotePropertyValue $true -Force
+                    $result.Stdout = ''
                 }
             }
         } elseif ($workContext.SshClient) {
@@ -3137,7 +3507,7 @@ try {
             if ($completionPayload.Error) {
                 $workError = $completionPayload.Error
                 $exceptionDetails = New-Object System.Collections.Generic.List[string]
-                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
+                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup', 'BackupArtifactCheck')) {
                     $exceptionDetails.Add('SSH 工作未完成；為避免認證資料外洩，不記錄例外內容或堆疊。')
                     $diagnosticStage = if ($workContext.SshDiagnosticStage -in @(
                         'SshClientInitialization',
@@ -3153,7 +3523,7 @@ try {
                     } else {
                         'Other'
                     }
-                    $authenticationConfirmed = if ($completedRequest.Action -in @('Backup', 'BackupDestinationPreflight')) {
+                    $authenticationConfirmed = if ($completedRequest.Action -in @('Backup', 'BackupArtifactCheck', 'BackupDestinationPreflight')) {
                         if ($workContext.SshAuthenticationSucceeded -and $workContext.HostKeyVerified) {
                             '是'
                         } else {
@@ -3228,6 +3598,21 @@ try {
                     if ($completedRequest.Action -eq 'RestoreList') {
                         $completedUi.RestoreStateValue.Text = '遠端備份列舉已取消'
                     }
+                    if ($completedRequest.Action -eq 'BackupArtifactCheck') {
+                        $artifactUnconfirmed = [bool]$workContext.BackupCommandAttempted
+                        $artifactStatus = if ($artifactUnconfirmed) { '遠端結果未確認' } else { 'FAIL' }
+                        $completedUi.BackupArtifactStateValue.Text = "$artifactStatus：檢查已取消"
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$artifactStatus"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation `
+                            -Status $artifactStatus -Output @(
+                                "備份檔：/home/zhe/pets-backups/$($completedRequest.BackupArtifactName)",
+                                $(if ($artifactUnconfirmed) {
+                                    '遠端檢查命令可能已執行；取消不代表遠端已停止，結果未確認。'
+                                } else {
+                                    '取消發生於遠端檢查命令送出前；未回報驗證成功。'
+                                })
+                            )
+                    }
                     if ($completedRequest.Action -eq 'Backup') {
                         $completedUi.ActivityLabel.Text = if ($workContext.BackupCommandAttempted) {
                             "$($completedRequest.Operation)：遠端結果未確認"
@@ -3249,7 +3634,7 @@ try {
                                 })
                             )
                     }
-                    if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
+                    if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup', 'BackupArtifactCheck')) {
                         $completedUi.SshAuthenticationValue.Text = '已取消'
                         if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
                             $completedState.VerifiedBackupDirectory = $null
@@ -3281,6 +3666,21 @@ try {
                                 'SSH 中斷後遠端備份可能仍在執行或已完成；不得假設已停止或重試。'
                             } else {
                                 '未確認 SSH 認證完成；備份命令未送出。'
+                            })
+                        )
+                } elseif ($completedRequest.Action -eq 'BackupArtifactCheck') {
+                    $artifactUnconfirmed = [bool]$workContext.BackupCommandAttempted
+                    $artifactStatus = if ($artifactUnconfirmed) { '遠端結果未確認' } else { 'FAIL' }
+                    $completedUi.BackupArtifactStateValue.Text = "$artifactStatus：檢查工作未能完成"
+                    $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$artifactStatus"
+                    & $completionAddOperationLog -Operation $completedRequest.Operation `
+                        -Status $artifactStatus -Output @(
+                            "備份檔：/home/zhe/pets-backups/$($completedRequest.BackupArtifactName)",
+                            'SSH 完成狀態未能確認；未記錄例外內容或堆疊。',
+                            $(if ($artifactUnconfirmed) {
+                                '遠端唯讀檢查命令可能已執行；不得把連線或認證成功視為 checksum 驗證成功。'
+                            } else {
+                                '未確認遠端命令已送出；沒有回報備份檔驗證成功。'
                             })
                         )
                 } elseif ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
@@ -3587,6 +3987,44 @@ try {
                     & $completionAddOperationLog -Operation $completedRequest.Operation `
                         -Status $completion.Status -Output $completion.Output
                 }
+                'BackupArtifactCheck' {
+                    $result = $completionPayload.Result
+                    if ($workContext.CancelRequested -and $workContext.BackupCommandAttempted) {
+                        $result.ExitCode = $null
+                        $result.Stdout = ''
+                        $result.Cancelled = $true
+                        $result.ExecutionUnconfirmed = $true
+                    }
+                    $outcome = Get-BackupArtifactCheckOutcome -Result $result `
+                        -FileName $completedRequest.BackupArtifactName -Context $workContext
+                    $artifactPath = "/home/zhe/pets-backups/$($completedRequest.BackupArtifactName)"
+                    $completedUi.SshAuthenticationValue.Text = if (
+                        $workContext.SshAuthenticationSucceeded -and $workContext.HostKeyVerified
+                    ) {
+                        '成功：SSH.NET 密碼認證及固定主機指紋驗證通過'
+                    } elseif ($workContext.CancelRequested) {
+                        '已取消'
+                    } else {
+                        '失敗：SSH 認證未完成'
+                    }
+                    $completedUi.BackupArtifactStateValue.Text = switch ($outcome.Verdict) {
+                        'PASS' { "PASS：大小 $($outcome.Size) bytes；SHA-256 $($outcome.Sha256)" }
+                        'FAIL' { "FAIL：$($outcome.Detail)" }
+                        default { "遠端結果未確認：$($outcome.Detail)" }
+                    }
+                    $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$(
+                        if ($outcome.Verdict -eq 'UNCONFIRMED') { '遠端結果未確認' } else { $outcome.Verdict }
+                    )"
+                    & $completionAddOperationLog -Operation $completedRequest.Operation `
+                        -Status $(if ($outcome.Verdict -eq 'UNCONFIRMED') { '遠端結果未確認' } else { $outcome.Verdict }) `
+                        -Output @(
+                            "備份檔：$artifactPath",
+                            "檔案大小：$(if ($null -eq $outcome.Size) { '未確認' } else { "$($outcome.Size) bytes" })",
+                            "SHA-256：$(if ($outcome.Sha256) { $outcome.Sha256 } else { '未確認' })",
+                            "檢查結果：$($outcome.Detail)",
+                            '遠端操作僅執行一般檔案檢查、大小／SHA-256 讀取及 checksum sidecar 比對；未建立、修改、刪除或下載檔案。'
+                        )
+                }
                 'RestoreList' {
                     $result = $completionPayload.Result
                     if ($result.TimedOut) {
@@ -3806,7 +4244,7 @@ try {
                 }
             }
         } catch {
-            if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
+            if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup', 'BackupArtifactCheck')) {
                 $completedUi.SshAuthenticationValue.Text = '失敗：完成處理未能確認'
                 $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
                 $completedUi.BackupStateValue.Text = '目的地預檢失敗'
@@ -3824,7 +4262,7 @@ try {
             }
         } finally {
             try {
-                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
+                if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup', 'BackupArtifactCheck')) {
                     if ($completedRequest.SshPassword -and $completedRequest.Action -ne 'Backup') {
                         Clear-SshCredential -SecurePassword $completedRequest.SshPassword
                     }
@@ -3842,7 +4280,7 @@ try {
                     $workContext.Runspace.Dispose()
                 }
             } catch {
-                if ($completedRequest.Action -in @('ReadOnlySshPreflight', 'SshTest', 'BackupDestinationPreflight', 'Backup')) {
+                if ($completedRequest.Action -in @('ReadOnlySshPreflight', 'SshTest', 'BackupDestinationPreflight', 'Backup', 'BackupArtifactCheck')) {
                     & $completionAddOperationLog -Operation $completedRequest.Operation `
                         -Status '背景工作資源清理失敗' -Output @(
                             '清理失敗；例外訊息與堆疊未記錄。'
@@ -3902,7 +4340,7 @@ try {
         $script:OperationState.ActiveOperation = $null
         Set-OperationButtonsEnabled -Enabled $true
         $script:Controls.ActivityLabel.Text = "$Operation：無法啟動"
-        if ($Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup')) {
+        if ($Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup', 'BackupArtifactCheck')) {
             Add-OperationLog -Operation $Operation -Status 'SSH 工作無法啟動' -Output @(
                 '診斷階段：Other',
                 '錯誤類別：Failed',
@@ -3937,10 +4375,17 @@ try {
 function Start-SshUiOperation {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('SshTest', 'BackupDestinationPreflight')]
-        [string]$Action
+        [ValidateSet('SshTest', 'BackupDestinationPreflight', 'BackupArtifactCheck')]
+        [string]$Action,
+        [string]$BackupArtifactName
     )
 
+    if ($Action -eq 'BackupArtifactCheck' -and
+        -not (Test-BackupArtifactFileName -FileName $BackupArtifactName)) {
+        $script:Controls.BackupArtifactStateValue.Text = 'FAIL：備份檔名無效；未連線'
+        $script:Controls.ActivityLabel.Text = '檢查備份產物：FAIL'
+        return
+    }
     $hostName = $script:Controls.SshHostInput.Text.Trim()
     $username = $script:Controls.SshUsernameInput.Text.Trim()
     if ($hostName -cnotmatch '^[A-Za-z0-9.-]{1,253}$' -or
@@ -3948,12 +4393,18 @@ function Start-SshUiOperation {
         $script:Controls.SshPasswordInput.Clear()
         $script:Controls.SshAuthenticationValue.Text = '失敗：主機或帳號格式無效'
         $script:Controls.ActivityLabel.Text = 'SSH：輸入格式無效'
+        if ($Action -eq 'BackupArtifactCheck') {
+            $script:Controls.BackupArtifactStateValue.Text = 'FAIL：SSH 主機或帳號格式無效；未連線'
+        }
         return
     }
     if ($hostName -cne $script:ProductionSshHost -or $username -cne $script:ProductionSshUser) {
         $script:Controls.SshPasswordInput.Clear()
         $script:Controls.SshAuthenticationValue.Text = '已阻擋：驗證僅允許正式環境主機與帳號'
         $script:Controls.ActivityLabel.Text = 'SSH 驗證：已阻擋（主機或帳號不符）'
+        if ($Action -eq 'BackupArtifactCheck') {
+            $script:Controls.BackupArtifactStateValue.Text = 'FAIL：SSH 主機或帳號與固定 Production 目標不符；未連線'
+        }
         if ($Action -eq 'BackupDestinationPreflight') {
             $script:Controls.BackupDestinationValue.Text = '未驗證；預檢僅允許正式環境主機與帳號'
             $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
@@ -3980,6 +4431,9 @@ function Start-SshUiOperation {
     if ($passwordCharacters.Length -eq 0) {
         $script:Controls.SshAuthenticationValue.Text = '尚未連線：請輸入密碼'
         $script:Controls.ActivityLabel.Text = 'SSH：尚未連線'
+        if ($Action -eq 'BackupArtifactCheck') {
+            $script:Controls.BackupArtifactStateValue.Text = 'FAIL：未提供 SSH 密碼；未連線'
+        }
         return
     }
 
@@ -3997,24 +4451,51 @@ function Start-SshUiOperation {
     }
 
     $script:Controls.SshAuthenticationValue.Text = '連線中…'
+    if ($Action -eq 'BackupArtifactCheck') {
+        $script:Controls.BackupArtifactStateValue.Text = "正在檢查：/home/zhe/pets-backups/$BackupArtifactName"
+    }
     if ($Action -eq 'BackupDestinationPreflight') {
         $script:Controls.BackupDestinationValue.Text = '驗證中…'
         $script:Controls.BackupStateValue.Text = '目的地驗證中；備份仍受阻擋'
         $script:Controls.BackupButton.Enabled = $false
     }
-    $operation = if ($Action -eq 'SshTest') { '測試 SSH 連線' } else { '唯讀驗證備份目的地' }
+    $operation = switch ($Action) {
+        'SshTest' { '測試 SSH 連線' }
+        'BackupDestinationPreflight' { '唯讀驗證備份目的地' }
+        'BackupArtifactCheck' { '檢查備份產物' }
+    }
     try {
-        Start-BackgroundOperation -Operation $operation -Action $Action `
-            -SshHost $hostName -SshUsername $username -SshPassword $securePassword
+        $operationArguments = @{
+            Operation = $operation
+            Action = $Action
+            SshHost = $hostName
+            SshUsername = $username
+            SshPassword = $securePassword
+        }
+        if ($Action -eq 'BackupArtifactCheck') {
+            $operationArguments.BackupArtifactName = $BackupArtifactName
+        }
+        Start-BackgroundOperation @operationArguments
     } catch {
         Clear-SshCredential -SecurePassword $securePassword
         $script:Controls.SshAuthenticationValue.Text = '失敗：無法啟動 SSH 工作'
+        if ($Action -eq 'BackupArtifactCheck') {
+            $script:Controls.BackupArtifactStateValue.Text = 'FAIL：無法啟動 SSH 檢查'
+        }
         if ($Action -eq 'BackupDestinationPreflight') {
             $script:Controls.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
             $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
         }
         $script:Controls.ActivityLabel.Text = "$operation：無法啟動"
     }
+}
+
+function Request-BackupArtifactCheckOperation {
+    $fileName = Show-BackupArtifactSelectionDialog
+    if ($null -eq $fileName) {
+        return
+    }
+    Start-SshUiOperation -Action 'BackupArtifactCheck' -BackupArtifactName $fileName
 }
 
 function Request-ActiveOperationCancellation {
@@ -4220,6 +4701,7 @@ $serverTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([Syst
 $serverTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void](New-InfoRow -Table $serverTable -Label '備份' -Value '正式操作待目的地驗證' -ControlName 'BackupStateValue')
 [void](New-InfoRow -Table $serverTable -Label '備份目的地' -Value '未驗證；正式備份禁止執行' -ControlName 'BackupDestinationValue')
+[void](New-InfoRow -Table $serverTable -Label '備份產物檢查' -Value '尚未檢查' -ControlName 'BackupArtifactStateValue')
 [void](New-InfoRow -Table $serverTable -Label 'SSH 認證' -Value '尚未連線' -ControlName 'SshAuthenticationValue')
 [void](New-TextInputRow -Table $serverTable -Label 'SSH 主機' -InitialValue $script:ProductionSshHost -ControlName 'SshHostInput')
 [void](New-TextInputRow -Table $serverTable -Label 'SSH 帳號' -InitialValue $script:ProductionSshUser -ControlName 'SshUsernameInput')
@@ -4231,6 +4713,7 @@ $serverButtons.AutoSize = $true
 $serverButtons.Dock = [System.Windows.Forms.DockStyle]::Fill
 $script:Controls.SshTestButton = New-ActionButton -Text '測試 SSH 連線'
 $script:Controls.BackupDestinationButton = New-ActionButton -Text '唯讀驗證備份目的地'
+$script:Controls.BackupArtifactCheckButton = New-ActionButton -Text '檢查備份產物（唯讀）'
 $script:Controls.CancelOperationButton = New-ActionButton -Text '取消目前操作' -Enabled $false
 $backupButton = New-ActionButton -Text '備份（目的地未驗證）' -Enabled $false
 $script:Controls.BackupButton = $backupButton
@@ -4238,6 +4721,7 @@ $script:Controls.RestoreButton = New-ActionButton -Text '選擇遠端備份並�
 $rebuildButton = New-ActionButton -Text '重建（尚未接線）' -Enabled $false
 $serverButtons.Controls.Add($script:Controls.SshTestButton)
 $serverButtons.Controls.Add($script:Controls.BackupDestinationButton)
+$serverButtons.Controls.Add($script:Controls.BackupArtifactCheckButton)
 $serverButtons.Controls.Add($script:Controls.CancelOperationButton)
 $serverButtons.Controls.Add($backupButton)
 $serverButtons.Controls.Add($script:Controls.RestoreButton)
@@ -4297,6 +4781,9 @@ $script:Controls.SshTestButton.Add_Click({
 })
 $script:Controls.BackupDestinationButton.Add_Click({
     Start-SshUiOperation -Action 'BackupDestinationPreflight'
+})
+$script:Controls.BackupArtifactCheckButton.Add_Click({
+    Request-BackupArtifactCheckOperation
 })
 $script:Controls.ProductionStateQueryButton.Add_Click({
     $script:Controls.ProductionStateQueryResultValue.Text = '查詢中…；固定狀態檔路徑尚未在 Production 實際確認'

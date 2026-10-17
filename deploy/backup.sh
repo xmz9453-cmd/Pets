@@ -30,6 +30,10 @@ chmod 700 "${BACKUP_DIR}"
 STAGE_DIR="$(mktemp -d "${BACKUP_DIR}/.pets-backup.XXXXXX")"
 ARCHIVE_TMP="${BACKUP_DIR}/.pets_backup_${TIMESTAMP}.tar.gz.tmp"
 BACKUP_FILE="${BACKUP_DIR}/pets_backup_${TIMESTAMP}.tar.gz"
+CHECKSUM_FILE="${BACKUP_FILE}.sha256"
+CHECKSUM_TMP="${BACKUP_DIR}/.pets_backup_${TIMESTAMP}.sha256.tmp"
+CHECKSUM_PUBLISHED=0
+ARCHIVE_PUBLISHED=0
 LOCK_PID=""
 LOCK_READ_FD=""
 LOCK_WRITE_FD=""
@@ -42,10 +46,21 @@ cleanup() {
   fi
   unset MYSQL_PWD
   rm -rf -- "${STAGE_DIR}"
-  rm -f -- "${ARCHIVE_TMP}"
+  rm -f -- "${ARCHIVE_TMP}" "${CHECKSUM_TMP}"
+  if [ "${CHECKSUM_PUBLISHED}" -eq 1 ] && [ "${ARCHIVE_PUBLISHED}" -eq 0 ]; then
+    rm -f -- "${CHECKSUM_FILE}"
+  fi
 }
 trap cleanup EXIT
 chmod 700 "${STAGE_DIR}"
+
+if [ -e "${BACKUP_FILE}" ] || [ -L "${BACKUP_FILE}" ] \
+  || [ -e "${CHECKSUM_FILE}" ] || [ -L "${CHECKSUM_FILE}" ] \
+  || [ -e "${ARCHIVE_TMP}" ] || [ -L "${ARCHIVE_TMP}" ] \
+  || [ -e "${CHECKSUM_TMP}" ] || [ -L "${CHECKSUM_TMP}" ]; then
+  echo "[backup.sh ERROR] Backup archive or checksum output already exists." >&2
+  exit 1
+fi
 
 mkdir -p "${STAGE_DIR}/pdf-root/contract-versions"
 SYMLINK_LIST="${STAGE_DIR}/contract-storage-symlinks.txt"
@@ -195,9 +210,29 @@ if ! cmp -s "${STAGE_DIR}/archive-contents.txt" "${STAGE_DIR}/expected-contents.
   echo "[backup.sh ERROR] Backup archive contents failed verification." >&2
   exit 1
 fi
-mv -- "${ARCHIVE_TMP}" "${BACKUP_FILE}"
-chmod 600 "${BACKUP_FILE}"
+(
+  cd "${BACKUP_DIR}"
+  sha256sum -- "$(basename "${ARCHIVE_TMP}")" \
+    | awk -v filename="$(basename "${BACKUP_FILE}")" '{ print $1 "  " filename }' \
+    > "$(basename "${CHECKSUM_TMP}")"
+)
+chmod 600 "${CHECKSUM_TMP}"
+mv -n -- "${CHECKSUM_TMP}" "${CHECKSUM_FILE}"
+if [ -e "${CHECKSUM_TMP}" ]; then
+  echo "[backup.sh ERROR] Could not publish the backup checksum sidecar." >&2
+  exit 1
+fi
+CHECKSUM_PUBLISHED=1
+mv -n -- "${ARCHIVE_TMP}" "${BACKUP_FILE}"
+if [ -e "${ARCHIVE_TMP}" ]; then
+  echo "[backup.sh ERROR] Could not publish the backup archive." >&2
+  exit 1
+fi
+ARCHIVE_PUBLISHED=1
 
-find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'pets_backup_*.tar.gz' -mtime +30 -delete
+find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'pets_backup_*.tar.gz' -mtime +30 -print0 \
+  | while IFS= read -r -d '' expired_backup; do
+    rm -f -- "${expired_backup}" "${expired_backup}.sha256"
+  done
 echo "[backup.sh SUCCESS] Verified database + contract PDF bundle: ${BACKUP_FILE}"
 echo "BACKUP_FILE=${BACKUP_FILE}"
