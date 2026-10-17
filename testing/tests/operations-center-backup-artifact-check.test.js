@@ -25,9 +25,13 @@ if ($parseErrors.Count -gt 0) {
 $requiredFunctions = @(
   'ConvertTo-PosixShellSingleQuotedString',
   'Test-BackupArtifactFileName',
+  'Get-BackupArtifactErrorDiagnostic',
   'New-BackupArtifactCheckCommand',
   'Get-BackupArtifactCheckOutcome',
   'Clear-SshCredential',
+  'Start-BackgroundOperation',
+  'Start-SshUiOperation',
+  'Request-BackupArtifactCheckOperation',
   'Invoke-BackupSshOperation',
   'Clear-BackupSshResources'
 )
@@ -76,6 +80,10 @@ function Assert-True {
   param([bool]$Condition, [string]$Message)
   if (-not $Condition) { throw $Message }
 }
+function Invoke-ControlledStringBinding {
+  param([string]$Value)
+  return $Value
+}
 
 $validName = 'pets_backup_20261017_095021.tar.gz'
 $validHash = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
@@ -118,6 +126,148 @@ function New-CheckResult {
     Cancelled = $Cancelled
     ExecutionUnconfirmed = $ExecutionUnconfirmed
   }
+}
+
+function Add-OperationLog {
+  param([string]$Operation, [string]$Status, [string[]]$Output = @())
+  [void]$script:testLogs.Add(($Output -join ([string][char]10)))
+}
+function Reset-TestControls {
+  $passwordInput = [pscustomobject]@{ Text = 'isolated-test-only' }
+  $passwordInput | Add-Member -MemberType ScriptMethod -Name Clear -Value { $this.Text = '' }
+  $script:Controls = @{
+    BackupArtifactStateValue = [pscustomobject]@{ Text = '' }
+    ActivityLabel = [pscustomobject]@{ Text = '' }
+    SshHostInput = [pscustomobject]@{ Text = 'mock.invalid' }
+    SshUsernameInput = [pscustomobject]@{ Text = 'isolated-user' }
+    SshPasswordInput = $passwordInput
+    SshAuthenticationValue = [pscustomobject]@{ Text = '' }
+  }
+  $script:OperationState = @{ IsBusy = $false; ActiveOperation = $null }
+  $script:testLogs = New-Object System.Collections.Generic.List[string]
+  $script:backgroundCalls = 0
+  $script:unexpectedBackgroundProgress = 0
+}
+function Get-TestLogText {
+  return $script:testLogs -join ([string][char]10)
+}
+Reset-TestControls
+$script:ProductionSshHost = 'mock.invalid'
+$script:ProductionSshUser = 'isolated-user'
+$script:actualStartBackgroundDefinition = $functionDefinitions['Start-BackgroundOperation']
+
+Add-TestCase 'UI validates a filename as a string and passes it unchanged without SSH' {
+  Reset-TestControls
+  Set-Item Function:\Start-BackgroundOperation -Value {
+    param($Operation, $Action, [object]$BackupArtifactName, $SshPassword)
+    $script:backgroundCalls++
+    $script:capturedArtifactName = $BackupArtifactName
+    Clear-SshCredential -SecurePassword $SshPassword
+  }
+  Start-SshUiOperation -Action 'BackupArtifactCheck' -BackupArtifactName $validName
+  Assert-True ($script:backgroundCalls -eq 1) 'Valid filename did not reach the background-operation boundary.'
+  Assert-True ($script:capturedArtifactName -ceq $validName) 'Valid filename was not passed through unchanged.'
+  Assert-True (-not $script:testLogs.Count) 'Successful isolated validation unexpectedly logged an error.'
+}
+Add-TestCase 'UI rejects empty, malformed, object, and array values before background work' {
+  Reset-TestControls
+  Set-Item Function:\Start-BackgroundOperation -Value {
+    param($Operation, $Action, [object]$BackupArtifactName, $SshPassword)
+    $script:backgroundCalls++
+    if ($SshPassword) { Clear-SshCredential -SecurePassword $SshPassword }
+  }
+  $invalidInputs = @(
+    '',
+    'not-a-backup-name',
+    [pscustomobject]@{ Name = $validName },
+    [string[]]@($validName, 'second'),
+    [object[]]@([pscustomobject]@{ Name = 'first' }, [pscustomobject]@{ Name = 'second' })
+  )
+  foreach ($invalidInput in $invalidInputs) {
+    Start-SshUiOperation -Action 'BackupArtifactCheck' -BackupArtifactName $invalidInput
+  }
+  Assert-True ($script:backgroundCalls -eq 0) 'An invalid filename reached background work.'
+  Assert-True ($script:Controls.BackupArtifactStateValue.Text.Length -gt 0) 'Invalid input was not visibly rejected.'
+}
+Add-TestCase 'Request returns on user cancellation without starting an operation' {
+  Reset-TestControls
+  Set-Item Function:\Show-BackupArtifactSelectionDialog -Value { return $null }
+  Set-Item Function:\Start-SshUiOperation -Value {
+    param($Action, [object]$BackupArtifactName)
+    $script:backgroundCalls++
+  }
+  Request-BackupArtifactCheckOperation
+  Assert-True ($script:backgroundCalls -eq 0) 'User cancellation started an operation.'
+}
+Add-TestCase 'Background operation rejects invalid values before worker setup' {
+  Reset-TestControls
+  Invoke-Expression $script:actualStartBackgroundDefinition
+  Set-Item Function:\Set-OperationButtonsEnabled -Value {
+    $script:unexpectedBackgroundProgress++
+    throw 'Background setup must not be reached for invalid filenames.'
+  }
+  $invalidInputs = @(
+    $null,
+    '',
+    'not-a-backup-name',
+    [pscustomobject]@{ Name = $validName },
+    [string[]]@($validName, 'second'),
+    [object[]]@([pscustomobject]@{ Name = 'first' }, [pscustomobject]@{ Name = 'second' })
+  )
+  foreach ($invalidInput in $invalidInputs) {
+    Start-BackgroundOperation -Operation 'isolated check' -Action 'BackupArtifactCheck' -BackupArtifactName $invalidInput
+  }
+  Assert-True ($script:unexpectedBackgroundProgress -eq 0) 'Invalid input reached worker setup.'
+  Assert-True (-not $script:OperationState.IsBusy) 'Invalid input marked the operation busy.'
+  Assert-True ($script:Controls.BackupArtifactStateValue.Text.Length -gt 0) 'Background operation did not reject invalid input.'
+}
+Add-TestCase 'Start-SshUiOperation catch records safe diagnostics only' {
+  Reset-TestControls
+  Invoke-Expression $functionDefinitions['Start-SshUiOperation']
+  Set-Item Function:\Start-BackgroundOperation -Value {
+    param($Operation, $Action, [object]$BackupArtifactName, $SshPassword)
+    throw 'CONTROLLED_START_BACKGROUND_SECRET'
+  }
+  Start-SshUiOperation -Action 'BackupArtifactCheck' -BackupArtifactName $validName
+  $logText = Get-TestLogText
+  Assert-True ($logText -match 'Boundary=Start-SshUiOperation') 'Start-SshUiOperation boundary was not recorded.'
+  Assert-True ($logText -match 'ErrorId=Unknown') 'Untrusted error identifier was not suppressed.'
+  Assert-True ($logText -match 'ErrorType=System\.Management\.Automation\.RuntimeException') 'Filtered error type was not recorded.'
+  Assert-True ($logText -match 'Location=[A-Za-z0-9_.-]+:[0-9]+:[0-9]+') 'Safe source location was not recorded.'
+  Assert-True ($logText -notmatch 'CONTROLLED_START_BACKGROUND_SECRET') 'Raw exception message leaked into diagnostics.'
+  Assert-True ($logText -notmatch [regex]::Escape($validName)) 'Filename argument leaked into diagnostics.'
+}
+Add-TestCase 'Request catch records safe diagnostics without reproducing the reported incident' {
+  Reset-TestControls
+  Set-Item Function:\Show-BackupArtifactSelectionDialog -Value { return $validName }
+  Set-Item Function:\Start-SshUiOperation -Value {
+    param($Action, [object]$BackupArtifactName)
+    throw 'CONTROLLED_REQUEST_BOUNDARY_SECRET'
+  }
+  Request-BackupArtifactCheckOperation
+  $logText = Get-TestLogText
+  Assert-True ($logText -match 'Boundary=Request-BackupArtifactCheckOperation') 'Request boundary was not recorded.'
+  Assert-True ($logText -match 'ErrorId=Unknown') 'Untrusted error identifier was not suppressed.'
+  Assert-True ($logText -match 'ErrorType=System\.Management\.Automation\.RuntimeException') 'Filtered error type was not recorded.'
+  Assert-True ($logText -match 'Location=[A-Za-z0-9_.-]+:[0-9]+:[0-9]+') 'Safe source location was not recorded.'
+  Assert-True ($logText -notmatch 'CONTROLLED_REQUEST_BOUNDARY_SECRET') 'Raw exception message leaked into diagnostics.'
+  Assert-True ($logText -notmatch [regex]::Escape($validName)) 'Filename argument leaked into diagnostics.'
+}
+Add-TestCase 'Controlled conversion error keeps only a whitelisted PowerShell error identifier' {
+  $inputObject = [pscustomobject]@{}
+  $inputObject | Add-Member -MemberType ScriptMethod -Name ToString -Value {
+    throw 'CONTROLLED_TRANSFORMATION_SECRET'
+  } -Force
+  try {
+    Invoke-ControlledStringBinding -Value $inputObject
+    throw 'Controlled conversion did not fail.'
+  } catch {
+    $diagnostic = Get-BackupArtifactErrorDiagnostic -ErrorRecord $_ -Boundary 'Start-SshUiOperation'
+  }
+  $diagnosticText = $diagnostic -join ([string][char]10)
+  Assert-True ($diagnosticText -match 'ErrorId=ParameterArgumentTransformationError') 'Safe PowerShell transformation identifier was not retained.'
+  Assert-True ($diagnosticText -match 'ErrorType=System\.Management\.Automation\.ParameterBindingArgumentTransformationException') 'PowerShell transformation error type was not recorded.'
+  Assert-True ($diagnosticText -notmatch 'CONTROLLED_TRANSFORMATION_SECRET') 'Controlled raw exception message leaked into diagnostics.'
 }
 
 Add-TestCase 'Only the prescribed filename is accepted' {
@@ -357,6 +507,13 @@ beforeAll(() => {
 
 describe('Operations Center backup artifact check isolated behavior', () => {
   test.each([
+    'UI validates a filename as a string and passes it unchanged without SSH',
+    'UI rejects empty, malformed, object, and array values before background work',
+    'Request returns on user cancellation without starting an operation',
+    'Background operation rejects invalid values before worker setup',
+    'Start-SshUiOperation catch records safe diagnostics only',
+    'Request catch records safe diagnostics without reproducing the reported incident',
+    'Controlled conversion error keeps only a whitelisted PowerShell error identifier',
     'Only the prescribed filename is accepted',
     'Remote command is read-only and confined to the fixed backup directory',
     'Missing archive is FAIL',

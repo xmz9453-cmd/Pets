@@ -443,6 +443,93 @@ function Test-BackupArtifactFileName {
     return $FileName -cmatch '\Apets_backup_\d{8}_\d{6}\.tar\.gz\z'
 }
 
+function Get-BackupArtifactErrorDiagnostic {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.ErrorRecord]$ErrorRecord,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Request-BackupArtifactCheckOperation', 'Start-SshUiOperation')]
+        [string]$Boundary
+    )
+
+    $errorId = 'Unknown'
+    $candidateErrorId = ($ErrorRecord.FullyQualifiedErrorId -split ',', 2)[0]
+    $safeErrorIds = @(
+        'ParameterArgumentTransformationError',
+        'ParameterBindingArgumentTransformationException',
+        'ParameterBindingValidationException',
+        'ParameterBindingException',
+        'RuntimeException',
+        'InvalidOperationException'
+    )
+    if ($candidateErrorId -cin $safeErrorIds) {
+        $errorId = $candidateErrorId
+    }
+
+    $exceptionType = 'Unknown'
+    $candidateExceptionType = $ErrorRecord.Exception.GetType().FullName
+    if ($candidateExceptionType -cmatch '\A[A-Za-z_][A-Za-z0-9_.+`]{0,159}\z') {
+        $exceptionType = $candidateExceptionType
+    }
+
+    $safeCommandNames = @(
+        'Request-BackupArtifactCheckOperation',
+        'Start-SshUiOperation',
+        'Start-BackgroundOperation',
+        'Get-BackupArtifactErrorDiagnostic'
+    )
+    $commandName = 'Unknown'
+    $scriptName = 'Unknown'
+    $lineNumber = 0
+    $offsetInLine = 0
+    $invocation = $ErrorRecord.InvocationInfo
+    if ($invocation) {
+        if ($invocation.MyCommand.Name -cin $safeCommandNames) {
+            $commandName = $invocation.MyCommand.Name
+        }
+        if ($invocation.ScriptName) {
+            $candidateScriptName = ($invocation.ScriptName -split '[\\/]')[-1]
+            if ($candidateScriptName -ceq 'Pets-Operations-Center.ps1') {
+                $scriptName = $candidateScriptName
+            } else {
+                $scriptName = 'Other'
+            }
+        }
+        if ($invocation.ScriptLineNumber -gt 0) {
+            $lineNumber = $invocation.ScriptLineNumber
+        }
+        if ($invocation.OffsetInLine -gt 0) {
+            $offsetInLine = $invocation.OffsetInLine
+        }
+    }
+
+    $safeFrames = New-Object System.Collections.Generic.List[string]
+    foreach ($frame in @($ErrorRecord.ScriptStackTrace -split "`r?`n")) {
+        if ($safeFrames.Count -ge 3) {
+            break
+        }
+        if ($frame -cmatch '^\s*at (?<command>[A-Za-z0-9_.<>-]{1,128}), (?<path>.+): line (?<line>[0-9]+)\s*$') {
+            $frameCommand = $Matches.command
+            $frameFile = ($Matches.path -split '[\\/]')[-1]
+            $frameLine = $Matches.line
+            if ($frameCommand -cin $safeCommandNames -and
+                $frameFile -ceq 'Pets-Operations-Center.ps1') {
+                $safeFrames.Add("$frameCommand@$frameFile`:$frameLine")
+            }
+        }
+    }
+    $stackFrames = if ($safeFrames.Count -gt 0) { $safeFrames -join ';' } else { 'Unavailable' }
+
+    return @(
+        "Boundary=$Boundary"
+        "ErrorId=$errorId"
+        "ErrorType=$exceptionType"
+        "Command=$commandName"
+        "Location=$scriptName`:$lineNumber`:$offsetInLine"
+        "StackFrames=$stackFrames"
+    )
+}
+
 function New-BackupArtifactCheckCommand {
     param([Parameter(Mandatory = $true)][string]$FileName)
 
@@ -2612,7 +2699,7 @@ function Start-BackgroundOperation {
         [string]$ExpectedHeadSha,
         [string]$ExpectedRemoteSha,
         [string]$BackupDestination,
-        [string]$BackupArtifactName,
+        [object]$BackupArtifactName,
         [string]$RestoreBundlePath,
         [string]$RestoreConfirmation,
         [switch]$RestoreTestMode,
@@ -2644,7 +2731,8 @@ function Start-BackgroundOperation {
         throw 'Backup 測試模式與 Mock 執行器設定無效；拒絕建立背景工作。'
     }
     if ($Action -eq 'BackupArtifactCheck' -and (
-        -not (Test-BackupArtifactFileName -FileName $BackupArtifactName) -or
+        ($BackupArtifactName -isnot [string]) -or
+        (-not (Test-BackupArtifactFileName -FileName $BackupArtifactName)) -or
         (-not $BackupTestMode -and (
             $SshHost -cne $script:ProductionSshHost -or
             $SshUsername -cne $script:ProductionSshUser -or
@@ -4377,11 +4465,13 @@ function Start-SshUiOperation {
         [Parameter(Mandatory = $true)]
         [ValidateSet('SshTest', 'BackupDestinationPreflight', 'BackupArtifactCheck')]
         [string]$Action,
-        [string]$BackupArtifactName
+        [object]$BackupArtifactName
     )
 
-    if ($Action -eq 'BackupArtifactCheck' -and
-        -not (Test-BackupArtifactFileName -FileName $BackupArtifactName)) {
+    if ($Action -eq 'BackupArtifactCheck' -and (
+        ($BackupArtifactName -isnot [string]) -or
+        (-not (Test-BackupArtifactFileName -FileName $BackupArtifactName))
+    )) {
         $script:Controls.BackupArtifactStateValue.Text = 'FAIL：備份檔名無效；未連線'
         $script:Controls.ActivityLabel.Text = '檢查備份產物：FAIL'
         return
@@ -4487,6 +4577,12 @@ function Start-SshUiOperation {
             $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
         }
         $script:Controls.ActivityLabel.Text = "$operation：無法啟動"
+        if ($Action -eq 'BackupArtifactCheck') {
+            Add-OperationLog -Operation $operation -Status '檢查工作無法啟動' -Output @(
+                (Get-BackupArtifactErrorDiagnostic -ErrorRecord $_ `
+                    -Boundary 'Start-SshUiOperation')
+            )
+        }
     }
 }
 
@@ -4495,7 +4591,16 @@ function Request-BackupArtifactCheckOperation {
     if ($null -eq $fileName) {
         return
     }
-    Start-SshUiOperation -Action 'BackupArtifactCheck' -BackupArtifactName $fileName
+    try {
+        Start-SshUiOperation -Action 'BackupArtifactCheck' -BackupArtifactName $fileName
+    } catch {
+        $script:Controls.BackupArtifactStateValue.Text = '檢查工作無法啟動'
+        $script:Controls.ActivityLabel.Text = '檢查備份產物：無法啟動'
+        Add-OperationLog -Operation '檢查備份產物' -Status '檢查工作無法啟動' -Output @(
+            (Get-BackupArtifactErrorDiagnostic -ErrorRecord $_ `
+                -Boundary 'Request-BackupArtifactCheckOperation')
+        )
+    }
 }
 
 function Request-ActiveOperationCancellation {
