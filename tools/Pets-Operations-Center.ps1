@@ -296,6 +296,7 @@ function Protect-SensitiveText {
     param([AllowEmptyString()][string]$Text)
 
     $safeText = $Text -replace '(?i)(https?://)[^/@\s]+@', '$1[REDACTED]@'
+    $safeText = $safeText -replace '(?i)\bAuthorization\s*[:=]\s*.*$', 'Authorization=[REDACTED]'
     $safeText = $safeText -replace '(?i)\b(DB_PASSWORD|PASSWORD|PASSWD|PASSPHRASE|TOKEN|SECRET|API_KEY|CONTRACT_STORAGE_ROOT)\s*=\s*[^\s,;]+', '$1=[REDACTED]'
     return $safeText
 }
@@ -1519,11 +1520,56 @@ function Add-OperationLog {
     )
 
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $script:Controls.LogBox.AppendText("[$timestamp] [$Status] $Operation`r`n")
-    foreach ($line in $Output) {
-        if ($line) {
-            $script:Controls.LogBox.AppendText("  $line`r`n")
+    $displayOperation = $Operation `
+        -replace '（npm --prefix testing test）', '（本機必要測試）' `
+        -replace '（git push origin master）', ''
+    $displayStatus = $Status `
+        -replace '(?i)\bexit(?: code)?\s+(-?\d+)', '退出碼 $1' `
+        -replace '^PASS$', '通過' `
+        -replace '^FAIL$', '未通過' `
+        -replace 'restore\.sh SUCCESS 標記及退出碼已確認', '還原腳本成功標記及退出碼已確認'
+    $isSuccessful = $Status -match '^(成功(?:（exit 0）)?|推送成功|PASS|遠端備份列舉成功|驗證成功；尚未執行備份|restore\.sh SUCCESS 標記及退出碼已確認)$'
+    $formattedOutput = New-Object System.Collections.Generic.List[string]
+    foreach ($item in $Output) {
+        foreach ($line in ([string]$item -split "`r?`n")) {
+            $cleanLine = Protect-SensitiveText -Text $line.Trim()
+            $cleanLine = $cleanLine `
+                -replace '(?i)\bAuthorization\s*[:=]\s*Bearer\s+[A-Za-z0-9._~+/-]+=*', 'Authorization=[REDACTED]' `
+                -replace '(?i)\b(PASSWORD|PASSWD|PASSPHRASE|TOKEN|SECRET|API[_-]?KEY|AUTHORIZATION)\s*[:=]\s*[^\s,;]+', '$1=[REDACTED]' `
+                -replace '(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*', 'Bearer [REDACTED]'
+            $cleanLine = $cleanLine -replace '^\[PASS\]', '[通過]' -replace '^\[FAIL\]', '[未通過]'
+            if ([string]::IsNullOrWhiteSpace($cleanLine) -or
+                $cleanLine -match '^(?:at .+ line \d+|At .+:\d+ char:\d+|ScriptStackTrace:|例外堆疊[:：]|\+ CategoryInfo|\+ FullyQualifiedErrorId)') {
+                continue
+            }
+            if ($isSuccessful -and $cleanLine -notmatch '(?i)(?:\b[0-9a-f]{40}\b|SHA|commit|部署狀態|verification|timestamp|備份檔|備份 bundle|目的地實際路徑|目標資料庫|目標主機|工作樹|分支|與本機 HEAD|查詢方式|確認|未執行|未建立|只讀|唯讀|驗證|安全|停止|遠端結果|警告|狀態|DestinationStatus|CleanupSucceeded|主機比對|帳號比對|成功判定|SSH\.NET|OpenSSH|known_hosts|私鑰|^\[(?:PASS|FAIL|通過|未通過)\])') {
+                continue
+            }
+            if ($cleanLine.Length -gt 300) {
+                $cleanLine = $cleanLine.Substring(0, 300) + '…（已截斷）'
+            }
+            if (-not $formattedOutput.Contains($cleanLine)) {
+                $formattedOutput.Add($cleanLine)
+            }
         }
+    }
+    if (-not $isSuccessful -and $formattedOutput.Count -gt 8) {
+        $omittedCount = $formattedOutput.Count - 8
+        $lastLine = $formattedOutput[$formattedOutput.Count - 1]
+        $compactOutput = New-Object System.Collections.Generic.List[string]
+        foreach ($line in $formattedOutput.GetRange(0, 7)) {
+            $compactOutput.Add($line)
+        }
+        if (-not $compactOutput.Contains($lastLine)) {
+            $compactOutput.Add($lastLine)
+        }
+        $compactOutput.Add("其餘 $omittedCount 行診斷已省略。")
+        $formattedOutput = $compactOutput
+    }
+
+    $script:Controls.LogBox.AppendText("[$timestamp] [$displayStatus] $displayOperation`r`n")
+    foreach ($line in $formattedOutput) {
+        $script:Controls.LogBox.AppendText("  $line`r`n")
     }
     $script:Controls.LogBox.AppendText("`r`n")
     $script:Controls.LogBox.SelectionStart = $script:Controls.LogBox.TextLength
@@ -1544,7 +1590,64 @@ function Write-BackupButtonDiagnostic {
 }
 
 function Format-ProcessOutput {
-    param([Parameter(Mandatory = $true)]$Result)
+    param(
+        [Parameter(Mandatory = $true)]$Result,
+        [switch]$Detailed
+    )
+
+    if (-not $Detailed) {
+        if ($Result.TimedOut) {
+            return @('程序逾時；本機程序已停止。')
+        }
+        if ($Result.Cancelled) {
+            return @('操作已取消。')
+        }
+        if ($Result.ExitCode -eq 0) {
+            return @('程序已成功完成。')
+        }
+
+        $exitCode = if ($null -eq $Result.ExitCode) { '無法確認' } else { [string]$Result.ExitCode }
+        $lines = New-Object System.Collections.Generic.List[string]
+        $lines.Add("程序失敗（退出碼 $exitCode）。")
+        $errorPattern = '(?i)(?:\b(?:ERROR|FATAL|Exception|denied|timed out|not found)\b|permission denied|拒絕|錯誤|失敗|逾時)'
+        $errorLines = New-Object System.Collections.Generic.List[string]
+        foreach ($source in @(
+            [pscustomobject]@{ Label = '錯誤輸出'; Text = [string]$Result.Stderr },
+            [pscustomobject]@{ Label = '錯誤訊息'; Text = [string]$Result.Stdout }
+        )) {
+            foreach ($line in ($source.Text -split "`r?`n")) {
+                if ($line -match $errorPattern -and -not [string]::IsNullOrWhiteSpace($line)) {
+                    $summary = "$($source.Label)：$(Protect-SensitiveText -Text $line.Trim())"
+                    if (-not $errorLines.Contains($summary)) {
+                        $errorLines.Add($summary)
+                    }
+                }
+            }
+        }
+        if ($errorLines.Count -gt 0) {
+            foreach ($line in $errorLines | Select-Object -First 4) {
+                $lines.Add($line)
+            }
+        } else {
+            foreach ($source in @(
+                [pscustomobject]@{ Label = '錯誤輸出摘要'; Text = [string]$Result.Stderr },
+                [pscustomobject]@{ Label = '程序輸出摘要'; Text = [string]$Result.Stdout }
+            )) {
+                $count = 0
+                foreach ($line in ($source.Text -split "`r?`n")) {
+                    if (-not [string]::IsNullOrWhiteSpace($line) -and $count -lt 2) {
+                        $lines.Add("$($source.Label)：$(Protect-SensitiveText -Text $line.Trim())")
+                        $count++
+                    }
+                }
+            }
+        }
+        if ($lines.Count -eq 1) {
+            $lines.Add('未取得可用的錯誤訊息。')
+        }
+        return $lines.ToArray()
+    }
+
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($line in ($Result.Stdout -split "`r?`n")) {
         if ($line) {
