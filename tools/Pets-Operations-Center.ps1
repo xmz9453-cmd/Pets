@@ -3514,7 +3514,8 @@ $productionTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([
 [void](New-InfoRow -Table $productionTable -Label '部署 verification' -Value '尚未查詢' -ControlName 'ProductionDeployVerificationValue')
 [void](New-InfoRow -Table $productionTable -Label '部署 timestamp' -Value '尚未查詢' -ControlName 'ProductionDeployTimestampValue')
 [void](New-InfoRow -Table $productionTable -Label '狀態檔路徑' `
-    -Value '/home/zhe/pets-deploy-state/deployment.state（尚未在 Production 實際確認）')
+    -Value '/home/zhe/pets-deploy-state/deployment.state（尚未在 Production 實際確認）' `
+    -ControlName 'ProductionStateFilePathValue')
 $targetLabel = New-Object System.Windows.Forms.Label
 $targetLabel.Text = '目標 SHA'
 $targetLabel.AutoSize = $true
