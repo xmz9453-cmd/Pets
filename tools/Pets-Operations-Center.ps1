@@ -3965,6 +3965,16 @@ function Start-SshUiOperation {
         return
     }
 
+    if ($Action -eq 'BackupDestinationPreflight') {
+        $script:OperationState.VerifiedBackupDirectory = $null
+        $script:OperationState.VerifiedBackupHost = $null
+        $script:OperationState.VerifiedBackupUser = $null
+        $script:Controls.BackupDestinationValue.Text = '未驗證；正式備份禁止執行'
+        $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
+        $script:Controls.BackupButton.Text = '備份（目的地未驗證）'
+        $script:Controls.BackupButton.Enabled = $false
+    }
+
     $passwordCharacters = $script:Controls.SshPasswordInput.Text.ToCharArray()
     $script:Controls.SshPasswordInput.Clear()
     if ($passwordCharacters.Length -eq 0) {
@@ -3988,9 +3998,6 @@ function Start-SshUiOperation {
 
     $script:Controls.SshAuthenticationValue.Text = '連線中…'
     if ($Action -eq 'BackupDestinationPreflight') {
-        $script:OperationState.VerifiedBackupDirectory = $null
-        $script:OperationState.VerifiedBackupHost = $null
-        $script:OperationState.VerifiedBackupUser = $null
         $script:Controls.BackupDestinationValue.Text = '驗證中…'
         $script:Controls.BackupStateValue.Text = '目的地驗證中；備份仍受阻擋'
         $script:Controls.BackupButton.Enabled = $false
