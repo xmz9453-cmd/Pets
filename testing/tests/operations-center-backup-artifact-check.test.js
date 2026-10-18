@@ -427,10 +427,14 @@ Add-TestCase 'Remote command rejects a competing archive with this run checksum'
     $bashBackupDirectory = '/' + $backupDirectory.Substring(0, 1).ToLowerInvariant() +
       $backupDirectory.Substring(2).Replace('\', '/')
     $quotedBackupDirectory = ConvertTo-PosixShellSingleQuotedString -Value $bashBackupDirectory
-    $command = (New-BackupArtifactCheckCommand -FileName $validName).Replace(
-      "backup_dir='/home/zhe/pets-backups'",
-      "backup_dir=$quotedBackupDirectory"
-    )
+    $quotedFileName = ConvertTo-PosixShellSingleQuotedString -Value $validName
+    $command = @(
+      "backup_file_name=$quotedFileName"
+      (New-BackupArtifactCheckCommand -BackupDirectory $bashBackupDirectory -DynamicFileName)
+    ) -join [string][char]10
+    Assert-True ($command.Contains("backup_dir=$quotedBackupDirectory")) 'Dynamic verifier did not use the reported archive directory.'
+    Assert-True ($command.Contains('file_name="$backup_file_name"')) 'Dynamic verifier did not use the reported archive filename.'
+    Assert-True ($command.Contains('backup_file="$backup_dir/$file_name"')) 'Dynamic verifier did not compose the requested archive path.'
     $scriptPath = Join-Path $backupDirectory 'check-backup.sh'
     [System.IO.File]::WriteAllText($scriptPath, $command, (New-Object System.Text.UTF8Encoding($false)))
 
@@ -456,6 +460,8 @@ Add-TestCase 'Remote command rejects a competing archive with this run checksum'
     $outcome = Get-TestOutcome -Result $result
 
     Assert-True ($outcome.Verdict -ceq 'FAIL') "Expected mismatched competing archive and sidecar to FAIL, got $($outcome.Verdict)."
+    Assert-True ($stdout -match '(?m)^ARTIFACT_STATE=OK$') "Dynamic verifier did not inspect the archive in the explicit directory. Output: $stdout"
+    Assert-True ($stdout -match '(?m)^CHECKSUM_ENTRY=FOUND$') "Dynamic verifier did not inspect the explicit archive's sidecar. Output: $stdout"
     Assert-True ($stdout -match '(?m)^CHECKSUM_VERIFY=FAIL$') "Remote verifier did not report a checksum mismatch. Output: $stdout Error: $stderr"
     Assert-True ([System.IO.File]::ReadAllText($archivePath) -ceq 'competing archive') 'Verifier modified the competing archive.'
     Assert-True ([System.IO.File]::ReadAllText($checksumPath) -ceq ("$thisRunHash  $validName" + [string][char]10)) 'Verifier modified the checksum sidecar.'
