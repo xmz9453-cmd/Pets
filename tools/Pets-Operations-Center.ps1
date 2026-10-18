@@ -676,7 +676,13 @@ function Get-BackupArtifactCheckOutcome {
         CHECKSUM_ENTRY = @('FOUND', 'MISSING', 'DUPLICATE', 'UNKNOWN')
         CHECKSUM_VERIFY = @('PASS', 'FAIL', 'NOT_RUN')
     }
-    foreach ($line in @([string]$Result.Stdout -split "`r?`n")) {
+    $stdout = [string]$Result.Stdout
+    if ($stdout.EndsWith("`r`n")) {
+        $stdout = $stdout.Substring(0, $stdout.Length - 2)
+    } elseif ($stdout.EndsWith("`n")) {
+        $stdout = $stdout.Substring(0, $stdout.Length - 1)
+    }
+    foreach ($line in @($stdout -split "`r?`n")) {
         if ($line -cnotmatch '\A(ARTIFACT_STATE|ARTIFACT_SIZE|ARTIFACT_SHA256|CHECKSUM_STATE|CHECKSUM_FORMAT|CHECKSUM_ENTRY|CHECKSUM_VERIFY)=(.*)\z') {
             $outcome.Verdict = 'UNCONFIRMED'
             $outcome.Detail = '遠端輸出格式無法確認；不回報檢查成功。'

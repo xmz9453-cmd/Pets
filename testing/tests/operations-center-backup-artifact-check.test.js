@@ -408,6 +408,23 @@ Add-TestCase 'Only a complete verified checksum result is PASS' {
   Assert-True ($outcome.Size -eq 12345) 'Verified file size was not returned.'
   Assert-True ($outcome.Sha256 -ceq $validHash) 'Verified archive SHA-256 was not returned.'
 }
+Add-TestCase 'Complete verified checksum result with trailing LF is PASS' {
+  $output = $validOutput + [string][char]10
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'PASS') "Expected PASS, got $($outcome.Verdict)."
+  Assert-True ($outcome.Size -eq 12345) 'Verified file size was not returned.'
+  Assert-True ($outcome.Sha256 -ceq $validHash) 'Verified archive SHA-256 was not returned.'
+}
+Add-TestCase 'Complete verified checksum result with trailing CRLF is PASS' {
+  $output = $validOutput + ([string][char]13 + [string][char]10)
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'PASS') "Expected PASS, got $($outcome.Verdict)."
+}
+Add-TestCase 'Blank line between artifact check fields remains unconfirmed' {
+  $output = $validOutput.Replace('ARTIFACT_SIZE=12345', 'ARTIFACT_SIZE=12345' + [string][char]10 + [string][char]10)
+  $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
+  Assert-True ($outcome.Verdict -ceq 'UNCONFIRMED') "Expected UNCONFIRMED, got $($outcome.Verdict)."
+}
 Add-TestCase 'Unknown or malformed artifact SHA-256 cannot produce PASS' {
   $unknownHash = $validOutput.Replace("ARTIFACT_SHA256=$validHash", 'ARTIFACT_SHA256=UNKNOWN')
   $unknownHashOutcome = Get-TestOutcome -Result (New-CheckResult -Stdout $unknownHash)
@@ -581,6 +598,9 @@ describe('Operations Center backup artifact check isolated behavior', () => {
     'Checksum entry missing from sidecar is FAIL',
     'Checksum mismatch is FAIL',
     'Only a complete verified checksum result is PASS',
+    'Complete verified checksum result with trailing LF is PASS',
+    'Complete verified checksum result with trailing CRLF is PASS',
+    'Blank line between artifact check fields remains unconfirmed',
     'Unknown or malformed artifact SHA-256 cannot produce PASS',
     'Timeout and incomplete remote response remain unconfirmed',
     'SSH connection or checksum sidecar presence alone cannot produce PASS',
