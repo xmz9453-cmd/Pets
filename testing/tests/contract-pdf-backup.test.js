@@ -455,4 +455,49 @@ describe('Contract PDF backup and restore scripts', () => {
       removeFixture(fixture);
     }
   });
+
+  test('removes the checksum sidecar when archive publication loses a race', () => {
+    const fixture = createFixture({ schemaCount: '1' });
+    const raceToolRoot = path.join(fixture.tempRoot, 'race-tools');
+    const raceMarker = path.join(fixture.tempRoot, 'archive-publish-race.txt');
+    const toBashPath = (value) => (process.platform === 'win32'
+      ? `/${value[0].toLowerCase()}${value.slice(2).replace(/\\/g, '/')}`
+      : value);
+    try {
+      fs.mkdirSync(raceToolRoot);
+      fs.writeFileSync(path.join(raceToolRoot, 'mv'), `#!/usr/bin/env bash
+set -e
+source_path="\${@: -2:1}"
+destination="\${@: -1}"
+if [[ "\${source_path##*/}" == .pets_backup_*.tar.gz.tmp \
+  && "\${destination##*/}" == pets_backup_*.tar.gz ]]; then
+  printf 'archive-publish-race\\n' > "$MOCK_ARCHIVE_RACE_MARKER"
+  printf 'competing archive\\n' > "$destination"
+fi
+exec /usr/bin/mv "$@"
+`);
+      fs.chmodSync(path.join(raceToolRoot, 'mv'), 0o755);
+      fs.appendFileSync(
+        path.join(fixture.tempRoot, 'bash-env'),
+        `hash -p '${toBashPath(path.join(raceToolRoot, 'mv'))}' mv\n`,
+      );
+
+      const backup = fixture.runBackup({
+        MOCK_ARCHIVE_RACE_MARKER: toBashPath(raceMarker),
+      });
+
+      expect(backup.status).not.toBe(0);
+      expect(backup.stderr).toContain('Could not publish the backup archive.');
+      expect(fs.readFileSync(raceMarker, 'utf8')).toBe('archive-publish-race\n');
+
+      const archiveFiles = fs.readdirSync(fixture.backupRoot)
+        .filter((name) => name.endsWith('.tar.gz'));
+      expect(archiveFiles).toHaveLength(1);
+      const archiveFile = path.join(fixture.backupRoot, archiveFiles[0]);
+      expect(fs.readFileSync(archiveFile, 'utf8')).toBe('competing archive\n');
+      expect(fs.existsSync(`${archiveFile}.sha256`)).toBe(false);
+    } finally {
+      removeFixture(fixture);
+    }
+  });
 });
