@@ -29,6 +29,7 @@ $requiredFunctions = @(
   'New-BackupArtifactCheckCommand',
   'Get-BackupArtifactCheckOutcome',
   'Clear-SshCredential',
+  'Show-BackupArtifactSelectionDialog',
   'Start-BackgroundOperation',
   'Start-SshUiOperation',
   'Request-BackupArtifactCheckOperation',
@@ -49,6 +50,16 @@ foreach ($name in $requiredFunctions) {
   }
   Invoke-Expression $functionDefinitions[$name]
 }
+
+$backupArtifactClickHandlers = @($sourceAst.FindAll({
+  param($node)
+  $node -is [System.Management.Automation.Language.ScriptBlockExpressionAst] -and
+    $node.Extent.Text -match '(?s)^\{\s*Request-BackupArtifactCheckOperation\s*\}$'
+}, $true))
+if ($backupArtifactClickHandlers.Count -ne 1) {
+  throw 'Backup artifact button click handler not found uniquely.'
+}
+$script:backupArtifactButtonClickHandlerText = $backupArtifactClickHandlers[0].Extent.Text
 
 $workerAssignment = $sourceAst.Find({
   param($node)
@@ -155,6 +166,48 @@ Reset-TestControls
 $script:ProductionSshHost = 'mock.invalid'
 $script:ProductionSshUser = 'isolated-user'
 $script:actualStartBackgroundDefinition = $functionDefinitions['Start-BackgroundOperation']
+
+Add-TestCase 'Selection dialog suppresses layout indices from its function output' {
+  $dialogDefinition = $functionDefinitions['Show-BackupArtifactSelectionDialog']
+  $suppressedAdds = [regex]::Matches(
+    $dialogDefinition,
+    '(?m)^\s*\[void\]\$layout\.RowStyles\.Add\('
+  ).Count
+  $unsuppressedAdds = [regex]::Matches(
+    $dialogDefinition,
+    '(?m)^\s*\$layout\.RowStyles\.Add\('
+  ).Count
+  Assert-True ($suppressedAdds -eq 3) 'Selection dialog does not suppress all three RowStyles.Add() return values.'
+  Assert-True ($unsuppressedAdds -eq 0) 'Selection dialog can emit a RowStyles.Add() return value.'
+}
+Add-TestCase 'Backup artifact button passes the selected filename through production request and UI functions' {
+  Reset-TestControls
+  $buttonHandlerBody = $script:backupArtifactButtonClickHandlerText -replace '^\{\s*|\s*\}$', ''
+  Assert-True ($buttonHandlerBody.Trim() -ceq 'Request-BackupArtifactCheckOperation') 'Backup artifact button does not invoke the production request function directly.'
+  Set-Item Function:\Show-BackupArtifactSelectionDialog -Value {
+    return $validName
+  }
+  Set-Item Function:\Start-BackgroundOperation -Value {
+    param(
+      $Operation,
+      $Action,
+      [object]$BackupArtifactName,
+      $SshHost,
+      $SshUsername,
+      [System.Security.SecureString]$SshPassword
+    )
+    $script:backgroundCalls++
+    $script:capturedArtifactName = $BackupArtifactName
+    Clear-SshCredential -SecurePassword $SshPassword
+  }
+
+  Request-BackupArtifactCheckOperation
+
+  Assert-True ($script:backgroundCalls -eq 1) 'Button click did not reach the isolated background-operation boundary exactly once.'
+  Assert-True ($script:capturedArtifactName -is [string]) 'Selected filename did not remain a scalar string through the button call chain.'
+  Assert-True ($script:capturedArtifactName -ceq $validName) 'Selected filename was not passed through unchanged.'
+  Assert-True (-not $script:testLogs.Count) 'Successful isolated button call unexpectedly logged an error.'
+}
 
 Add-TestCase 'UI validates a filename as a string and passes it unchanged without SSH' {
   Reset-TestControls
@@ -507,6 +560,8 @@ beforeAll(() => {
 
 describe('Operations Center backup artifact check isolated behavior', () => {
   test.each([
+    'Selection dialog suppresses layout indices from its function output',
+    'Backup artifact button passes the selected filename through production request and UI functions',
     'UI validates a filename as a string and passes it unchanged without SSH',
     'UI rejects empty, malformed, object, and array values before background work',
     'Request returns on user cancellation without starting an operation',

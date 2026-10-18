@@ -956,9 +956,9 @@ function Show-BackupArtifactSelectionDialog {
     $layout.Dock = [System.Windows.Forms.DockStyle]::Fill
     $layout.ColumnCount = 1
     $layout.RowCount = 3
-    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 
     $label = New-Object System.Windows.Forms.Label
     $label.Text = "輸入 pets-backups 目錄中的備份檔名（不含路徑）。僅檢查檔案與 checksum sidecar，不會寫入或下載。"
