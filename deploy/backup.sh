@@ -32,8 +32,6 @@ ARCHIVE_TMP="${BACKUP_DIR}/.pets_backup_${TIMESTAMP}.tar.gz.tmp"
 BACKUP_FILE="${BACKUP_DIR}/pets_backup_${TIMESTAMP}.tar.gz"
 CHECKSUM_FILE="${BACKUP_FILE}.sha256"
 CHECKSUM_TMP="${BACKUP_DIR}/.pets_backup_${TIMESTAMP}.sha256.tmp"
-CHECKSUM_PUBLISHED=0
-ARCHIVE_PUBLISHED=0
 LOCK_PID=""
 LOCK_READ_FD=""
 LOCK_WRITE_FD=""
@@ -47,9 +45,6 @@ cleanup() {
   unset MYSQL_PWD
   rm -rf -- "${STAGE_DIR}"
   rm -f -- "${ARCHIVE_TMP}" "${CHECKSUM_TMP}"
-  if [ "${CHECKSUM_PUBLISHED}" -eq 1 ] && [ "${ARCHIVE_PUBLISHED}" -eq 0 ]; then
-    rm -f -- "${CHECKSUM_FILE}"
-  fi
 }
 trap cleanup EXIT
 chmod 700 "${STAGE_DIR}"
@@ -222,13 +217,11 @@ if [ -e "${CHECKSUM_TMP}" ]; then
   echo "[backup.sh ERROR] Could not publish the backup checksum sidecar." >&2
   exit 1
 fi
-CHECKSUM_PUBLISHED=1
 mv -n -- "${ARCHIVE_TMP}" "${BACKUP_FILE}"
 if [ -e "${ARCHIVE_TMP}" ]; then
   echo "[backup.sh ERROR] Could not publish the backup archive." >&2
   exit 1
 fi
-ARCHIVE_PUBLISHED=1
 
 find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'pets_backup_*.tar.gz' -mtime +30 -print0 \
   | while IFS= read -r -d '' expired_backup; do

@@ -402,6 +402,67 @@ Add-TestCase 'Checksum mismatch is FAIL' {
   $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $output)
   Assert-True ($outcome.Verdict -ceq 'FAIL') "Expected FAIL, got $($outcome.Verdict)."
 }
+Add-TestCase 'Remote command rejects a competing archive with this run checksum' {
+  $bashPath = 'C:\Program Files\Git\bin\bash.exe'
+  if (-not (Test-Path -LiteralPath $bashPath -PathType Leaf)) {
+    throw "Bash is required to execute the isolated checksum verifier: $bashPath"
+  }
+
+  $backupDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("pets-backup-check-" + [guid]::NewGuid().ToString('N'))
+  [void](New-Item -ItemType Directory -Path $backupDirectory)
+  try {
+    $archivePath = Join-Path $backupDirectory $validName
+    $checksumPath = "$archivePath.sha256"
+    $competitorArchive = [System.Text.Encoding]::ASCII.GetBytes('competing archive')
+    $thisRunArchive = [System.Text.Encoding]::ASCII.GetBytes('this run archive')
+    [System.IO.File]::WriteAllBytes($archivePath, $competitorArchive)
+    $thisRunHashBytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash($thisRunArchive)
+    $thisRunHash = ([BitConverter]::ToString($thisRunHashBytes)).Replace('-', '').ToLowerInvariant()
+    [System.IO.File]::WriteAllText(
+      $checksumPath,
+      ("$thisRunHash  $validName" + [string][char]10),
+      (New-Object System.Text.UTF8Encoding($false))
+    )
+
+    $bashBackupDirectory = '/' + $backupDirectory.Substring(0, 1).ToLowerInvariant() +
+      $backupDirectory.Substring(2).Replace('\', '/')
+    $quotedBackupDirectory = ConvertTo-PosixShellSingleQuotedString -Value $bashBackupDirectory
+    $command = (New-BackupArtifactCheckCommand -FileName $validName).Replace(
+      "backup_dir='/home/zhe/pets-backups'",
+      "backup_dir=$quotedBackupDirectory"
+    )
+    $scriptPath = Join-Path $backupDirectory 'check-backup.sh'
+    [System.IO.File]::WriteAllText($scriptPath, $command, (New-Object System.Text.UTF8Encoding($false)))
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $bashPath
+    $startInfo.Arguments = '-- "' + $scriptPath + '"'
+    $startInfo.WorkingDirectory = $backupDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    $result = [pscustomobject]@{
+      ExitCode = $process.ExitCode
+      Stdout = $stdout
+      Stderr = $stderr
+      TimedOut = $false
+      Cancelled = $false
+    }
+    $outcome = Get-TestOutcome -Result $result
+
+    Assert-True ($outcome.Verdict -ceq 'FAIL') "Expected mismatched competing archive and sidecar to FAIL, got $($outcome.Verdict)."
+    Assert-True ($stdout -match '(?m)^CHECKSUM_VERIFY=FAIL$') "Remote verifier did not report a checksum mismatch. Output: $stdout Error: $stderr"
+    Assert-True ([System.IO.File]::ReadAllText($archivePath) -ceq 'competing archive') 'Verifier modified the competing archive.'
+    Assert-True ([System.IO.File]::ReadAllText($checksumPath) -ceq ("$thisRunHash  $validName" + [string][char]10)) 'Verifier modified the checksum sidecar.'
+  } finally {
+    Remove-Item -LiteralPath $backupDirectory -Recurse -Force
+  }
+}
 Add-TestCase 'Only a complete verified checksum result is PASS' {
   $outcome = Get-TestOutcome -Result (New-CheckResult -Stdout $validOutput)
   Assert-True ($outcome.Verdict -ceq 'PASS') "Expected PASS, got $($outcome.Verdict)."
@@ -597,6 +658,7 @@ describe('Operations Center backup artifact check isolated behavior', () => {
     'Duplicate target checksum entries are FAIL',
     'Checksum entry missing from sidecar is FAIL',
     'Checksum mismatch is FAIL',
+    'Remote command rejects a competing archive with this run checksum',
     'Only a complete verified checksum result is PASS',
     'Complete verified checksum result with trailing LF is PASS',
     'Complete verified checksum result with trailing CRLF is PASS',

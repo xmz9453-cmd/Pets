@@ -456,7 +456,7 @@ describe('Contract PDF backup and restore scripts', () => {
     }
   });
 
-  test('removes the checksum sidecar when archive publication loses a race', () => {
+  test('preserves a competing checksum sidecar replaced before cleanup when archive publication loses a race', () => {
     const fixture = createFixture({ schemaCount: '1' });
     const raceToolRoot = path.join(fixture.tempRoot, 'race-tools');
     const raceMarker = path.join(fixture.tempRoot, 'archive-publish-race.txt');
@@ -473,6 +473,9 @@ if [[ "\${source_path##*/}" == .pets_backup_*.tar.gz.tmp \
   && "\${destination##*/}" == pets_backup_*.tar.gz ]]; then
   printf 'archive-publish-race\\n' > "$MOCK_ARCHIVE_RACE_MARKER"
   printf 'competing archive\\n' > "$destination"
+  /usr/bin/stat -c '%d:%i' -- "\${destination}.sha256" > "$MOCK_CHECKSUM_IDENTITY"
+  rm -- "\${destination}.sha256"
+  printf 'competing checksum\\n' > "\${destination}.sha256"
 fi
 exec /usr/bin/mv "$@"
 `);
@@ -483,19 +486,22 @@ exec /usr/bin/mv "$@"
       );
 
       const backup = fixture.runBackup({
+        MOCK_CHECKSUM_IDENTITY: toBashPath(path.join(fixture.tempRoot, 'checksum-identity.txt')),
         MOCK_ARCHIVE_RACE_MARKER: toBashPath(raceMarker),
       });
 
       expect(backup.status).not.toBe(0);
       expect(backup.stderr).toContain('Could not publish the backup archive.');
       expect(fs.readFileSync(raceMarker, 'utf8')).toBe('archive-publish-race\n');
+      expect(fs.readFileSync(path.join(fixture.tempRoot, 'checksum-identity.txt'), 'utf8').trim())
+        .toMatch(/^\d+:\d+$/);
 
       const archiveFiles = fs.readdirSync(fixture.backupRoot)
         .filter((name) => name.endsWith('.tar.gz'));
       expect(archiveFiles).toHaveLength(1);
       const archiveFile = path.join(fixture.backupRoot, archiveFiles[0]);
       expect(fs.readFileSync(archiveFile, 'utf8')).toBe('competing archive\n');
-      expect(fs.existsSync(`${archiveFile}.sha256`)).toBe(false);
+      expect(fs.readFileSync(`${archiveFile}.sha256`, 'utf8')).toBe('competing checksum\n');
     } finally {
       removeFixture(fixture);
     }
