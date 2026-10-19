@@ -1,4 +1,6 @@
 const { spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const operationsCenterPath = path.resolve(
@@ -34,6 +36,10 @@ $requiredFunctions = @(
   'Get-BackupArtifactCheckOutcome',
   'Get-BackupAutoVerificationOutcome',
   'Reset-BackupArtifactStateForBackup',
+  'Test-BackupOperationReady',
+  'New-OperationCard',
+  'Request-BackupOperation',
+  'Set-OperationButtonsEnabled',
   'Start-BackgroundOperation'
 )
 $functionDefinitions = @{}
@@ -122,6 +128,9 @@ function Assert-True {
   if (-not $Condition) { throw $Message }
 }
 
+Add-Type -AssemblyName System.Windows.Forms
+$script:ProductionSshHost = '175.183.34.91'
+$script:ProductionSshUser = 'zhe'
 $mockSource = @'
 param(
   [string]$Phase,
@@ -252,6 +261,257 @@ $validAutomaticOutput = (@($successMarker, 'BACKUP_AUTO_VERIFY_BEGIN') +
 $expectedVerifiedBackupState = -join ([int[]]@(
   0x5099, 0x4efd, 0x53ca, 0x672c, 0x6b21, 0x7522, 0x7269, 0x9a57, 0x8b49, 0x6210, 0x529f
 ) | ForEach-Object { [char]$_ })
+Add-TestCase 'Backup gate requires verified preflight and does not unlock Restore' {
+  $script:OperationState = @{
+    IsBusy = $false
+    SecondPhaseRemoteOperationsEnabled = $false
+    BackupOperationsEnabled = $false
+    BackupDestinationPreflightSucceeded = $false
+    ActiveOperation = $null
+    VerifiedBackupDirectory = $null
+    VerifiedBackupHost = $null
+    VerifiedBackupUser = $null
+  }
+  $passwordInput = New-Object PSObject -Property @{ Text = '' }
+  $passwordInput | Add-Member ScriptMethod Clear { $this.Text = '' }
+  $passwordInput | Add-Member ScriptMethod Focus {}
+  $script:Controls = @{
+    BackupButton = [pscustomobject]@{ Enabled = $false; Text = '建立備份（目的地尚未檢查）' }
+    BackupStateValue = [pscustomobject]@{ Text = '' }
+    BackupDestinationValue = [pscustomobject]@{ Text = '已驗證' }
+    ActivityLabel = [pscustomobject]@{ Text = '' }
+    SshAuthenticationValue = [pscustomobject]@{ Text = '' }
+    RestoreStateValue = [pscustomobject]@{ Text = '' }
+    SshHostInput = [pscustomobject]@{ Text = $script:ProductionSshHost }
+    SshUsernameInput = [pscustomobject]@{ Text = $script:ProductionSshUser }
+    SshPasswordInput = $passwordInput
+  }
+  $script:backupGateConfirmCalls = 0
+  $script:backupGateConfirmResult = [System.Windows.Forms.DialogResult]::Cancel
+  $script:backupGateStartCalls = 0
+  $script:backupGateStartedAction = $null
+  Set-Item Function:\Add-OperationLog -Value { param($Operation, $Status, $Output) }
+  Set-Item Function:\Confirm-BackupRequest -Value {
+    param($Message)
+    $script:backupGateConfirmCalls++
+    return $script:backupGateConfirmResult
+  }
+  Set-Item Function:\Start-BackgroundOperation -Value {
+    param($Operation, $Action, $BackupDestination, $SshHost, $SshUsername, $SshPassword)
+    $script:backupGateStartCalls++
+    $script:backupGateStartedAction = $Action
+    if ($SshPassword) { Clear-SshCredential -SecurePassword $SshPassword }
+  }
+
+  Request-BackupOperation
+  Assert-True ($script:backupGateConfirmCalls -eq 0) 'Closed Backup gate reached the confirmation dialog.'
+  Assert-True ($script:backupGateStartCalls -eq 0) 'Closed Backup gate started a background operation.'
+  Assert-True (-not $script:Controls.BackupButton.Enabled) 'Closed Backup gate left the button enabled.'
+
+  Invoke-Expression $functionDefinitions['Start-BackgroundOperation']
+  $backupRequest = @{
+    Operation = 'isolated Backup'
+    Action = 'Backup'
+    BackupDestination = '/home/zhe/pets-backups'
+    SshHost = $script:ProductionSshHost
+    SshUsername = $script:ProductionSshUser
+  }
+  Start-BackgroundOperation @backupRequest
+  Assert-True (-not $script:OperationState.IsBusy) 'Closed Backup gate entered background setup.'
+  Assert-True ($null -eq $script:OperationState.ActiveOperation) 'Closed Backup gate created an active operation.'
+
+  $script:OperationState.BackupOperationsEnabled = $true
+  $script:OperationState.BackupDestinationPreflightSucceeded = $true
+  $script:OperationState.VerifiedBackupDirectory = '/home/zhe/pets-backups'
+  $script:OperationState.VerifiedBackupHost = $script:ProductionSshHost
+  $script:OperationState.VerifiedBackupUser = $script:ProductionSshUser
+  Start-BackgroundOperation -Operation 'isolated Restore list' -Action 'RestoreList'
+  Assert-True (-not $script:OperationState.IsBusy) 'Backup gate enabled RestoreList background work.'
+  Assert-True ($script:Controls.RestoreStateValue.Text -like '*尚未開放*') 'RestoreList no longer observes the global gate.'
+  Assert-True ($functionDefinitions['Set-OperationButtonsEnabled'] -match '(?s)RestoreButton\.Enabled\s*=\s*\$Enabled\s+-and\s+\$script:OperationState\.SecondPhaseRemoteOperationsEnabled') 'Restore button stopped using the global second-phase gate.'
+
+  Set-Item Function:\Start-BackgroundOperation -Value {
+    param($Operation, $Action, $BackupDestination, $SshHost, $SshUsername, $SshPassword)
+    $script:backupGateStartCalls++
+    $script:backupGateStartedAction = $Action
+    if ($SshPassword) { Clear-SshCredential -SecurePassword $SshPassword }
+  }
+  $script:Controls.SshPasswordInput.Text = 'isolated-test-password'
+  $script:backupGateConfirmResult = [System.Windows.Forms.DialogResult]::OK
+  Request-BackupOperation
+  Assert-True ($script:backupGateConfirmCalls -eq 1) 'Matching preflight was rejected before confirmation.'
+  Assert-True ($script:backupGateStartCalls -eq 1) 'Matching preflight did not dispatch the Backup request.'
+  Assert-True ($script:backupGateStartedAction -ceq 'Backup') 'Matching preflight dispatched a non-Backup operation.'
+}
+Add-TestCase 'Backup card uses a real button, gates it on preflight, and routes a click to Request-BackupOperation' {
+  $table = New-Object System.Windows.Forms.TableLayoutPanel
+  $button = New-Object System.Windows.Forms.Button
+  $button.Text = '建立備份'
+  $button.Enabled = $true
+  $card = New-OperationCard -Table $table -Column 0 -Row 0 -Title '備份' -Icon '03' -Description '測試卡片' -Status '等待驗證' -AccentColor ([System.Drawing.Color]::SeaGreen) -Button $button
+  $surface = $card.Controls[0]
+  $layout = $surface.Controls[0]
+  $action = $layout.GetControlFromPosition(1, 2)
+  Assert-True ($action -is [System.Windows.Forms.Button]) 'Backup card action is not an actual Button.'
+  Assert-True ([object]::ReferenceEquals($action, $button)) 'Backup card does not contain the wired Backup button instance.'
+
+  $button.Enabled = $false
+  $script:OperationState = @{
+    IsBusy = $false; SecondPhaseRemoteOperationsEnabled = $false
+    BackupOperationsEnabled = $false; BackupDestinationPreflightSucceeded = $false
+    ActiveOperation = $null; VerifiedBackupDirectory = $null
+    VerifiedBackupHost = $null; VerifiedBackupUser = $null
+  }
+  $control = [pscustomobject]@{ Enabled = $true }
+  $script:Controls = @{
+    RefreshButton = $control; TestButton = $control; GitHubButton = $control
+    PushButton = $control; DeployButton = $control; ProductionStateQueryButton = $control
+    DeploymentPreflightButton = $control; SshTestButton = $control
+    BackupDestinationButton = $control; BackupArtifactCheckButton = $control
+    RestoreButton = $control; SshHostInput = [pscustomobject]@{ Enabled = $true; Text = $script:ProductionSshHost }
+    SshUsernameInput = [pscustomobject]@{ Enabled = $true; Text = $script:ProductionSshUser }
+    SshPasswordInput = [pscustomobject]@{ Enabled = $true }
+    CancelOperationButton = [pscustomobject]@{ Enabled = $false }
+    BackupButton = $button
+    BackupStateValue = [pscustomobject]@{ Text = '' }
+    ActivityLabel = [pscustomobject]@{ Text = '' }
+  }
+  Set-Item Function:\Write-BackupButtonDiagnostic -Value { param($Status, $Output) }
+
+  Set-OperationButtonsEnabled -Enabled $true
+  Assert-True (-not $button.Enabled) 'Backup button was enabled before destination preflight succeeded.'
+  $script:OperationState.BackupOperationsEnabled = $true
+  Set-OperationButtonsEnabled -Enabled $true
+  Assert-True (-not $button.Enabled) 'Failed destination preflight enabled the Backup button.'
+
+  $script:OperationState.BackupDestinationPreflightSucceeded = $true
+  $script:OperationState.VerifiedBackupDirectory = '/home/zhe/pets-backups'
+  $script:OperationState.VerifiedBackupHost = $script:ProductionSshHost
+  $script:OperationState.VerifiedBackupUser = $script:ProductionSshUser
+  $script:Controls.SshHostInput.Text = 'other-host'
+  Set-OperationButtonsEnabled -Enabled $true
+  Assert-True (-not $button.Enabled) 'Host mismatch enabled the Backup button.'
+  $script:Controls.SshHostInput.Text = $script:ProductionSshHost
+  $script:Controls.SshUsernameInput.Text = 'other-user'
+  Set-OperationButtonsEnabled -Enabled $true
+  Assert-True (-not $button.Enabled) 'Account mismatch enabled the Backup button.'
+  $script:Controls.SshUsernameInput.Text = $script:ProductionSshUser
+  $script:OperationState.VerifiedBackupDirectory = 'relative/backups'
+  Set-OperationButtonsEnabled -Enabled $true
+  Assert-True (-not $button.Enabled) 'Invalid destination path enabled the Backup button.'
+
+  $script:OperationState.VerifiedBackupDirectory = '/home/zhe/pets-backups'
+  Set-OperationButtonsEnabled -Enabled $true
+  Assert-True $button.Enabled 'Matching successful preflight did not enable the real Backup button.'
+  Assert-True (-not $script:OperationState.SecondPhaseRemoteOperationsEnabled) 'Backup UI test changed the global second-phase gate.'
+
+  $clickHandlerAst = $sourceAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.ScriptBlockExpressionAst] -and
+      $node.Extent.Text -match '\A\{\s*Request-BackupOperation\s*\}\z'
+  }, $true)
+  Assert-True ($null -ne $clickHandlerAst) 'Production Backup button click handler was not found.'
+  $global:backupRequestRouteCalls = 0
+  $button.Add_Click({ $global:backupRequestRouteCalls++ })
+  $form = New-Object System.Windows.Forms.Form
+  $form.ClientSize = New-Object System.Drawing.Size(480, 300)
+  $form.ShowInTaskbar = $false
+  $table.Dock = [System.Windows.Forms.DockStyle]::Fill
+  [void]$form.Controls.Add($table)
+  $form.Show()
+  [System.Windows.Forms.Application]::DoEvents()
+  Assert-True ($button.Enabled -and $button.Visible -and $button.CanSelect) 'Enabled Backup button cannot receive a WinForms click.'
+  $button.PerformClick()
+  [System.Windows.Forms.Application]::DoEvents()
+  Assert-True ($global:backupRequestRouteCalls -eq 1) 'WinForms Button Click event did not route to the isolated Request-BackupOperation replacement exactly once.'
+  $form.Close()
+  $form.Dispose()
+
+}
+Add-TestCase 'Worker readiness rejects missing preflight and mismatched host account or path before SSH dispatch' {
+  $valid = @{
+    BackupOperationsEnabled = $true
+    DestinationPreflightSucceeded = $true
+    OperationAllowed = $true
+    BackupDestination = '/home/zhe/pets-backups'
+    VerifiedBackupDirectory = '/home/zhe/pets-backups'
+    VerifiedBackupHost = $script:ProductionSshHost
+    VerifiedBackupUser = $script:ProductionSshUser
+    RequestedHost = $script:ProductionSshHost
+    RequestedUser = $script:ProductionSshUser
+    ExpectedHost = $script:ProductionSshHost
+    ExpectedUser = $script:ProductionSshUser
+  }
+  Assert-True (Test-BackupOperationReady @valid) 'A complete matching preflight was rejected.'
+  $invalidCases = @(
+    @{ Name = 'gate'; Key = 'BackupOperationsEnabled'; Value = $false },
+    @{ Name = 'preflight'; Key = 'DestinationPreflightSucceeded'; Value = $false },
+    @{ Name = 'operation'; Key = 'OperationAllowed'; Value = $false },
+    @{ Name = 'host'; Key = 'VerifiedBackupHost'; Value = 'other-host' },
+    @{ Name = 'account'; Key = 'RequestedUser'; Value = 'other-user' },
+    @{ Name = 'destination'; Key = 'BackupDestination'; Value = '/other/path' },
+    @{ Name = 'verified path'; Key = 'VerifiedBackupDirectory'; Value = $null }
+  )
+  foreach ($invalid in $invalidCases) {
+    $candidate = $valid.Clone()
+    $candidate[$invalid.Key] = $invalid.Value
+    Assert-True (-not (Test-BackupOperationReady @candidate)) "$($invalid.Name) mismatch passed worker readiness."
+  }
+  $backupStart = $workerSource.IndexOf("        'Backup' {", [StringComparison]::Ordinal)
+  $artifactStart = $workerSource.IndexOf("        'BackupArtifactCheck' {", [StringComparison]::Ordinal)
+  Assert-True ($backupStart -ge 0 -and $artifactStart -gt $backupStart) 'Backup worker case could not be isolated.'
+  $backupCase = $workerSource.Substring($backupStart, $artifactStart - $backupStart)
+  Assert-True ($backupCase.IndexOf('Test-BackupOperationReady', [StringComparison]::Ordinal) -lt
+    $backupCase.IndexOf('Invoke-BackupSshOperation', [StringComparison]::Ordinal)) 'Worker does not verify readiness before invoking backup SSH.'
+  Assert-True ($functionDefinitions['Set-OperationButtonsEnabled'].Contains('Test-BackupOperationReady')) 'Backup button does not use the shared readiness condition.'
+  Assert-True ($functionDefinitions['Request-BackupOperation'].Contains('Test-BackupOperationReady')) 'Backup request does not use the shared readiness condition.'
+
+  $guardStart = $backupCase.IndexOf('$backupReady =', [StringComparison]::Ordinal)
+  $backupDestinationStart = $backupCase.IndexOf('$destination =', $guardStart, [StringComparison]::Ordinal)
+  Assert-True ($guardStart -ge 0 -and $backupDestinationStart -gt $guardStart) 'Worker readiness block could not be isolated.'
+  $backupWorkerGuardScript = [scriptblock]::Create($backupCase.Substring($guardStart, $backupDestinationStart - $guardStart))
+  $script:backupSshDispatchCount = 0
+  function Invoke-WorkerBackupReadinessHarness {
+    param([hashtable]$Request, [scriptblock]$GuardScript)
+    $workerRequest = $Request
+    $workContext = $Request.Context
+    & $GuardScript
+    $script:backupSshDispatchCount++
+  }
+  $workerRequestFixture = @{
+    BackupOperationsEnabled = $true
+    BackupDestinationPreflightSucceeded = $true
+    BackupOperationAllowed = $true
+    BackupDestination = '/home/zhe/pets-backups'
+    BackupVerifiedDirectory = '/home/zhe/pets-backups'
+    BackupVerifiedHost = $script:ProductionSshHost
+    BackupVerifiedUser = $script:ProductionSshUser
+    SshHost = $script:ProductionSshHost
+    SshUsername = $script:ProductionSshUser
+    ProductionSshHost = $script:ProductionSshHost
+    ProductionSshUser = $script:ProductionSshUser
+    Context = @{ CancelRequested = $false; StopUnconfirmed = $false }
+  }
+  $workerInvalidCases = @(
+    @{ Name = 'gate'; Key = 'BackupOperationsEnabled'; Value = $false },
+    @{ Name = 'preflight'; Key = 'BackupDestinationPreflightSucceeded'; Value = $false },
+    @{ Name = 'operation'; Key = 'BackupOperationAllowed'; Value = $false },
+    @{ Name = 'host'; Key = 'BackupVerifiedHost'; Value = 'other-host' },
+    @{ Name = 'account'; Key = 'SshUsername'; Value = 'other-user' },
+    @{ Name = 'destination'; Key = 'BackupDestination'; Value = '/other/path' },
+    @{ Name = 'verified path'; Key = 'BackupVerifiedDirectory'; Value = $null }
+  )
+  foreach ($invalid in $workerInvalidCases) {
+    $candidate = $workerRequestFixture.Clone()
+    $candidate[$invalid.Key] = $invalid.Value
+    $rejected = $false
+    try { Invoke-WorkerBackupReadinessHarness -Request $candidate -GuardScript $backupWorkerGuardScript } catch { $rejected = $true }
+    Assert-True $rejected "$($invalid.Name) mismatch did not reject the worker request."
+    Assert-True ($script:backupSshDispatchCount -eq 0) "$($invalid.Name) mismatch reached backup SSH dispatch."
+  }
+  Invoke-WorkerBackupReadinessHarness -Request $workerRequestFixture -GuardScript $backupWorkerGuardScript
+  Assert-True ($script:backupSshDispatchCount -eq 1) 'Valid worker authorization did not reach the backup SSH dispatch point.'
+}
 Add-TestCase 'Authentication failure never reaches the backup command' {
   $execution = Invoke-BackupWithMock -AuthenticationSucceeded $false -CommandResult (New-CommandResult)
   Assert-True ($execution.Calls.Count -eq 1 -and $execution.Calls[0] -ceq 'Connect') 'Command phase ran after authentication failure.'
@@ -591,15 +851,26 @@ ConvertTo-Json -InputObject @($script:cases.ToArray()) -Compress -Depth 8
 
 let testResults;
 beforeAll(() => {
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '-'], {
-    encoding: 'utf8',
-    input: powershellHarness,
-    env: {
-      ...process.env,
-      OPERATIONS_CENTER_PATH: operationsCenterPath,
-    },
-    timeout: 30000,
-  });
+  const harnessDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'operations-center-backup-'));
+  const harnessPath = path.join(harnessDirectory, 'harness.ps1');
+  fs.writeFileSync(harnessPath, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(powershellHarness, 'utf16le')]));
+  let result;
+  try {
+    result = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      '& ([scriptblock]::Create([IO.File]::ReadAllText($env:OPERATIONS_CENTER_HARNESS_PATH)))',
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        OPERATIONS_CENTER_PATH: operationsCenterPath,
+        OPERATIONS_CENTER_HARNESS_PATH: harnessPath,
+      },
+      timeout: 30000,
+    });
+  } finally {
+    fs.rmSync(harnessDirectory, { recursive: true, force: true });
+  }
 
   if (result.error) {
     throw result.error;
@@ -611,7 +882,35 @@ beforeAll(() => {
 });
 
 describe('Operations Center Backup isolated behavior', () => {
+  test('Backup card retains the real button, gates it on matching preflight, and routes clicks through the existing request', () => {
+    const source = fs.readFileSync(operationsCenterPath, 'utf8');
+    const cardStart = source.indexOf("$backupButton.Text = '建立備份（目的地尚未檢查）'");
+    const cardEnd = source.indexOf("$script:Controls.RestoreButton.Text", cardStart);
+    const backupCard = source.slice(cardStart, cardEnd);
+    expect(cardStart).toBeGreaterThanOrEqual(0);
+    expect(backupCard).toMatch(/\$backupButton\.Enabled\s*=\s*\$true[\s\S]*?New-OperationCard[\s\S]*?-Button\s+\$backupButton\)[\s\S]*?\$backupButton\.Enabled\s*=\s*\$false/);
+    expect(backupCard).not.toMatch(/-UnavailableMessage/);
+
+    const readyStart = source.indexOf('function Test-BackupOperationReady {');
+    const readyEnd = source.indexOf('\nfunction Confirm-BackupRequest', readyStart);
+    const readiness = source.slice(readyStart, readyEnd);
+    expect(readiness).toMatch(/-not \$BackupOperationsEnabled -or -not \$DestinationPreflightSucceeded/);
+    expect(readiness).toMatch(/\$BackupDestination -cne \$VerifiedBackupDirectory/);
+    expect(readiness).toMatch(/\$VerifiedBackupHost -cne \$ExpectedHost/);
+    expect(readiness).toMatch(/\$VerifiedBackupUser -cne \$ExpectedUser/);
+
+    const buttonStateStart = source.indexOf('function Set-OperationButtonsEnabled {');
+    const buttonStateEnd = source.indexOf('\nfunction Start-ProductionDeploymentProcess', buttonStateStart);
+    const buttonState = source.slice(buttonStateStart, buttonStateEnd);
+    expect(buttonState).toMatch(/\$backupReady\s*=\s*Test-BackupOperationReady/);
+    expect(buttonState).toMatch(/\$script:Controls\.BackupButton\.Enabled\s*=\s*\$backupReady/);
+    expect(source).toMatch(/\$script:Controls\.BackupButton\.Add_Click\(\{\s*Request-BackupOperation\s*\}\)/);
+  });
+
   test.each([
+    'Backup gate requires verified preflight and does not unlock Restore',
+    'Backup card uses a real button, gates it on preflight, and routes a click to Request-BackupOperation',
+    'Worker readiness rejects missing preflight and mismatched host account or path before SSH dispatch',
     'Authentication failure never reaches the backup command',
     'Unverified host fingerprint never reaches the backup command',
     'Non-zero command exit code is not successful',

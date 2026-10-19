@@ -25,9 +25,15 @@ $script:GitPath = $null
 $script:Controls = @{}
 $script:OperationState = @{
     IsBusy = $false
+    SecondPhaseRemoteOperationsEnabled = $false
+    BackupOperationsEnabled = $false
+    BackupDestinationPreflightSucceeded = $false
     LocalHeadSha = $null
     GitHubMasterSha = $null
     ActiveOperation = $null
+    DeploymentProcess = $null
+    DeploymentTimer = $null
+    DeploymentMonitorFailureLogged = $false
     AllowClose = $false
     VerifiedBackupDirectory = $null
     VerifiedBackupHost = $null
@@ -531,16 +537,30 @@ function Get-BackupArtifactErrorDiagnostic {
 }
 
 function New-BackupArtifactCheckCommand {
-    param([Parameter(Mandatory = $true)][string]$FileName)
+    param(
+        [string]$FileName,
+        [string]$BackupDirectory = '/home/zhe/pets-backups',
+        [switch]$DynamicFileName
+    )
 
-    if (-not (Test-BackupArtifactFileName -FileName $FileName)) {
+    if (-not $DynamicFileName -and -not (Test-BackupArtifactFileName -FileName $FileName)) {
         throw '備份產物檔名不符合允許格式；拒絕建立遠端檢查命令。'
     }
+    if ([string]::IsNullOrWhiteSpace($BackupDirectory) -or
+        $BackupDirectory -cnotmatch '\A/' -or $BackupDirectory.Length -gt 4096 -or
+        $BackupDirectory -match '[\x00-\x1F\x7F]') {
+        throw '備份產物檢查目錄無效；拒絕建立遠端檢查命令。'
+    }
 
-    $quotedFileName = ConvertTo-PosixShellSingleQuotedString -Value $FileName
+    $quotedBackupDirectory = ConvertTo-PosixShellSingleQuotedString -Value $BackupDirectory
+    $fileNameAssignment = if ($DynamicFileName) {
+        'file_name="$backup_file_name"'
+    } else {
+        "file_name=$(ConvertTo-PosixShellSingleQuotedString -Value $FileName)"
+    }
     return @(
-        'backup_dir=''/home/zhe/pets-backups'''
-        "file_name=$quotedFileName"
+        "backup_dir=$quotedBackupDirectory"
+        $fileNameAssignment
         'backup_file="$backup_dir/$file_name"'
         'checksum_file="$backup_file.sha256"'
         'artifact_state="UNKNOWN"'
@@ -1077,6 +1097,14 @@ function Request-ExactRestoreConfirmation {
 }
 
 function Request-RestoreOperation {
+    if (-not $script:OperationState.SecondPhaseRemoteOperationsEnabled) {
+        $message = '尚未開放：第二階段串接與連線驗證尚未完成，目前不會列舉或還原備份。'
+        $script:Controls.RestoreStateValue.Text = $message
+        $script:Controls.ActivityLabel.Text = $message
+        Add-OperationLog -Operation '還原系統' -Status '尚未開放；未連線或執行還原'
+        return
+    }
+
     $script:Controls.RestoreStateValue.Text = '正在列舉遠端備份…'
     Start-BackgroundOperation -Operation '列舉正式環境還原備份（唯讀）' -Action 'RestoreList'
 }
@@ -2434,6 +2462,13 @@ function Get-BackupProcessOutcome {
         [Parameter(Mandatory = $true)][string]$ExpectedDirectory
     )
 
+    if ([string]$Result.Stdout -match '(?m)^BACKUP_AUTO_VERIFY_FAILURE=BACKUP_FILE_OUTPUT$') {
+        return [pscustomobject]@{
+            Success = $false
+            BackupFile = $null
+            Reason = '自動產物驗證階段失敗：本次 BACKUP_FILE 路徑或檔名無效；未執行產物驗證。'
+        }
+    }
     if ($Result.TimedOut -or $Result.Cancelled -or
         ($Result.PSObject.Properties['ExecutionUnconfirmed'] -and $Result.ExecutionUnconfirmed) -or
         $Result.ExitCode -ne 0) {
@@ -2499,6 +2534,7 @@ function Get-BackupCompletion {
             Success = $true
             Status = '成功'
             ActivityText = '成功'
+            BackupFile = $outcome.BackupFile
             Output = @("備份檔：$($outcome.BackupFile)") + $output
         }
     }
@@ -2519,8 +2555,102 @@ function Get-BackupCompletion {
         Success = $false
         Status = $status
         ActivityText = $status
+        BackupFile = $null
         Output = $details
     }
+}
+
+function Get-BackupAutoVerificationOutcome {
+    param(
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)][string]$ExpectedDirectory,
+        [Parameter(Mandatory = $true)][hashtable]$Context
+    )
+
+    $completion = Get-BackupCompletion -Result $Result -ExpectedDirectory $ExpectedDirectory
+    $artifactOutcome = $null
+    if ($completion.Success) {
+        $fileName = $completion.BackupFile.Substring($completion.BackupFile.LastIndexOf('/') + 1)
+        $stdout = [string]$Result.Stdout
+        $beginMatches = [regex]::Matches($stdout, '(?m)^BACKUP_AUTO_VERIFY_BEGIN\r?$')
+        $endMatches = [regex]::Matches($stdout, '(?m)^BACKUP_AUTO_VERIFY_END\r?$')
+        if ($beginMatches.Count -ne 1 -or $endMatches.Count -ne 1 -or
+            $endMatches[0].Index -le $beginMatches[0].Index) {
+            $artifactOutcome = [pscustomobject]@{
+                Verdict = 'UNCONFIRMED'
+                FileName = $fileName
+                Size = $null
+                Sha256 = $null
+                Detail = '本次備份路徑已確認，但自動產物驗證輸出缺失或格式不完整。'
+            }
+        } else {
+            $verificationStart = $beginMatches[0].Index + $beginMatches[0].Length
+            if ($stdout.Substring($verificationStart).StartsWith("`r`n")) {
+                $verificationStart += 2
+            } elseif ($stdout.Substring($verificationStart).StartsWith("`n")) {
+                $verificationStart++
+            }
+            $verificationStdout = $stdout.Substring(
+                $verificationStart,
+                $endMatches[0].Index - $verificationStart
+            ).TrimEnd("`r", "`n")
+            $verificationResult = [pscustomobject]@{
+                ExitCode = $Result.ExitCode
+                Stdout = $verificationStdout
+                Stderr = $Result.Stderr
+                TimedOut = $Result.TimedOut
+                Cancelled = $Result.Cancelled
+                ExecutionUnconfirmed = $Result.ExecutionUnconfirmed
+            }
+            $artifactOutcome = Get-BackupArtifactCheckOutcome -Result $verificationResult `
+                -FileName $fileName -Context $Context
+        }
+    }
+    return [pscustomobject]@{
+        BackupCompletion = $completion
+        ArtifactOutcome = $artifactOutcome
+    }
+}
+
+function Reset-BackupArtifactStateForBackup {
+    $script:Controls.BackupArtifactStateValue.Text = '本次備份尚未驗證'
+    $script:Controls.BackupStateValue.Text = '備份執行中；本次產物尚未驗證'
+}
+
+function Test-BackupOperationReady {
+    param(
+        [bool]$BackupOperationsEnabled,
+        [bool]$DestinationPreflightSucceeded,
+        [bool]$OperationAllowed,
+        [AllowNull()][string]$BackupDestination,
+        [AllowNull()][string]$VerifiedBackupDirectory,
+        [AllowNull()][string]$VerifiedBackupHost,
+        [AllowNull()][string]$VerifiedBackupUser,
+        [AllowNull()][string]$RequestedHost,
+        [AllowNull()][string]$RequestedUser,
+        [Parameter(Mandatory = $true)][string]$ExpectedHost,
+        [Parameter(Mandatory = $true)][string]$ExpectedUser
+    )
+
+    if (-not $BackupOperationsEnabled -or -not $DestinationPreflightSucceeded -or
+        -not $OperationAllowed) {
+        return $false
+    }
+    if ([string]::IsNullOrWhiteSpace($BackupDestination) -or
+        $BackupDestination.Length -gt 4096 -or
+        $BackupDestination -cnotmatch '\A/' -or
+        $BackupDestination -match '[\x00-\x1F\x7F]' -or
+        $BackupDestination -cne $VerifiedBackupDirectory) {
+        return $false
+    }
+    if ($VerifiedBackupHost -cne $ExpectedHost -or
+        $VerifiedBackupUser -cne $ExpectedUser -or
+        $RequestedHost -cne $ExpectedHost -or
+        $RequestedUser -cne $ExpectedUser) {
+        return $false
+    }
+
+    return $true
 }
 
 function Confirm-BackupRequest {
@@ -2537,6 +2667,29 @@ function Confirm-BackupRequest {
 }
 
 function Request-BackupOperation {
+    $operationAllowed = -not $script:OperationState.IsBusy -and
+        -not ($script:OperationState.ActiveOperation -and $script:OperationState.ActiveOperation.StopUnconfirmed)
+    $backupReady = Test-BackupOperationReady `
+        -BackupOperationsEnabled $script:OperationState.BackupOperationsEnabled `
+        -DestinationPreflightSucceeded $script:OperationState.BackupDestinationPreflightSucceeded `
+        -OperationAllowed $operationAllowed `
+        -BackupDestination $script:OperationState.VerifiedBackupDirectory `
+        -VerifiedBackupDirectory $script:OperationState.VerifiedBackupDirectory `
+        -VerifiedBackupHost $script:OperationState.VerifiedBackupHost `
+        -VerifiedBackupUser $script:OperationState.VerifiedBackupUser `
+        -RequestedHost $script:Controls.SshHostInput.Text.Trim() `
+        -RequestedUser $script:Controls.SshUsernameInput.Text.Trim() `
+        -ExpectedHost $script:ProductionSshHost `
+        -ExpectedUser $script:ProductionSshUser
+    if (-not $backupReady) {
+        $message = '已阻擋：Backup 啟用條件、目的地預檢或目標核對未通過；未執行備份。'
+        $script:Controls.BackupStateValue.Text = $message
+        $script:Controls.BackupButton.Enabled = $false
+        $script:Controls.ActivityLabel.Text = $message
+        Add-OperationLog -Operation '建立備份' -Status '已阻擋；未執行備份'
+        return
+    }
+
     $destinationText = if ($script:OperationState.VerifiedBackupDirectory) {
         $script:Controls.BackupDestinationValue.Text
     } else {
@@ -2633,12 +2786,14 @@ function Set-OperationButtonsEnabled {
         $script:Controls.TestButton.Enabled = $Enabled
         $script:Controls.GitHubButton.Enabled = $Enabled
         $script:Controls.PushButton.Enabled = $Enabled
+        $script:Controls.DeployButton.Enabled = $Enabled
         $script:Controls.ProductionStateQueryButton.Enabled = $Enabled
         $script:Controls.DeploymentPreflightButton.Enabled = $Enabled
         $script:Controls.SshTestButton.Enabled = $Enabled
         $script:Controls.BackupDestinationButton.Enabled = $Enabled
         $script:Controls.BackupArtifactCheckButton.Enabled = $Enabled
-        $script:Controls.RestoreButton.Enabled = $Enabled
+        $script:Controls.RestoreButton.Enabled = $Enabled -and
+            $script:OperationState.SecondPhaseRemoteOperationsEnabled
         $script:Controls.SshHostInput.Enabled = $Enabled
         $script:Controls.SshUsernameInput.Enabled = $Enabled
         $script:Controls.SshPasswordInput.Enabled = $Enabled
@@ -2653,11 +2808,24 @@ function Set-OperationButtonsEnabled {
         } catch {
             $backupEnabledBefore = 'unavailable'
         }
-        $destinationVerified = -not [string]::IsNullOrWhiteSpace($script:OperationState.VerifiedBackupDirectory)
+        $operationAllowed = $Enabled -and -not $script:OperationState.IsBusy -and
+            -not ($script:OperationState.ActiveOperation -and $script:OperationState.ActiveOperation.StopUnconfirmed)
+        $backupReady = Test-BackupOperationReady `
+            -BackupOperationsEnabled $script:OperationState.BackupOperationsEnabled `
+            -DestinationPreflightSucceeded $script:OperationState.BackupDestinationPreflightSucceeded `
+            -OperationAllowed $operationAllowed `
+            -BackupDestination $script:OperationState.VerifiedBackupDirectory `
+            -VerifiedBackupDirectory $script:OperationState.VerifiedBackupDirectory `
+            -VerifiedBackupHost $script:OperationState.VerifiedBackupHost `
+            -VerifiedBackupUser $script:OperationState.VerifiedBackupUser `
+            -RequestedHost $script:Controls.SshHostInput.Text.Trim() `
+            -RequestedUser $script:Controls.SshUsernameInput.Text.Trim() `
+            -ExpectedHost $script:ProductionSshHost `
+            -ExpectedUser $script:ProductionSshUser
+        $destinationVerified = [bool]$script:OperationState.BackupDestinationPreflightSucceeded
         $hostMatches = $script:OperationState.VerifiedBackupHost -ceq $script:ProductionSshHost
         $usernameMatches = $script:OperationState.VerifiedBackupUser -ceq $script:ProductionSshUser
-        $script:Controls.BackupButton.Enabled = $Enabled -and
-            $destinationVerified -and $hostMatches -and $usernameMatches
+        $script:Controls.BackupButton.Enabled = $backupReady
         try {
             $backupEnabledAfter = $script:Controls.BackupButton.Enabled
         } catch {
@@ -2698,6 +2866,168 @@ function Set-OperationButtonsEnabled {
     )
 }
 
+function Start-ProductionDeploymentProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-fA-F]{40}$')]
+        [string]$ExpectedCommit
+    )
+
+    $powerShellPath = Join-Path $PSHOME 'powershell.exe'
+    $deployScriptPath = Join-Path $script:ProjectRoot 'tools\Invoke-ProductionDeployment.ps1'
+    if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) {
+        throw "找不到 Windows PowerShell：$powerShellPath"
+    }
+    if (-not (Test-Path -LiteralPath $deployScriptPath -PathType Leaf)) {
+        throw "找不到 Production 部署互動啟動器：$deployScriptPath"
+    }
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $powerShellPath
+    $startInfo.Arguments = '-NoProfile -File "{0}" -ExpectedCommit {1}' -f $deployScriptPath, $ExpectedCommit
+    $startInfo.WorkingDirectory = $script:ProjectRoot
+    $startInfo.UseShellExecute = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Normal
+    $startInfo.RedirectStandardInput = $false
+    $startInfo.RedirectStandardOutput = $false
+    $startInfo.RedirectStandardError = $false
+
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    if ($null -eq $process) {
+        throw 'Windows PowerShell 未回傳可監看的部署程序。'
+    }
+    return $process
+}
+
+function Request-ProductionDeploymentOperation {
+    if ($script:OperationState.IsBusy) {
+        return
+    }
+
+    $expectedCommit = [string]$script:OperationState.LocalHeadSha
+    if ($expectedCommit -cnotmatch '^[0-9a-fA-F]{40}$') {
+        $message = '無法取得有效的本機 HEAD SHA；請先重新檢查本機狀態，再啟動部署。'
+        $script:Controls.ActivityLabel.Text = "Production 部署：無法啟動；$message"
+        Add-OperationLog -Operation 'Production 部署' -Status '無法啟動' -Output @($message)
+        return
+    }
+
+    $confirmation = [System.Windows.Forms.MessageBox]::Show(
+        $script:Controls.Form,
+        "部署目標 commit：$expectedCommit`r`n`r`n既有部署流程可能會將此 commit 推送至 GitHub origin/master，並會在獨立 PowerShell 視窗要求部署授權及人工 Browser Acceptance。`r`n`r`n是否繼續？",
+        '確認 Production 部署',
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning,
+        [System.Windows.Forms.MessageBoxDefaultButton]::Button2
+    )
+    if ($confirmation -ne [System.Windows.Forms.DialogResult]::Yes) {
+        $script:Controls.ActivityLabel.Text = 'Production 部署：已取消，未啟動'
+        Add-OperationLog -Operation 'Production 部署' -Status '使用者取消；未啟動部署' -Output @(
+            "目標 commit：$expectedCommit"
+        )
+        return
+    }
+
+    $timer = $null
+    $script:OperationState.IsBusy = $true
+    $script:OperationState.ActiveOperation = @{ Operation = 'Production 部署' }
+    $script:OperationState.DeploymentMonitorFailureLogged = $false
+    try {
+        $script:Controls.DeployButton.Text = '部署執行中…'
+        Set-OperationButtonsEnabled -Enabled $false
+        $script:Controls.CancelOperationButton.Enabled = $false
+        $script:Controls.ActivityLabel.Text = 'Production 部署：執行中；請在新開啟的 PowerShell 視窗完成所有確認'
+        Add-OperationLog -Operation 'Production 部署' -Status '執行中' -Output @(
+            "目標 commit：$expectedCommit",
+            '部署可能執行 git push；部署授權及 Browser Acceptance 由既有入口互動確認。'
+        )
+
+        $timer = New-Object System.Windows.Forms.Timer
+        $timer.Interval = 500
+        $timer.Add_Tick({
+            $process = $script:OperationState.DeploymentProcess
+            if (-not $process) {
+                return
+            }
+
+            try {
+                if (-not $process.HasExited) {
+                    return
+                }
+            } catch {
+                if (-not $script:OperationState.DeploymentMonitorFailureLogged) {
+                    $script:OperationState.DeploymentMonitorFailureLogged = $true
+                    $message = Protect-SensitiveText -Text $_.Exception.Message
+                    $script:Controls.ActivityLabel.Text = 'Production 部署：執行狀態無法確認；管理中心將繼續等待'
+                    Add-OperationLog -Operation 'Production 部署' -Status '執行狀態無法確認；繼續等待' -Output @(
+                        "程序狀態查詢錯誤：$message"
+                    )
+                }
+                return
+            }
+
+            $exitCode = $null
+            $exitCodeError = $null
+            try {
+                $exitCode = $process.ExitCode
+            } catch {
+                $exitCodeError = Protect-SensitiveText -Text $_.Exception.Message
+            }
+
+            $timer = $script:OperationState.DeploymentTimer
+            $timer.Stop()
+            $timer.Dispose()
+            $script:OperationState.DeploymentTimer = $null
+            $script:OperationState.DeploymentProcess = $null
+            $script:OperationState.DeploymentMonitorFailureLogged = $false
+            $process.Dispose()
+            $script:OperationState.IsBusy = $false
+            $script:OperationState.ActiveOperation = $null
+            $script:Controls.DeployButton.Text = '啟動部署'
+            Set-OperationButtonsEnabled -Enabled $true
+
+            if ($null -eq $exitCode) {
+                $script:Controls.ActivityLabel.Text = 'Production 部署：結果未確認；無法取得程序退出碼'
+                Add-OperationLog -Operation 'Production 部署' -Status '結果未確認；退出碼無法讀取' -Output @(
+                    "程序已結束，但無法取得退出碼：$exitCodeError"
+                )
+            } elseif ($exitCode -eq 0) {
+                $script:Controls.ActivityLabel.Text = 'Production 部署：成功（入口退出碼 0）'
+                Add-OperationLog -Operation 'Production 部署' -Status '成功；入口退出碼 0' -Output @(
+                    '既有部署入口已成功結束；其 Production 技術檢查與 Browser Acceptance 確認均已完成。'
+                )
+            } else {
+                $script:Controls.ActivityLabel.Text = "Production 部署：失敗（入口退出碼 $exitCode）"
+                Add-OperationLog -Operation 'Production 部署' -Status "失敗；入口退出碼 $exitCode" -Output @(
+                    '既有部署入口未成功結束；請查看部署 PowerShell 視窗中的錯誤訊息。'
+                )
+            }
+        }.GetNewClosure())
+
+        $script:OperationState.DeploymentTimer = $timer
+        $timer.Start()
+        $script:OperationState.DeploymentProcess = Start-ProductionDeploymentProcess `
+            -ExpectedCommit $expectedCommit
+    } catch {
+        if ($timer) {
+            $timer.Stop()
+            $timer.Dispose()
+        }
+        $script:OperationState.DeploymentTimer = $null
+        $script:OperationState.DeploymentProcess = $null
+        $script:OperationState.IsBusy = $false
+        $script:OperationState.ActiveOperation = $null
+        $script:Controls.DeployButton.Text = '啟動部署'
+        Set-OperationButtonsEnabled -Enabled $true
+        $message = Protect-SensitiveText -Text $_.Exception.Message
+        $script:Controls.ActivityLabel.Text = "Production 部署：啟動失敗；$message"
+        Add-OperationLog -Operation 'Production 部署' -Status '啟動失敗' -Output @(
+            $message,
+            '未回報部署成功。'
+        )
+    }
+}
+
 function Start-BackgroundOperation {
     param(
         [Parameter(Mandatory = $true)][string]$Operation,
@@ -2716,6 +3046,21 @@ function Start-BackgroundOperation {
         [string]$SshUsername,
         [System.Security.SecureString]$SshPassword
     )
+    $backupOperationAllowed = $false
+    if ($Action -in @('RestoreList', 'Restore') -and
+        -not $script:OperationState.SecondPhaseRemoteOperationsEnabled -and
+        -not $RestoreTestMode) {
+        if ($SshPassword) {
+            Clear-SshCredential -SecurePassword $SshPassword
+        }
+        $message = '尚未開放：第二階段串接與連線驗證尚未完成；未建立背景工作或連線。'
+        $script:Controls.RestoreStateValue.Text = $message
+        $script:Controls.ActivityLabel.Text = $message
+        Add-OperationLog -Operation $Operation -Status '尚未開放；未建立背景工作或連線' -Output @(
+            '第二階段介面串接與連線驗證尚未完成。'
+        )
+        return
+    }
     if ($Action -in @('RestoreList', 'Restore') -and (
         ($RestoreTestMode -and $null -eq $RestoreRemoteExecutor) -or
         (-not $RestoreTestMode -and $null -ne $RestoreRemoteExecutor)
@@ -2755,28 +3100,35 @@ function Start-BackgroundOperation {
         )
         return
     }
-    if ($Action -eq 'Backup' -and (
-        [string]::IsNullOrWhiteSpace($BackupDestination) -or
-        $BackupDestination -cnotmatch '\A/' -or
-        $BackupDestination.Length -gt 4096 -or
-        $BackupDestination -match '[\x00-\x1F\x7F]' -or
-        $script:OperationState.VerifiedBackupDirectory -cne $BackupDestination -or
-        $script:OperationState.VerifiedBackupHost -cne $script:ProductionSshHost -or
-        $script:OperationState.VerifiedBackupUser -cne $script:ProductionSshUser -or
-        (-not $BackupTestMode -and (
-            $SshHost -cne $script:ProductionSshHost -or
-            $SshUsername -cne $script:ProductionSshUser -or
-            $null -eq $SshPassword
-        ))
-    )) {
-        $script:Controls.ActivityLabel.Text = "$Operation：已阻擋（目的地驗證狀態無效）"
-        Add-OperationLog -Operation $Operation -Status '已阻擋；目的地與有效驗證狀態不一致' -Output @(
+    if ($Action -eq 'Backup') {
+        $operationAllowed = -not $script:OperationState.IsBusy -and
+            -not ($script:OperationState.ActiveOperation -and $script:OperationState.ActiveOperation.StopUnconfirmed)
+        $backupReady = Test-BackupOperationReady `
+            -BackupOperationsEnabled $script:OperationState.BackupOperationsEnabled `
+            -DestinationPreflightSucceeded $script:OperationState.BackupDestinationPreflightSucceeded `
+            -OperationAllowed $operationAllowed `
+            -BackupDestination $BackupDestination `
+            -VerifiedBackupDirectory $script:OperationState.VerifiedBackupDirectory `
+            -VerifiedBackupHost $script:OperationState.VerifiedBackupHost `
+            -VerifiedBackupUser $script:OperationState.VerifiedBackupUser `
+            -RequestedHost $SshHost `
+            -RequestedUser $SshUsername `
+            -ExpectedHost $script:ProductionSshHost `
+            -ExpectedUser $script:ProductionSshUser
+        if (-not $backupReady -or
+            (-not $BackupTestMode -and $null -eq $SshPassword)) {
+            $script:Controls.ActivityLabel.Text = "$Operation：已阻擋（Backup 啟用或目的地驗證狀態無效）"
+            $script:Controls.BackupStateValue.Text = '已阻擋：Backup 啟用條件或目的地驗證未通過'
+            $script:Controls.BackupButton.Enabled = $false
+            Add-OperationLog -Operation $Operation -Status '已阻擋；Backup 啟用條件或目的地驗證未通過' -Output @(
             '未建立背景工作或呼叫 SSH。'
-        )
-        if ($SshPassword) {
-            Clear-SshCredential -SecurePassword $SshPassword
+            )
+            if ($SshPassword) {
+                Clear-SshCredential -SecurePassword $SshPassword
+            }
+            return
         }
-        return
+        $backupOperationAllowed = $operationAllowed
     }
     if ($Action -eq 'Restore' -and (
         -not (Test-RestoreBundlePath -Path $RestoreBundlePath) -or
@@ -2796,6 +3148,9 @@ function Start-BackgroundOperation {
         return
     }
 
+    if ($Action -eq 'Backup') {
+        Reset-BackupArtifactStateForBackup
+    }
     $script:OperationState.IsBusy = $true
     Set-OperationButtonsEnabled -Enabled $false
     $script:Controls.ActivityLabel.Text = "$Operation：執行中…"
@@ -2836,6 +3191,14 @@ function Start-BackgroundOperation {
         ExpectedHeadSha = $ExpectedHeadSha
         ExpectedRemoteSha = $ExpectedRemoteSha
         BackupDestination = $BackupDestination
+        BackupOperationsEnabled = [bool]$script:OperationState.BackupOperationsEnabled
+        BackupDestinationPreflightSucceeded = [bool]$script:OperationState.BackupDestinationPreflightSucceeded
+        BackupVerifiedDirectory = $script:OperationState.VerifiedBackupDirectory
+        BackupVerifiedHost = $script:OperationState.VerifiedBackupHost
+        BackupVerifiedUser = $script:OperationState.VerifiedBackupUser
+        BackupOperationAllowed = $backupOperationAllowed
+        ProductionSshHost = $script:ProductionSshHost
+        ProductionSshUser = $script:ProductionSshUser
         BackupArtifactName = $BackupArtifactName
         RestoreBundlePath = $RestoreBundlePath
         RestoreConfirmation = $RestoreConfirmation
@@ -2876,6 +3239,7 @@ function Start-BackgroundOperation {
         'Get-PreflightInnerExceptionTypes',
         'Get-PreflightSshExceptionCategory',
         'ConvertTo-PosixShellSingleQuotedString',
+        'Test-BackupOperationReady',
         'Test-BackupArtifactFileName',
         'New-BackupArtifactCheckCommand',
         'Get-BackupArtifactCheckOutcome',
@@ -2976,6 +3340,22 @@ try {
             break
         }
         'Backup' {
+            $backupReady = Test-BackupOperationReady `
+                -BackupOperationsEnabled ([bool]$workerRequest.BackupOperationsEnabled) `
+                -DestinationPreflightSucceeded ([bool]$workerRequest.BackupDestinationPreflightSucceeded) `
+                -OperationAllowed ([bool]$workerRequest.BackupOperationAllowed -and
+                    -not $workContext.CancelRequested -and -not $workContext.StopUnconfirmed) `
+                -BackupDestination ([string]$workerRequest.BackupDestination) `
+                -VerifiedBackupDirectory ([string]$workerRequest.BackupVerifiedDirectory) `
+                -VerifiedBackupHost ([string]$workerRequest.BackupVerifiedHost) `
+                -VerifiedBackupUser ([string]$workerRequest.BackupVerifiedUser) `
+                -RequestedHost ([string]$workerRequest.SshHost) `
+                -RequestedUser ([string]$workerRequest.SshUsername) `
+                -ExpectedHost ([string]$workerRequest.ProductionSshHost) `
+                -ExpectedUser ([string]$workerRequest.ProductionSshUser)
+            if (-not $backupReady) {
+                throw 'Backup 啟用條件、目的地預檢或目標核對未通過；拒絕啟動 SSH。'
+            }
             $destination = [string]$workerRequest.BackupDestination
             if ([string]::IsNullOrWhiteSpace($destination) -or
                 $destination -cnotmatch '\A/' -or $destination.Length -gt 4096 -or
@@ -2987,7 +3367,31 @@ try {
             }
 
             $quotedDestination = ConvertTo-PosixShellSingleQuotedString -Value $destination
-            $remoteCommand = "cd -- '$($script:ProductionRoot)' && BACKUP_DIR=$quotedDestination exec bash '$($script:BackupScript)'"
+            $quotedProductionRoot = ConvertTo-PosixShellSingleQuotedString -Value $script:ProductionRoot
+            $quotedBackupScript = ConvertTo-PosixShellSingleQuotedString -Value $script:BackupScript
+            $artifactCheckCommand = New-BackupArtifactCheckCommand -BackupDirectory $destination -DynamicFileName
+            $remoteCommand = @(
+                "backup_dir=$quotedDestination"
+                "backup_output=`$(cd -- $quotedProductionRoot && BACKUP_DIR=$quotedDestination exec bash $quotedBackupScript)"
+                'backup_exit=$?'
+                'printf ''%s\n'' "$backup_output"'
+                'if [ "$backup_exit" -ne 0 ]; then exit "$backup_exit"; fi'
+                'backup_marker_count=0'
+                'backup_file_line=""'
+                'while IFS= read -r output_line; do'
+                '  case "$output_line" in BACKUP_FILE=*) backup_marker_count=$((backup_marker_count + 1)); backup_file_line="$output_line" ;; esac'
+                'done <<< "$backup_output"'
+                'backup_file="${backup_file_line#BACKUP_FILE=}"'
+                'backup_file_name="${backup_file##*/}"'
+                'backup_file_directory="${backup_file%/*}"'
+                'if [ "$backup_marker_count" -ne 1 ] || [ "$backup_file_directory" != "$backup_dir" ] || [[ ! "$backup_file_name" =~ ^pets_backup_[0-9]{8}_[0-9]{6}\.tar\.gz$ ]]; then'
+                '  printf ''BACKUP_AUTO_VERIFY_FAILURE=BACKUP_FILE_OUTPUT\n'''
+                '  exit 93'
+                'fi'
+                'printf ''BACKUP_AUTO_VERIFY_BEGIN\n'''
+                $artifactCheckCommand
+                'printf ''BACKUP_AUTO_VERIFY_END\n'''
+            ) -join "`n"
             $workContext.Stage = '以 SSH.NET 執行正式環境 backup.sh'
             $result = Invoke-BackupSshOperation -HostName $workerRequest.SshHost `
                 -Username $workerRequest.SshUsername -SecurePassword $workerRequest.SshPassword `
@@ -3653,6 +4057,10 @@ try {
                     } else {
                         "$($completedRequest.Operation)：停止狀態未確認"
                     }
+                    if ($completedRequest.Action -eq 'Backup') {
+                        $completedUi.BackupStateValue.Text = '備份停止狀態未確認；本次產物未驗證'
+                        $completedUi.BackupArtifactStateValue.Text = '本次備份結果未確認；產物未驗證'
+                    }
                     if ($completedRequest.Action -eq 'Restore') {
                         $completedUi.RestoreStateValue.Text = '本機 SSH 程序停止狀態及遠端還原結果均未確認'
                     }
@@ -3688,6 +4096,30 @@ try {
                         '推送已開始或可能已送出；請重新查詢 GitHub master SHA，勿直接假設遠端未更新。',
                         "執行階段：$($workContext.Stage)"
                     )
+                } elseif ($completedRequest.Action -eq 'Backup') {
+                    $backupUnconfirmed = [bool]$workContext.BackupCommandAttempted
+                    $completedUi.BackupStateValue.Text = if ($backupUnconfirmed) {
+                        '備份遠端結果未確認；本次產物未驗證'
+                    } else {
+                        '備份工作失敗；本次產物未驗證'
+                    }
+                    $completedUi.BackupArtifactStateValue.Text = '本次備份未驗證'
+                    $completedUi.ActivityLabel.Text = if ($backupUnconfirmed) {
+                        "$($completedRequest.Operation)：遠端結果未確認"
+                    } else {
+                        "$($completedRequest.Operation)：失敗"
+                    }
+                    & $completionAddOperationLog -Operation $completedRequest.Operation `
+                        -Status $(if ($backupUnconfirmed) { '備份結果未確認' } else { '備份工作失敗；未驗證產物' }) `
+                        -Output @(
+                            $exceptionDetails.ToArray(),
+                            "失敗階段：$($workContext.Stage)",
+                            $(if ($backupUnconfirmed) {
+                                '備份可能已在遠端開始；本次 archive 與 sidecar 均未完成自動驗證。'
+                            } else {
+                                '備份命令未確認成功；不會使用任何先前備份路徑進行驗證。'
+                            })
+                        )
                 } elseif ($workContext.CancelRequested) {
                     if ($completedRequest.Action -eq 'RestoreList') {
                         $completedUi.RestoreStateValue.Text = '遠端備份列舉已取消'
@@ -3713,6 +4145,12 @@ try {
                         } else {
                             "$($completedRequest.Operation)：已取消"
                         }
+                        $completedUi.BackupStateValue.Text = if ($workContext.BackupCommandAttempted) {
+                            '備份遠端結果未確認；本次產物未驗證'
+                        } else {
+                            '備份已取消；本次產物未驗證'
+                        }
+                        $completedUi.BackupArtifactStateValue.Text = '本次備份未驗證'
                         $cancelStatus = if ($workContext.BackupCommandAttempted) {
                             '取消請求；遠端結果未確認'
                         } else {
@@ -3731,6 +4169,8 @@ try {
                     if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup', 'BackupArtifactCheck')) {
                         $completedUi.SshAuthenticationValue.Text = '已取消'
                         if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
+                            $completedState.BackupOperationsEnabled = $false
+                            $completedState.BackupDestinationPreflightSucceeded = $false
                             $completedState.VerifiedBackupDirectory = $null
                             $completedState.VerifiedBackupHost = $null
                             $completedState.VerifiedBackupUser = $null
@@ -3747,6 +4187,12 @@ try {
                     }
                 } elseif ($completedRequest.Action -eq 'Backup') {
                     $backupUnconfirmed = [bool]$workContext.BackupCommandAttempted
+                    $completedUi.BackupStateValue.Text = if ($backupUnconfirmed) {
+                        '備份遠端結果未確認；本次產物未驗證'
+                    } else {
+                        '備份失敗；本次產物未驗證'
+                    }
+                    $completedUi.BackupArtifactStateValue.Text = '本次備份未驗證'
                     $completedUi.ActivityLabel.Text = if ($backupUnconfirmed) {
                         "$($completedRequest.Operation)：遠端結果未確認"
                     } else {
@@ -3780,6 +4226,8 @@ try {
                 } elseif ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight')) {
                     $completedUi.SshAuthenticationValue.Text = '失敗：SSH 工作未完成'
                     if ($completedRequest.Action -eq 'BackupDestinationPreflight') {
+                        $completedState.BackupOperationsEnabled = $false
+                        $completedState.BackupDestinationPreflightSucceeded = $false
                         $completedState.VerifiedBackupDirectory = $null
                         $completedState.VerifiedBackupHost = $null
                         $completedState.VerifiedBackupUser = $null
@@ -3902,9 +4350,20 @@ try {
                 'ProductionStateQuery' {
                     $state = $completionPayload.Result
                     $completedUi.ProductionStateQueryResultValue.Text = $state.Detail
-                    $completedUi.ProductionDeployStatusValue.Text = $state.Status
+                    $completedUi.ProductionDeployStatusValue.Text = switch ($state.Status) {
+                        'RUNNING' { '部署進行中' }
+                        'FAILED' { '部署失敗' }
+                        'DEPLOYED' { '部署完成，等待人工驗收' }
+                        'SUCCESS' { '部署及驗收成功' }
+                        default { '尚未確認' }
+                    }
                     $completedUi.ProductionDeployCommitValue.Text = $state.Commit
-                    $completedUi.ProductionDeployVerificationValue.Text = $state.Verification
+                    $completedUi.ProductionDeployVerificationValue.Text = switch ($state.Verification) {
+                        'pending' { '等待驗收' }
+                        'failed' { '未通過' }
+                        'PASS' { '通過' }
+                        default { '尚未確認' }
+                    }
                     $completedUi.ProductionDeployTimestampValue.Text = $state.Timestamp
                     $resultLabel = switch ($state.Outcome) {
                         'Confirmed' { '已確認' }
@@ -4075,11 +4534,48 @@ try {
                     } else {
                         '失敗：SSH 認證未完成'
                     }
-                    $completion = Get-BackupCompletion -Result $result `
-                        -ExpectedDirectory $completedRequest.BackupDestination
-                    $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$($completion.ActivityText)"
-                    & $completionAddOperationLog -Operation $completedRequest.Operation `
-                        -Status $completion.Status -Output $completion.Output
+                    $autoVerification = Get-BackupAutoVerificationOutcome -Result $result `
+                        -ExpectedDirectory $completedRequest.BackupDestination -Context $workContext
+                    $completion = $autoVerification.BackupCompletion
+                    if (-not $completion.Success) {
+                        $completedUi.BackupStateValue.Text = '備份失敗；本次產物未驗證'
+                        $completedUi.BackupArtifactStateValue.Text = "本次備份未驗證：$($completion.Status)"
+                        $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$($completion.ActivityText)"
+                        & $completionAddOperationLog -Operation $completedRequest.Operation `
+                            -Status $completion.Status -Output $completion.Output
+                    } else {
+                        $artifactOutcome = $autoVerification.ArtifactOutcome
+                        $completedUi.BackupArtifactStateValue.Text = switch ($artifactOutcome.Verdict) {
+                            'PASS' { "本次備份 PASS：大小 $($artifactOutcome.Size) bytes；SHA-256 $($artifactOutcome.Sha256)" }
+                            'FAIL' { "本次備份 FAIL：$($artifactOutcome.Detail)" }
+                            default { "本次備份驗證未確認：$($artifactOutcome.Detail)" }
+                        }
+                        if ($artifactOutcome.Verdict -eq 'PASS') {
+                            $completedUi.BackupStateValue.Text = '備份及本次產物驗證成功'
+                            $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：備份及驗證成功"
+                            & $completionAddOperationLog -Operation $completedRequest.Operation `
+                                -Status '備份及本次產物驗證成功' -Output @(
+                                    $completion.Output,
+                                    "本次備份檔：$($completion.BackupFile)",
+                                    "產物驗證：$($artifactOutcome.Detail)"
+                                )
+                        } else {
+                            $verificationStatus = if ($artifactOutcome.Verdict -eq 'FAIL') {
+                                '本次產物驗證失敗'
+                            } else {
+                                '本次產物驗證未確認'
+                            }
+                            $completedUi.BackupStateValue.Text = "備份命令成功；$verificationStatus"
+                            $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：$verificationStatus"
+                            & $completionAddOperationLog -Operation $completedRequest.Operation `
+                                -Status "備份命令成功；$verificationStatus" -Output @(
+                                    $completion.Output,
+                                    "本次備份檔：$($completion.BackupFile)",
+                                    "產物驗證階段：$($artifactOutcome.Verdict)",
+                                    "產物驗證原因：$($artifactOutcome.Detail)"
+                                )
+                        }
+                    }
                 }
                 'BackupArtifactCheck' {
                     $result = $completionPayload.Result
@@ -4232,9 +4728,14 @@ try {
                         $passwordAuthenticationVerified = [bool]$result.SshNetAuthenticationSucceeded
                         $hostMatches = $completedRequest.SshHost -ceq $completionProductionSshHost
                         $usernameMatches = $completedRequest.SshUsername -ceq $completionProductionSshUser
+                        $canonicalDestination = [string]$result.DestinationCanonical
+                        $canonicalDestinationValid = -not [string]::IsNullOrWhiteSpace($canonicalDestination) -and
+                            $canonicalDestination.Length -le 4096 -and
+                            $canonicalDestination -cmatch '\A/' -and
+                            $canonicalDestination -notmatch '[\x00-\x1F\x7F]'
                         $preflightSucceeded = $destinationVerified -and
                             $cleanupSucceeded -and $hostKeyVerified -and $passwordAuthenticationVerified -and
-                            $hostMatches -and $usernameMatches
+                            $hostMatches -and $usernameMatches -and $canonicalDestinationValid
                         $preflightDiagnostics = @(
                             "DestinationStatus 為 Verified：$(if ($destinationVerified) { '是' } else { '否' })",
                             "CleanupSucceeded 為 true：$(if ($cleanupSucceeded) { '是' } else { '否' })",
@@ -4242,15 +4743,18 @@ try {
                             "SSH.NET 密碼認證：$(if ($passwordAuthenticationVerified) { '通過' } else { '未通過' })",
                             "主機比對：$(if ($hostMatches) { '通過' } else { '未通過' })",
                             "帳號比對：$(if ($usernameMatches) { '通過' } else { '未通過' })",
+                            "標準化目的地格式：$(if ($canonicalDestinationValid) { '通過' } else { '未通過' })",
                             "最終成功判定：$(if ($preflightSucceeded) { '通過' } else { '未通過' })"
                         )
                         if ($preflightSucceeded) {
-                            $completedState.VerifiedBackupDirectory = $result.DestinationCanonical
+                            $completedState.BackupOperationsEnabled = $true
+                            $completedState.BackupDestinationPreflightSucceeded = $true
+                            $completedState.VerifiedBackupDirectory = $canonicalDestination
                             $completedState.VerifiedBackupHost = $completedRequest.SshHost
                             $completedState.VerifiedBackupUser = $completedRequest.SshUsername
                             $completedUi.BackupDestinationValue.Text = "$($result.DestinationCanonical)（BACKUP_DIR=$($result.Destination)；來源：$($result.DestinationSource)）"
                             $completedUi.BackupStateValue.Text = '備份目的地唯讀驗證成功'
-                            $completedUi.BackupButton.Text = '備份'
+                            $completedUi.BackupButton.Text = '建立備份'
                             $completedUi.ActivityLabel.Text = '備份目的地唯讀驗證成功；尚未執行備份'
                             & $completionAddOperationLog -Operation $completedRequest.Operation -Status '驗證成功；尚未執行備份' `
                                 -Output ($preflightDiagnostics + @(
@@ -4261,12 +4765,14 @@ try {
                                     '只檢查既有目錄狀態；未建立目錄、變更權限、建立備份或刪除檔案。'
                                 ))
                         } else {
+                            $completedState.BackupOperationsEnabled = $false
+                            $completedState.BackupDestinationPreflightSucceeded = $false
                             $completedState.VerifiedBackupDirectory = $null
                             $completedState.VerifiedBackupHost = $null
                             $completedState.VerifiedBackupUser = $null
                             $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
                             $completedUi.BackupStateValue.Text = '目的地預檢失敗'
-                            $completedUi.BackupButton.Text = '備份（目的地未驗證）'
+                            $completedUi.BackupButton.Text = '建立備份（目的地尚未檢查）'
                             $completedUi.ActivityLabel.Text = if ($result.DestinationStatus -eq 'TimedOut') {
                                 '唯讀驗證備份目的地：逾時'
                             } else {
@@ -4340,11 +4846,20 @@ try {
         } catch {
             if ($completedRequest.Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup', 'BackupArtifactCheck')) {
                 $completedUi.SshAuthenticationValue.Text = '失敗：完成處理未能確認'
-                $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
-                $completedUi.BackupStateValue.Text = '目的地預檢失敗'
-                $completedState.VerifiedBackupDirectory = $null
-                $completedState.VerifiedBackupHost = $null
-                $completedState.VerifiedBackupUser = $null
+                if ($completedRequest.Action -eq 'Backup') {
+                    $completedUi.BackupStateValue.Text = '備份完成處理失敗；本次產物未驗證'
+                    $completedUi.BackupArtifactStateValue.Text = '本次備份驗證未確認'
+                } elseif ($completedRequest.Action -eq 'BackupArtifactCheck') {
+                    $completedUi.BackupArtifactStateValue.Text = 'FAIL：完成處理未能確認'
+                } else {
+                    $completedState.BackupOperationsEnabled = $false
+                    $completedState.BackupDestinationPreflightSucceeded = $false
+                    $completedUi.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
+                    $completedUi.BackupStateValue.Text = '目的地預檢失敗'
+                    $completedState.VerifiedBackupDirectory = $null
+                    $completedState.VerifiedBackupHost = $null
+                    $completedState.VerifiedBackupUser = $null
+                }
                 $completedUi.ActivityLabel.Text = "$($completedRequest.Operation)：完成處理失敗"
                 & $completionAddOperationLog -Operation $completedRequest.Operation -Status '完成處理失敗；錯誤內容已抑制' `
                     -Output @('SSH 完成處理例外資訊不記錄。')
@@ -4434,6 +4949,10 @@ try {
         $script:OperationState.ActiveOperation = $null
         Set-OperationButtonsEnabled -Enabled $true
         $script:Controls.ActivityLabel.Text = "$Operation：無法啟動"
+        if ($Action -eq 'Backup') {
+            $script:Controls.BackupStateValue.Text = '備份工作無法啟動；本次產物未驗證'
+            $script:Controls.BackupArtifactStateValue.Text = '本次備份未驗證'
+        }
         if ($Action -in @('SshTest', 'BackupDestinationPreflight', 'Backup', 'BackupArtifactCheck')) {
             Add-OperationLog -Operation $Operation -Status 'SSH 工作無法啟動' -Output @(
                 '診斷階段：Other',
@@ -4482,6 +5001,14 @@ function Start-SshUiOperation {
         $script:Controls.ActivityLabel.Text = '檢查備份產物：FAIL'
         return
     }
+    if ($Action -eq 'BackupDestinationPreflight') {
+        $script:OperationState.BackupOperationsEnabled = $false
+        $script:OperationState.BackupDestinationPreflightSucceeded = $false
+        $script:OperationState.VerifiedBackupDirectory = $null
+        $script:OperationState.VerifiedBackupHost = $null
+        $script:OperationState.VerifiedBackupUser = $null
+        $script:Controls.BackupButton.Enabled = $false
+    }
     $hostName = $script:Controls.SshHostInput.Text.Trim()
     $username = $script:Controls.SshUsernameInput.Text.Trim()
     if ($hostName -cnotmatch '^[A-Za-z0-9.-]{1,253}$' -or
@@ -4504,6 +5031,8 @@ function Start-SshUiOperation {
         if ($Action -eq 'BackupDestinationPreflight') {
             $script:Controls.BackupDestinationValue.Text = '未驗證；預檢僅允許正式環境主機與帳號'
             $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
+            $script:OperationState.BackupOperationsEnabled = $false
+            $script:OperationState.BackupDestinationPreflightSucceeded = $false
             $script:OperationState.VerifiedBackupDirectory = $null
             $script:OperationState.VerifiedBackupHost = $null
             $script:OperationState.VerifiedBackupUser = $null
@@ -4513,12 +5042,14 @@ function Start-SshUiOperation {
     }
 
     if ($Action -eq 'BackupDestinationPreflight') {
+        $script:OperationState.BackupOperationsEnabled = $false
+        $script:OperationState.BackupDestinationPreflightSucceeded = $false
         $script:OperationState.VerifiedBackupDirectory = $null
         $script:OperationState.VerifiedBackupHost = $null
         $script:OperationState.VerifiedBackupUser = $null
         $script:Controls.BackupDestinationValue.Text = '未驗證；正式備份禁止執行'
         $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
-        $script:Controls.BackupButton.Text = '備份（目的地未驗證）'
+        $script:Controls.BackupButton.Text = '建立備份（目的地尚未檢查）'
         $script:Controls.BackupButton.Enabled = $false
     }
 
@@ -4581,6 +5112,8 @@ function Start-SshUiOperation {
         if ($Action -eq 'BackupDestinationPreflight') {
             $script:Controls.BackupDestinationValue.Text = '未驗證；備份維持阻擋'
             $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
+            $script:OperationState.BackupOperationsEnabled = $false
+            $script:OperationState.BackupDestinationPreflightSucceeded = $false
         }
         $script:Controls.ActivityLabel.Text = "$operation：無法啟動"
         if ($Action -eq 'BackupArtifactCheck') {
@@ -4690,15 +5223,209 @@ function New-ActionButton {
     $button.AutoSize = $true
     $button.Enabled = $Enabled
     $button.Margin = New-Object System.Windows.Forms.Padding(4, 8, 8, 4)
+    $button.FlatStyle = [System.Windows.Forms.FlatStyle]::System
+    $button.AccessibleName = $Text
     return $button
 }
 
+function ConvertTo-UserFacingStatus {
+    param([AllowEmptyString()][string]$Text)
+
+    return $Text `
+        -replace '(?i)\bProduction\b', '正式環境' `
+        -replace '(?i)\bBackup\b', '備份' `
+        -replace '(?i)\bRestore\b', '還原' `
+        -replace '(?i)\bPASS\b', '通過' `
+        -replace '(?i)\bFAIL\b', '未通過' `
+        -replace '(?i)\bSUCCESS\b', '成功' `
+        -replace '(?i)\bSSH\b', '安全連線' `
+        -replace '部署前檢查', '執行前檢查' `
+        -replace 'GitHub master', 'GitHub 程式版本' `
+        -replace '（npm --prefix testing test）', '（必要檢查）' `
+        -replace '（git ls-remote）', '' `
+        -replace '(?i)\(exit(?: code)?\s+-?\d+\)', '（詳細資訊見操作紀錄）' `
+        -replace '遠端結果未確認', '遠端結果尚未確認' `
+        -replace '結果未確認', '結果尚未確認'
+}
+
+function Update-VersionSummary {
+    $worktreeStatus = [string]$script:Controls.WorktreeValue.Text
+    $githubComparison = [string]$script:Controls.GitHubCompareValue.Text
+
+    if ($worktreeStatus -eq '有未提交變更') {
+        $script:Controls.VersionSummaryStatus.Text = '本機有尚未提交的修改'
+        $script:Controls.VersionSummaryStatus.ForeColor = [System.Drawing.Color]::FromArgb(166, 104, 0)
+    } elseif ($worktreeStatus -eq '乾淨' -and $githubComparison -match '^一致(?:$|：)') {
+        $script:Controls.VersionSummaryStatus.Text = '本機與 GitHub 版本一致'
+        $script:Controls.VersionSummaryStatus.ForeColor = [System.Drawing.Color]::FromArgb(35, 125, 83)
+    } elseif ($worktreeStatus -eq '乾淨' -and $githubComparison -match '^不一致(?:$|：)') {
+        $script:Controls.VersionSummaryStatus.Text = '本機與 GitHub 版本不同'
+        $script:Controls.VersionSummaryStatus.ForeColor = [System.Drawing.Color]::FromArgb(183, 65, 58)
+    } else {
+        $script:Controls.VersionSummaryStatus.Text = '本機與 GitHub 版本尚未確認'
+        $script:Controls.VersionSummaryStatus.ForeColor = [System.Drawing.Color]::FromArgb(92, 104, 117)
+    }
+
+    $localSummary = switch ($worktreeStatus) {
+        '乾淨' { '本機工作目錄乾淨' }
+        '有未提交變更' { '本機有尚未提交的修改' }
+        default { '本機狀態尚未確認' }
+    }
+    $githubSummary = if ($githubComparison -match '^一致(?:$|：)') {
+        'GitHub 與本機版本一致'
+    } elseif ($githubComparison -match '^不一致(?:$|：)') {
+        'GitHub 與本機版本不同'
+    } elseif ([string]$script:Controls.GitHubShaValue.Text -match '^[0-9a-fA-F]{40}$') {
+        '已查詢 GitHub 版本；比較結果尚未確認'
+    } else {
+        'GitHub 版本尚未確認'
+    }
+    $script:Controls.VersionSummaryDetails.Text = "$localSummary  ·  $githubSummary  ·  正式網站使用版本尚未確認"
+}
+
+function New-OperationCard {
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.TableLayoutPanel]$Table,
+        [Parameter(Mandatory = $true)][int]$Column,
+        [Parameter(Mandatory = $true)][int]$Row,
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $true)][string]$Icon,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][System.Drawing.Color]$AccentColor,
+        [Parameter(Mandatory = $true)][System.Windows.Forms.Button]$Button,
+        [string]$UnavailableMessage
+    )
+
+    $card = New-Object System.Windows.Forms.Panel
+    $card.BackColor = [System.Drawing.Color]::FromArgb(218, 225, 233)
+    $card.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $card.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $card.Margin = New-Object System.Windows.Forms.Padding(6)
+    $card.Padding = New-Object System.Windows.Forms.Padding(1)
+    $card.MinimumSize = New-Object System.Drawing.Size(220, 148)
+
+    $surface = New-Object System.Windows.Forms.Panel
+    $surface.BackColor = [System.Drawing.Color]::White
+    $surface.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $card.Controls.Add($surface)
+
+    $layout = New-Object System.Windows.Forms.TableLayoutPanel
+    $layout.BackColor = [System.Drawing.Color]::White
+    $layout.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $layout.Padding = New-Object System.Windows.Forms.Padding(10, 7, 10, 8)
+    $layout.ColumnCount = 2
+    $layout.RowCount = 3
+    $layout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 40)))
+    $layout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+    $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    $surface.Controls.Add($layout)
+
+    $accent = New-Object System.Windows.Forms.Panel
+    $accent.BackColor = $AccentColor
+    $accent.Dock = [System.Windows.Forms.DockStyle]::Top
+    $accent.Height = 4
+    $surface.Controls.Add($accent)
+
+    $iconLabel = New-Object System.Windows.Forms.Label
+    $iconLabel.Text = $Icon
+    $iconLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $iconLabel.BackColor = [System.Drawing.Color]::FromArgb(238, 244, 250)
+    $iconLabel.ForeColor = $AccentColor
+    $iconLabel.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 9, [System.Drawing.FontStyle]::Bold)
+    $iconLabel.Size = New-Object System.Drawing.Size(28, 28)
+    $iconLabel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 2)
+
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.Text = $Title
+    $titleLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $titleLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $titleLabel.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 11, [System.Drawing.FontStyle]::Bold)
+    $titleLabel.ForeColor = [System.Drawing.Color]::FromArgb(35, 48, 62)
+    $titleLabel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 2)
+
+    $descriptionLabel = New-Object System.Windows.Forms.Label
+    $descriptionLabel.Text = $Description
+    $descriptionLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $descriptionLabel.AutoSize = $true
+    $descriptionLabel.ForeColor = [System.Drawing.Color]::FromArgb(83, 96, 110)
+    $descriptionLabel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 4)
+
+    $statusLabel = New-Object System.Windows.Forms.Label
+    $statusLabel.Text = $Status
+    $statusLabel.AutoSize = $true
+    $statusLabel.ForeColor = $AccentColor
+    $statusLabel.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 9, [System.Drawing.FontStyle]::Bold)
+    $statusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $statusLabel.Margin = New-Object System.Windows.Forms.Padding(0, 4, 4, 0)
+
+    if ($Button.Enabled) {
+        $Button.AutoSize = $false
+        $Button.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $Button.Height = 30
+        $Button.Margin = New-Object System.Windows.Forms.Padding(4, 2, 0, 0)
+        $Button.AccessibleName = $Title
+        $Button.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $Button.FlatAppearance.BorderSize = 0
+        $Button.BackColor = $AccentColor
+        $Button.ForeColor = [System.Drawing.Color]::White
+        $actionControl = $Button
+    } else {
+        $actionControl = New-Object System.Windows.Forms.Label
+        $actionControl.Text = $Button.Text
+        $actionControl.AutoSize = $false
+        $actionControl.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $actionControl.Height = 30
+        $actionControl.Margin = New-Object System.Windows.Forms.Padding(4, 2, 0, 0)
+        $actionControl.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+        $actionControl.BackColor = [System.Drawing.Color]::FromArgb(237, 240, 243)
+        $actionControl.ForeColor = [System.Drawing.Color]::FromArgb(116, 125, 134)
+        $actionControl.AccessibleName = $Title
+        $actionControl.AccessibleDescription = $UnavailableMessage
+    }
+
+    $layout.Controls.Add($iconLabel, 0, 0)
+    $layout.Controls.Add($titleLabel, 1, 0)
+    $layout.Controls.Add($descriptionLabel, 0, 1)
+    $layout.SetColumnSpan($descriptionLabel, 2)
+    $layout.Controls.Add($statusLabel, 0, 2)
+    $layout.Controls.Add($actionControl, 1, 2)
+
+    if (-not $Button.Enabled) {
+        $card.AccessibleDescription = $UnavailableMessage
+        $card.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $clickHandler = {
+            $message = [string]$this.Tag
+            if (-not [string]::IsNullOrWhiteSpace($message)) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    $script:Controls.Form,
+                    $message,
+                    '尚未開放',
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                ) | Out-Null
+            }
+        }
+        foreach ($clickableControl in @($card, $surface, $layout, $iconLabel, $titleLabel, $descriptionLabel, $statusLabel, $actionControl, $accent)) {
+            $clickableControl.Tag = $UnavailableMessage
+            $clickableControl.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $clickableControl.Add_Click($clickHandler)
+        }
+    }
+
+    $Table.Controls.Add($card, $Column, $Row)
+    return $card
+}
+
 $form = New-Object System.Windows.Forms.Form
-$form.Text = '寵物3.0｜開發、佈署與伺服器重建中心'
+$form.Text = '寵物3.0 管理中心'
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-$form.Size = New-Object System.Drawing.Size(1120, 820)
-$form.MinimumSize = New-Object System.Drawing.Size(900, 680)
-$form.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 9)
+$form.ClientSize = New-Object System.Drawing.Size(1000, 680)
+$form.MinimumSize = New-Object System.Drawing.Size(900, 620)
+$form.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 10)
+$form.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
 $script:Controls.Form = $form
 
 $rootLayout = New-Object System.Windows.Forms.TableLayoutPanel
@@ -4759,7 +5486,7 @@ $githubGroup.Controls.Add($githubTable)
 $rootLayout.Controls.Add($githubGroup, 1, 0)
 
 $productionGroup = New-Object System.Windows.Forms.GroupBox
-$productionGroup.Text = '3. Production 部署'
+$productionGroup.Text = '3. 正式環境資訊'
 $productionGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 $productionTable = New-Object System.Windows.Forms.TableLayoutPanel
 $productionTable.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -4802,7 +5529,7 @@ $productionGroup.Controls.Add($productionTable)
 $rootLayout.Controls.Add($productionGroup, 0, 1)
 
 $serverGroup = New-Object System.Windows.Forms.GroupBox
-$serverGroup.Text = '4. 伺服器管理'
+$serverGroup.Text = '4. 伺服器與備份詳細資訊'
 $serverGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 $serverTable = New-Object System.Windows.Forms.TableLayoutPanel
 $serverTable.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -4826,9 +5553,9 @@ $script:Controls.SshTestButton = New-ActionButton -Text '測試 SSH 連線'
 $script:Controls.BackupDestinationButton = New-ActionButton -Text '唯讀驗證備份目的地'
 $script:Controls.BackupArtifactCheckButton = New-ActionButton -Text '檢查備份產物（唯讀）'
 $script:Controls.CancelOperationButton = New-ActionButton -Text '取消目前操作' -Enabled $false
-$backupButton = New-ActionButton -Text '備份（目的地未驗證）' -Enabled $false
+$backupButton = New-ActionButton -Text '建立備份（目的地尚未檢查）' -Enabled $false
 $script:Controls.BackupButton = $backupButton
-$script:Controls.RestoreButton = New-ActionButton -Text '選擇遠端備份並還原'
+$script:Controls.RestoreButton = New-ActionButton -Text '選擇備份並還原'
 $rebuildButton = New-ActionButton -Text '重建（尚未接線）' -Enabled $false
 $serverButtons.Controls.Add($script:Controls.SshTestButton)
 $serverButtons.Controls.Add($script:Controls.BackupDestinationButton)
@@ -4869,6 +5596,442 @@ $logGroup.Controls.Add($logLayout)
 $rootLayout.Controls.Add($logGroup, 0, 2)
 $rootLayout.SetColumnSpan($logGroup, 2)
 
+$form.Controls.Remove($rootLayout)
+foreach ($control in @($localGroup, $githubGroup, $productionGroup, $serverGroup, $logGroup)) {
+    $rootLayout.Controls.Remove($control)
+}
+$logLayout.Controls.Remove($script:Controls.ActivityLabel)
+
+$mainTabs = New-Object System.Windows.Forms.TabControl
+$mainTabs.Dock = [System.Windows.Forms.DockStyle]::Fill
+$mainTabs.Padding = New-Object System.Drawing.Point(14, 6)
+$mainTabs.BackColor = [System.Drawing.Color]::White
+$homePage = New-Object System.Windows.Forms.TabPage
+$homePage.Text = '首頁'
+$homePage.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+$homePage.AutoScroll = $true
+$detailsPage = New-Object System.Windows.Forms.TabPage
+$detailsPage.Text = '詳細資訊'
+$detailsPage.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+$historyPage = New-Object System.Windows.Forms.TabPage
+$historyPage.Text = '操作紀錄'
+$historyPage.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+[void]$mainTabs.TabPages.Add($homePage)
+[void]$mainTabs.TabPages.Add($detailsPage)
+[void]$mainTabs.TabPages.Add($historyPage)
+$form.Controls.Add($mainTabs)
+
+$homeLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$homeLayout.Dock = [System.Windows.Forms.DockStyle]::Top
+$homeLayout.AutoSize = $true
+$homeLayout.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$homeLayout.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+$homeLayout.Padding = New-Object System.Windows.Forms.Padding(12, 8, 12, 10)
+$homeLayout.ColumnCount = 1
+$homeLayout.RowCount = 4
+$homeLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$homeLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$homeLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$homeLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$homeLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$homePage.Controls.Add($homeLayout)
+
+$headerLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$headerLayout.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+$headerLayout.Dock = [System.Windows.Forms.DockStyle]::Top
+$headerLayout.AutoSize = $true
+$headerLayout.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$headerLayout.ColumnCount = 1
+$headerLayout.RowCount = 3
+$headerLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+foreach ($unusedRow in 1..3) {
+    $headerLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+}
+$titleLabel = New-Object System.Windows.Forms.Label
+$titleLabel.Text = '寵物3.0 管理中心'
+$titleLabel.AutoSize = $true
+$titleLabel.Font = New-Object System.Drawing.Font($form.Font.FontFamily, 18, [System.Drawing.FontStyle]::Bold)
+$titleLabel.ForeColor = [System.Drawing.Color]::FromArgb(35, 48, 62)
+$titleLabel.Margin = New-Object System.Windows.Forms.Padding(4, 1, 4, 0)
+$subtitleLabel = New-Object System.Windows.Forms.Label
+$subtitleLabel.Text = '程式發布、正式網站與資料安全，一個地方管理。'
+$subtitleLabel.AutoSize = $true
+$subtitleLabel.ForeColor = [System.Drawing.Color]::FromArgb(83, 96, 110)
+$subtitleLabel.Margin = New-Object System.Windows.Forms.Padding(4, 0, 4, 1)
+$script:Controls.WebsiteStatusLabel = New-Object System.Windows.Forms.Label
+$script:Controls.WebsiteStatusLabel.Text = '正式網站使用的版本：尚未確認'
+$script:Controls.WebsiteStatusLabel.AutoSize = $true
+$script:Controls.WebsiteStatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(142, 94, 14)
+$script:Controls.WebsiteStatusLabel.BackColor = [System.Drawing.Color]::FromArgb(255, 246, 222)
+$script:Controls.WebsiteStatusLabel.Padding = New-Object System.Windows.Forms.Padding(6, 2, 6, 2)
+$script:Controls.WebsiteStatusLabel.Margin = New-Object System.Windows.Forms.Padding(4, 1, 4, 5)
+$headerLayout.Controls.Add($titleLabel, 0, 0)
+$headerLayout.Controls.Add($subtitleLabel, 0, 1)
+$headerLayout.Controls.Add($script:Controls.WebsiteStatusLabel, 0, 2)
+$homeLayout.Controls.Add($headerLayout, 0, 0)
+
+$versionCard = New-Object System.Windows.Forms.Panel
+$versionCard.BackColor = [System.Drawing.Color]::White
+$versionCard.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$versionCard.Dock = [System.Windows.Forms.DockStyle]::Top
+$versionCard.AutoSize = $true
+$versionCard.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$versionCard.MinimumSize = New-Object System.Drawing.Size(0, 66)
+$versionCard.Margin = New-Object System.Windows.Forms.Padding(6, 2, 6, 4)
+$versionCard.Padding = New-Object System.Windows.Forms.Padding(10, 6, 10, 6)
+$versionLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$versionLayout.BackColor = [System.Drawing.Color]::White
+$versionLayout.Dock = [System.Windows.Forms.DockStyle]::Top
+$versionLayout.AutoSize = $true
+$versionLayout.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$versionLayout.ColumnCount = 2
+$versionLayout.RowCount = 3
+$versionLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 44)))
+$versionLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$versionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$versionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$versionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$versionCard.Controls.Add($versionLayout)
+$versionIcon = New-Object System.Windows.Forms.Label
+$versionIcon.Text = 'V'
+$versionIcon.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$versionIcon.BackColor = [System.Drawing.Color]::FromArgb(231, 241, 251)
+$versionIcon.ForeColor = [System.Drawing.Color]::FromArgb(42, 112, 180)
+$versionIcon.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 12, [System.Drawing.FontStyle]::Bold)
+$versionIcon.Size = New-Object System.Drawing.Size(28, 28)
+$versionIcon.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
+$versionHeading = New-Object System.Windows.Forms.Label
+$versionHeading.Text = '版本狀態'
+$versionHeading.AutoSize = $true
+$versionHeading.ForeColor = [System.Drawing.Color]::FromArgb(83, 96, 110)
+$versionHeading.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 9, [System.Drawing.FontStyle]::Bold)
+$versionHeading.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 2)
+$script:Controls.VersionSummaryStatus = New-Object System.Windows.Forms.Label
+$script:Controls.VersionSummaryStatus.Text = '本機與 GitHub 版本尚未確認'
+$script:Controls.VersionSummaryStatus.AutoSize = $true
+$script:Controls.VersionSummaryStatus.ForeColor = [System.Drawing.Color]::FromArgb(92, 104, 117)
+$script:Controls.VersionSummaryStatus.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 10, [System.Drawing.FontStyle]::Bold)
+$script:Controls.VersionSummaryStatus.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 1)
+$script:Controls.VersionSummaryDetails = New-Object System.Windows.Forms.Label
+$script:Controls.VersionSummaryDetails.Text = '本機狀態尚未確認  ·  GitHub 版本尚未確認  ·  正式網站使用版本尚未確認'
+$script:Controls.VersionSummaryDetails.AutoSize = $true
+$script:Controls.VersionSummaryDetails.ForeColor = [System.Drawing.Color]::FromArgb(104, 115, 126)
+$script:Controls.VersionSummaryDetails.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
+$versionLayout.Controls.Add($versionIcon, 0, 0)
+$versionLayout.SetRowSpan($versionIcon, 2)
+$versionLayout.Controls.Add($versionHeading, 1, 0)
+$versionLayout.Controls.Add($script:Controls.VersionSummaryStatus, 1, 1)
+$versionLayout.Controls.Add($script:Controls.VersionSummaryDetails, 1, 2)
+$homeLayout.Controls.Add($versionCard, 0, 1)
+
+$operationGrid = New-Object System.Windows.Forms.TableLayoutPanel
+$operationGrid.Dock = [System.Windows.Forms.DockStyle]::Top
+$operationGrid.AutoSize = $true
+$operationGrid.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$operationGrid.ColumnCount = 3
+$operationGrid.RowCount = 2
+$operationGrid.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+foreach ($unusedColumn in 1..3) {
+    $operationGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 33.333)))
+}
+foreach ($unusedRow in 1..2) {
+    $operationGrid.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+}
+$homeLayout.Controls.Add($operationGrid, 0, 2)
+
+$githubTable.Controls.Remove($script:Controls.PushButton)
+$script:Controls.PushButton.Dispose()
+$script:Controls.PushButton = New-ActionButton -Text '↑  推送至 GitHub'
+$publishAccent = [System.Drawing.Color]::FromArgb(43, 118, 190)
+$publishCard = New-Object System.Windows.Forms.Panel
+$publishCard.BackColor = [System.Drawing.Color]::FromArgb(218, 225, 233)
+$publishCard.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$publishCard.Dock = [System.Windows.Forms.DockStyle]::Fill
+$publishCard.Margin = New-Object System.Windows.Forms.Padding(6)
+$publishCard.Padding = New-Object System.Windows.Forms.Padding(1)
+$publishCard.MinimumSize = New-Object System.Drawing.Size(220, 148)
+
+$publishSurface = New-Object System.Windows.Forms.Panel
+$publishSurface.BackColor = [System.Drawing.Color]::White
+$publishSurface.Dock = [System.Windows.Forms.DockStyle]::Fill
+$publishCard.Controls.Add($publishSurface)
+
+$publishLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$publishLayout.BackColor = [System.Drawing.Color]::White
+$publishLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
+$publishLayout.Padding = New-Object System.Windows.Forms.Padding(10, 7, 10, 8)
+$publishLayout.ColumnCount = 2
+$publishLayout.RowCount = 3
+$publishLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 40)))
+$publishLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$publishLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$publishLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$publishLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 58)))
+$publishSurface.Controls.Add($publishLayout)
+
+$publishAccentBar = New-Object System.Windows.Forms.Panel
+$publishAccentBar.BackColor = $publishAccent
+$publishAccentBar.Dock = [System.Windows.Forms.DockStyle]::Top
+$publishAccentBar.Height = 4
+$publishSurface.Controls.Add($publishAccentBar)
+
+$publishIcon = New-Object System.Windows.Forms.Label
+$publishIcon.Text = '01'
+$publishIcon.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$publishIcon.BackColor = [System.Drawing.Color]::FromArgb(238, 244, 250)
+$publishIcon.ForeColor = $publishAccent
+$publishIcon.Font = New-Object System.Drawing.Font('Segoe UI Symbol', 12, [System.Drawing.FontStyle]::Bold)
+$publishIcon.Size = New-Object System.Drawing.Size(28, 28)
+$publishIcon.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 2)
+
+$publishTitle = New-Object System.Windows.Forms.Label
+$publishTitle.Text = '發布'
+$publishTitle.Dock = [System.Windows.Forms.DockStyle]::Fill
+$publishTitle.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$publishTitle.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 11, [System.Drawing.FontStyle]::Bold)
+$publishTitle.ForeColor = [System.Drawing.Color]::FromArgb(35, 48, 62)
+$publishTitle.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 2)
+
+$publishDescription = New-Object System.Windows.Forms.Label
+$publishDescription.Text = '將已提交的版本發布到 GitHub。發布到 GitHub 不等於更新正式網站。'
+$publishDescription.Dock = [System.Windows.Forms.DockStyle]::Fill
+$publishDescription.AutoSize = $true
+$publishDescription.ForeColor = [System.Drawing.Color]::FromArgb(83, 96, 110)
+$publishDescription.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 4)
+
+$publishStatus = New-Object System.Windows.Forms.Label
+$publishStatus.Text = '可用'
+$publishStatus.AutoSize = $true
+$publishStatus.Dock = [System.Windows.Forms.DockStyle]::Fill
+$publishStatus.ForeColor = $publishAccent
+$publishStatus.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 9, [System.Drawing.FontStyle]::Bold)
+$publishStatus.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$publishStatus.Margin = New-Object System.Windows.Forms.Padding(0, 0, 4, 0)
+
+$publishActions = New-Object System.Windows.Forms.TableLayoutPanel
+$publishActions.BackColor = [System.Drawing.Color]::White
+$publishActions.Dock = [System.Windows.Forms.DockStyle]::Fill
+$publishActions.ColumnCount = 2
+$publishActions.RowCount = 1
+$publishActions.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$publishActions.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$publishActions.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 58)))
+
+$script:Controls.PushButton.AutoSize = $false
+$script:Controls.PushButton.Dock = [System.Windows.Forms.DockStyle]::None
+$script:Controls.PushButton.Anchor = [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Top
+$script:Controls.PushButton.MinimumSize = New-Object System.Drawing.Size(190, 46)
+$script:Controls.PushButton.Size = New-Object System.Drawing.Size(210, 46)
+$script:Controls.PushButton.Margin = New-Object System.Windows.Forms.Padding(0, 6, 0, 6)
+$script:Controls.PushButton.Padding = New-Object System.Windows.Forms.Padding(12, 6, 12, 6)
+$script:Controls.PushButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$script:Controls.PushButton.BackColor = $publishAccent
+$script:Controls.PushButton.ForeColor = [System.Drawing.Color]::White
+$script:Controls.PushButton.Font = New-Object System.Drawing.Font(
+    'Microsoft JhengHei UI',
+    10,
+    [System.Drawing.FontStyle]::Bold
+)
+$script:Controls.PushButton.FlatAppearance.BorderSize = 2
+$script:Controls.PushButton.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(25, 89, 148)
+$script:Controls.PushButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(31, 98, 157)
+$script:Controls.PushButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(23, 75, 122)
+$script:Controls.PushButton.AccessibleName = '推送至 GitHub'
+$script:Controls.PushButton.AccessibleDescription = '執行發布前檢查並在確認後推送已提交的版本至 GitHub。'
+
+$publishLayout.Controls.Add($publishIcon, 0, 0)
+$publishLayout.Controls.Add($publishTitle, 1, 0)
+$publishLayout.Controls.Add($publishDescription, 0, 1)
+$publishLayout.SetColumnSpan($publishDescription, 2)
+$publishActions.Controls.Add($publishStatus, 0, 0)
+$publishActions.Controls.Add($script:Controls.PushButton, 1, 0)
+$publishLayout.Controls.Add($publishActions, 0, 2)
+$publishLayout.SetColumnSpan($publishActions, 2)
+$operationGrid.Controls.Add($publishCard, 0, 0)
+
+$deployButton.Text = '啟動部署'
+$deployButton.Enabled = $true
+$deployButton.AccessibleDescription = '啟動既有 Production 部署流程；流程可能推送至 GitHub，並需要在 PowerShell 視窗完成互動確認。'
+$script:Controls.DeployButton = $deployButton
+[void](New-OperationCard -Table $operationGrid -Column 1 -Row 0 `
+    -Title '更新網站' `
+    -Icon '02' `
+    -Description '部署本機 HEAD 至正式網站；部署流程可能推送至 GitHub，並需完成部署授權及人工驗收。' `
+    -Status '需確認' `
+    -AccentColor ([System.Drawing.Color]::FromArgb(190, 133, 31)) `
+    -Button $deployButton)
+
+$backupButton.Text = '建立備份（目的地尚未檢查）'
+# Keep the real, wired button in the card; disable it immediately after card construction.
+$backupButton.Enabled = $true
+[void](New-OperationCard -Table $operationGrid -Column 2 -Row 0 `
+    -Title '備份' `
+    -Icon '03' `
+    -Description '保存資料並檢查備份是否完整。請先唯讀驗證備份目的地。' `
+    -Status '等待目的地驗證' `
+    -AccentColor ([System.Drawing.Color]::FromArgb(43, 145, 102)) `
+    -Button $backupButton)
+$backupButton.Enabled = $false
+
+$script:Controls.RestoreButton.Text = '尚未開放'
+$script:Controls.RestoreButton.Enabled = $false
+$script:Controls.RestoreButton.AccessibleDescription = '第二階段介面串接與驗證尚未完成，目前不可執行正式還原。'
+[void](New-OperationCard -Table $operationGrid -Column 0 -Row 1 `
+    -Title '還原' `
+    -Icon '04' `
+    -Description '從備份復原資料。此功能尚未開放。' `
+    -Status '尚未開放' `
+    -AccentColor ([System.Drawing.Color]::FromArgb(190, 81, 72)) `
+    -Button $script:Controls.RestoreButton `
+    -UnavailableMessage '還原功能尚未開放；此卡片不會列舉備份或執行還原。')
+
+$rebuildButton.Text = '尚未開放'
+$rebuildButton.Enabled = $false
+$rebuildButton.AccessibleDescription = '目前沒有已接通並可確認的伺服器重建流程。'
+[void](New-OperationCard -Table $operationGrid -Column 2 -Row 1 `
+    -Title '重建伺服器' `
+    -Icon '05' `
+    -Description '重新建立伺服器環境。此功能尚未完成。' `
+    -Status '尚未完成' `
+    -AccentColor ([System.Drawing.Color]::FromArgb(116, 125, 134)) `
+    -Button $rebuildButton `
+    -UnavailableMessage '伺服器重建功能尚未完成；此卡片不會執行任何重建動作。')
+
+$script:Controls.WorktreeValue.Add_TextChanged({ Update-VersionSummary })
+$script:Controls.GitHubCompareValue.Add_TextChanged({ Update-VersionSummary })
+$script:Controls.GitHubShaValue.Add_TextChanged({ Update-VersionSummary })
+Update-VersionSummary
+
+$resultGroup = New-Object System.Windows.Forms.Panel
+$resultGroup.BackColor = [System.Drawing.Color]::White
+$resultGroup.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$resultGroup.Dock = [System.Windows.Forms.DockStyle]::Top
+$resultGroup.AutoSize = $true
+$resultGroup.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$resultGroup.MinimumSize = New-Object System.Drawing.Size(0, 110)
+$resultGroup.Padding = New-Object System.Windows.Forms.Padding(12, 8, 12, 8)
+$resultGroup.Margin = New-Object System.Windows.Forms.Padding(8)
+$resultLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$resultLayout.BackColor = [System.Drawing.Color]::White
+$resultLayout.Dock = [System.Windows.Forms.DockStyle]::Top
+$resultLayout.AutoSize = $true
+$resultLayout.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$resultLayout.ColumnCount = 2
+$resultLayout.RowCount = 4
+$resultLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$resultLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$resultLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$resultLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$resultLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$resultLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$resultHeading = New-Object System.Windows.Forms.Label
+$resultHeading.Text = '目前操作'
+$resultHeading.AutoSize = $true
+$resultHeading.Font = New-Object System.Drawing.Font('Microsoft JhengHei UI', 9, [System.Drawing.FontStyle]::Bold)
+$resultHeading.ForeColor = [System.Drawing.Color]::FromArgb(83, 96, 110)
+$resultHeading.Margin = New-Object System.Windows.Forms.Padding(4, 0, 4, 2)
+$resultLayout.Controls.Add($resultHeading, 0, 0)
+$resultLayout.SetColumnSpan($resultHeading, 2)
+$script:Controls.ActivityLabel.Font = New-Object System.Drawing.Font($form.Font.FontFamily, 12, [System.Drawing.FontStyle]::Bold)
+$script:Controls.ActivityLabel.AutoSize = $true
+$script:Controls.ActivityLabel.Margin = New-Object System.Windows.Forms.Padding(4, 4, 8, 2)
+$script:Controls.ActivityLabel.Add_TextChanged({
+    $friendlyText = ConvertTo-UserFacingStatus -Text $script:Controls.ActivityLabel.Text
+    if ($friendlyText -cne $script:Controls.ActivityLabel.Text) {
+        $script:Controls.ActivityLabel.Text = $friendlyText
+    }
+    if ($script:Controls.OperationStageLabel) {
+        $script:Controls.OperationStageLabel.Text = "目前狀態：$friendlyText"
+    }
+})
+$script:Controls.OperationStageLabel = New-Object System.Windows.Forms.Label
+$script:Controls.OperationStageLabel.Text = '目前步驟：待命'
+$script:Controls.OperationStageLabel.AutoSize = $true
+$script:Controls.OperationStageLabel.Margin = New-Object System.Windows.Forms.Padding(4, 2, 8, 8)
+$script:Controls.CancelOperationButton.Text = '取消目前操作'
+$script:Controls.CancelOperationButton.Dock = [System.Windows.Forms.DockStyle]::Fill
+$script:Controls.CancelOperationButton.Margin = New-Object System.Windows.Forms.Padding(8, 4, 4, 4)
+$resultLayout.Controls.Add($script:Controls.ActivityLabel, 0, 1)
+$resultLayout.Controls.Add($script:Controls.CancelOperationButton, 1, 1)
+$resultLayout.Controls.Add($script:Controls.OperationStageLabel, 0, 2)
+$resultLayout.SetColumnSpan($script:Controls.OperationStageLabel, 2)
+$viewHistoryLink = New-Object System.Windows.Forms.LinkLabel
+$viewHistoryLink.Text = '查看本次操作紀錄與詳細診斷'
+$viewHistoryLink.AutoSize = $true
+$viewHistoryLink.Margin = New-Object System.Windows.Forms.Padding(4, 4, 4, 2)
+$viewHistoryLink.Add_LinkClicked({
+    $mainTabs.SelectedTab = $historyPage
+})
+$resultLayout.Controls.Add($viewHistoryLink, 0, 3)
+$resultLayout.SetColumnSpan($viewHistoryLink, 2)
+$resultGroup.Controls.Add($resultLayout)
+$homeLayout.Controls.Add($resultGroup, 0, 3)
+
+$detailsLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$detailsLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
+$detailsLayout.AutoScroll = $true
+$detailsLayout.Padding = New-Object System.Windows.Forms.Padding(18)
+$detailsLayout.ColumnCount = 1
+$detailsLayout.RowCount = 3
+$detailsLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$detailsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$detailsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$detailsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$detailsPage.Controls.Add($detailsLayout)
+
+$detailsIntro = New-Object System.Windows.Forms.Label
+$detailsIntro.Text = '僅在協助排查問題時查看。版本識別碼與檢查細節不代表正式網站目前可正常使用。'
+$detailsIntro.AutoSize = $true
+$detailsIntro.Margin = New-Object System.Windows.Forms.Padding(4, 4, 4, 12)
+$detailsLayout.Controls.Add($detailsIntro, 0, 0)
+
+$versionGroup = New-Object System.Windows.Forms.GroupBox
+$versionGroup.Text = '程式版本與檢查'
+$versionGroup.Dock = [System.Windows.Forms.DockStyle]::Top
+$versionGroup.AutoSize = $true
+$versionGroup.Padding = New-Object System.Windows.Forms.Padding(12)
+$versionTable = New-Object System.Windows.Forms.TableLayoutPanel
+$versionTable.Dock = [System.Windows.Forms.DockStyle]::Top
+$versionTable.AutoSize = $true
+$versionTable.ColumnCount = 2
+$versionTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$versionTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+[void](New-InfoRow -Table $versionTable -Label '本機版本' -Value '尚未檢查' -ControlName 'HeadValue')
+[void](New-InfoRow -Table $versionTable -Label '已發布版本' -Value '尚未查詢' -ControlName 'GitHubShaValue')
+[void](New-InfoRow -Table $versionTable -Label '版本比較' -Value '尚未比較' -ControlName 'GitHubCompareValue')
+[void](New-InfoRow -Table $versionTable -Label '本機修改' -Value '尚未檢查' -ControlName 'WorktreeValue')
+[void](New-InfoRow -Table $versionTable -Label '目前分支' -Value '尚未檢查' -ControlName 'BranchValue')
+$diagnosticButtons = New-Object System.Windows.Forms.FlowLayoutPanel
+$diagnosticButtons.AutoSize = $true
+$diagnosticButtons.Dock = [System.Windows.Forms.DockStyle]::Top
+$script:Controls.RefreshButton.Text = '檢查本機狀態'
+$script:Controls.GitHubButton.Text = '檢查已發布版本'
+$script:Controls.DeploymentPreflightButton.Text = '執行發布前檢查'
+$diagnosticButtons.Controls.Add($script:Controls.RefreshButton)
+$diagnosticButtons.Controls.Add($script:Controls.GitHubButton)
+$diagnosticButtons.Controls.Add($script:Controls.DeploymentPreflightButton)
+$diagnosticButtons.Controls.Add($script:Controls.TestButton)
+$versionTable.Controls.Add($diagnosticButtons, 0, $versionTable.RowCount)
+$versionTable.SetColumnSpan($diagnosticButtons, 2)
+$versionGroup.Controls.Add($versionTable)
+$detailsLayout.Controls.Add($versionGroup, 0, 1)
+
+$productionInfoGroup = New-Object System.Windows.Forms.GroupBox
+$productionInfoGroup.Text = '正式環境部署紀錄'
+$productionInfoGroup.Dock = [System.Windows.Forms.DockStyle]::Top
+$productionInfoGroup.AutoSize = $true
+$productionInfoGroup.Padding = New-Object System.Windows.Forms.Padding(12)
+$productionInfoLabel = New-Object System.Windows.Forms.Label
+$productionInfoLabel.Text = '目前無法確認正式網站使用的程式版本；此畫面不會進行伺服器連線查詢。'
+$productionInfoLabel.AutoSize = $true
+$productionInfoLabel.Margin = New-Object System.Windows.Forms.Padding(4, 6, 4, 6)
+$productionInfoGroup.Controls.Add($productionInfoLabel)
+$detailsLayout.Controls.Add($productionInfoGroup, 0, 2)
+
+$script:Controls.LogBox.WordWrap = $true
+$logGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+$historyPage.Controls.Add($logGroup)
+
 $script:Controls.RefreshButton.Add_Click({
     Start-BackgroundOperation -Operation '重新檢查本機狀態' -Action 'LocalStatus'
 })
@@ -4880,6 +6043,9 @@ $script:Controls.GitHubButton.Add_Click({
 })
 $script:Controls.PushButton.Add_Click({
     Start-BackgroundOperation -Operation '推送到 GitHub' -Action 'PushMasterPreflight'
+})
+$script:Controls.DeployButton.Add_Click({
+    Request-ProductionDeploymentOperation
 })
 $script:Controls.BackupButton.Add_Click({
     Request-BackupOperation
@@ -4912,12 +6078,14 @@ $script:Controls.CancelOperationButton.Add_Click({
     }
 })
 $script:Controls.SshHostInput.Add_TextChanged({
+    $script:OperationState.BackupOperationsEnabled = $false
+    $script:OperationState.BackupDestinationPreflightSucceeded = $false
     $script:OperationState.VerifiedBackupDirectory = $null
     $script:OperationState.VerifiedBackupHost = $null
     $script:OperationState.VerifiedBackupUser = $null
     $script:Controls.BackupDestinationValue.Text = '未驗證；正式備份禁止執行'
     $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
-    $script:Controls.BackupButton.Text = '備份（目的地未驗證）'
+    $script:Controls.BackupButton.Text = '建立備份（目的地尚未檢查）'
     if (-not $script:OperationState.IsBusy) {
         $script:Controls.BackupButton.Enabled = $false
     }
@@ -4932,12 +6100,14 @@ $script:Controls.SshHostInput.Add_TextChanged({
     )
 })
 $script:Controls.SshUsernameInput.Add_TextChanged({
+    $script:OperationState.BackupOperationsEnabled = $false
+    $script:OperationState.BackupDestinationPreflightSucceeded = $false
     $script:OperationState.VerifiedBackupDirectory = $null
     $script:OperationState.VerifiedBackupHost = $null
     $script:OperationState.VerifiedBackupUser = $null
     $script:Controls.BackupDestinationValue.Text = '未驗證；正式備份禁止執行'
     $script:Controls.BackupStateValue.Text = '正式操作待目的地驗證'
-    $script:Controls.BackupButton.Text = '備份（目的地未驗證）'
+    $script:Controls.BackupButton.Text = '建立備份（目的地尚未檢查）'
     if (-not $script:OperationState.IsBusy) {
         $script:Controls.BackupButton.Enabled = $false
     }
@@ -4968,6 +6138,17 @@ $form.Add_Shown({
 $form.Add_FormClosing({
     param($formSender, $formClosingArgs)
     if ($script:OperationState.AllowClose) {
+        return
+    }
+    if ($script:OperationState.DeploymentProcess) {
+        $formClosingArgs.Cancel = $true
+        [System.Windows.Forms.MessageBox]::Show(
+            $script:Controls.Form,
+            'Production 部署仍由獨立 PowerShell 視窗執行。請保持管理中心開啟，直到它讀取程序退出碼並記錄結果；可在部署視窗中繼續互動確認。',
+            'Production 部署仍在執行',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
         return
     }
     if ($script:OperationState.IsBusy) {
@@ -5046,6 +6227,10 @@ $processMonitor = New-Object System.Windows.Forms.Timer
 $processMonitor.Interval = 1000
 $processMonitor.add_Tick({
     $context = $script:OperationState.ActiveOperation
+    if ($context -and $script:OperationState.IsBusy -and $script:Controls.OperationStageLabel) {
+        $stageText = ConvertTo-UserFacingStatus -Text ([string]$context.Stage)
+        $script:Controls.OperationStageLabel.Text = "目前步驟：$stageText"
+    }
     if ($context -and $script:OperationState.IsBusy -and
         $context.AsyncResult -and -not $context.CompletionHandled -and
         $context.AsyncResult.IsCompleted) {
