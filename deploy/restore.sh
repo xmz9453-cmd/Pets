@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${DEPLOY_DIR}/.." && pwd)"
+source "${DEPLOY_DIR}/lib/app-env.sh"
+source "${DEPLOY_DIR}/lib/mysql-client.sh"
 BACKUP_FILE="${1:-}"
-if [ -z "${BACKUP_FILE}" ] || [ ! -f "${BACKUP_FILE}" ]; then
+if [ -z "${BACKUP_FILE}" ] || [ ! -f "${BACKUP_FILE}" ] || [ -L "${BACKUP_FILE}" ]; then
   echo "Usage: $0 <path-to-pets-backup-bundle.tar.gz>" >&2
   exit 1
 fi
@@ -16,12 +19,9 @@ DB_USER="psop_dev_user"
 DB_PASSWORD=""
 CONTRACT_STORAGE_ROOT=""
 if [ -f "${ENV_FILE}" ]; then
-  eval "$(grep -E '^(DB_HOST|DB_PORT|DB_NAME|DB_USER|DB_PASSWORD)=' "${ENV_FILE}" | sed 's/"/\\"/g' || true)"
-  CONTRACT_STORAGE_ROOT="$(sed -n 's/^CONTRACT_STORAGE_ROOT=//p' "${ENV_FILE}" | tail -n 1)"
-  CONTRACT_STORAGE_ROOT="${CONTRACT_STORAGE_ROOT#\"}"
-  CONTRACT_STORAGE_ROOT="${CONTRACT_STORAGE_ROOT%\"}"
+  load_deployment_env "${ENV_FILE}"
 fi
-if [ -z "${CONTRACT_STORAGE_ROOT}" ] || [ ! -d "${CONTRACT_STORAGE_ROOT}" ]; then
+if [ -z "${CONTRACT_STORAGE_ROOT}" ] || [ ! -d "${CONTRACT_STORAGE_ROOT}" ] || [ -L "${CONTRACT_STORAGE_ROOT}" ]; then
   echo "[restore.sh ERROR] CONTRACT_STORAGE_ROOT must identify an existing contract storage directory." >&2
   exit 1
 fi
@@ -55,6 +55,12 @@ if ! cmp -s "${STAGE_DIR}/archive-contents.txt" "${STAGE_DIR}/expected-contents.
   echo "[restore.sh ERROR] Backup bundle has unexpected or missing archive members." >&2
   exit 1
 fi
+if ! tar -tvzf "${BACKUP_FILE}" > "${STAGE_DIR}/archive-details.txt" ||
+  ! awk 'substr($0, 1, 1) != "-" { invalid = 1 } END { if (NR != 5) invalid = 1; exit invalid }' \
+    "${STAGE_DIR}/archive-details.txt"; then
+  echo "[restore.sh ERROR] Backup bundle contains a non-regular or duplicate archive member." >&2
+  exit 1
+fi
 tar -xzf "${BACKUP_FILE}" -C "${STAGE_DIR}"
 (
   cd "${STAGE_DIR}"
@@ -77,6 +83,19 @@ while IFS= read -r member; do
     exit 1
   fi
 done < "${STAGE_DIR}/pdf-contents.txt"
+tar -tvzf "${STAGE_DIR}/contract-pdfs.tar.gz" > "${STAGE_DIR}/pdf-details.txt"
+while IFS= read -r member_details; do
+  member_type="${member_details:0:1}"
+  member_name="${member_details##* }"
+  if [[ "${member_type}" == d && "${member_name}" == contract-versions/ ]]; then
+    continue
+  fi
+  if [[ "${member_type}" == - && "${member_name}" =~ ^contract-versions/[a-f0-9]{32}\.pdf$ ]]; then
+    continue
+  fi
+  echo "[restore.sh ERROR] Contract PDF archive contains a non-regular or unexpected member." >&2
+  exit 1
+done < "${STAGE_DIR}/pdf-details.txt"
 tar -xzf "${STAGE_DIR}/contract-pdfs.tar.gz" -C "${STAGE_DIR}/pdf-root"
 if find "${STAGE_DIR}/pdf-root" -type l -print -quit | grep -q .; then
   echo "[restore.sh ERROR] PDF archive contains a symbolic link." >&2
@@ -188,9 +207,13 @@ if [ "${CONFIRMATION}" != "RESTORE" ]; then
   exit 0
 fi
 
-export MYSQL_PWD="${DB_PASSWORD}"
+MYSQL_CREDENTIALS_FILE="${STAGE_DIR}/mysql-client.cnf"
+if ! write_mysql_client_defaults "${MYSQL_CREDENTIALS_FILE}"; then
+  echo "[restore.sh ERROR] Could not create a private MySQL client option file." >&2
+  exit 1
+fi
 coproc PDF_STORAGE_LOCK {
-  mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" \
+  mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" \
     --batch --skip-column-names "${DB_NAME}"
 }
 LOCK_PID="${PDF_STORAGE_LOCK_PID}"
@@ -198,21 +221,18 @@ LOCK_READ_FD="${PDF_STORAGE_LOCK[0]}"
 LOCK_WRITE_FD="${PDF_STORAGE_LOCK[1]}"
 printf "SELECT GET_LOCK('pets_contract_pdf_storage', 30);\n" >&"${LOCK_WRITE_FD}"
 if ! IFS= read -r -t 35 LOCK_RESULT <&"${LOCK_READ_FD}" || [ "${LOCK_RESULT}" != "1" ]; then
-  unset MYSQL_PWD
   echo "[restore.sh ERROR] Could not acquire the Contract PDF storage restore lock." >&2
   exit 1
 fi
 
-TARGET_CONTRACT_TABLE_COUNT="$(mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" "${DB_NAME}" \
+TARGET_CONTRACT_TABLE_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
   --batch --skip-column-names \
   -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'contract_versions';")"
 if [[ ! "${TARGET_CONTRACT_TABLE_COUNT}" =~ ^[01]$ ]]; then
-  unset MYSQL_PWD
   echo "[restore.sh ERROR] Could not determine whether contract_versions exists in the restore target." >&2
   exit 1
 fi
 if [ "${DATABASE_HAS_CONTRACT_TABLE}" = "no" ] && [ "${TARGET_CONTRACT_TABLE_COUNT}" = "1" ]; then
-  unset MYSQL_PWD
   echo "[restore.sh ERROR] Refusing to restore a legacy dump into a target that retains contract_versions." >&2
   exit 1
 fi
@@ -230,17 +250,15 @@ chmod 700 "${CONTRACT_STORAGE_ROOT}/contract-versions"
 find "${CONTRACT_STORAGE_ROOT}/contract-versions" -type f -exec chmod 600 {} \;
 CONTRACTS_INSTALLED=1
 
-if ! zcat "${STAGE_DIR}/database.sql.gz" | mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" "${DB_NAME}"; then
-  unset MYSQL_PWD
+if ! zcat "${STAGE_DIR}/database.sql.gz" | mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}"; then
   echo "[restore.sh ERROR] Database restoration failed; preserve files for manual recovery." >&2
   exit 1
 fi
 
-RESTORED_CONTRACT_TABLE_COUNT="$(mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" "${DB_NAME}" \
+RESTORED_CONTRACT_TABLE_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
   --batch --skip-column-names \
   -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'contract_versions';")"
 if [[ ! "${RESTORED_CONTRACT_TABLE_COUNT}" =~ ^[01]$ ]]; then
-  unset MYSQL_PWD
   echo "[restore.sh ERROR] Could not determine whether contract_versions exists after database restoration." >&2
   exit 1
 fi
@@ -249,16 +267,14 @@ if [ "${RESTORED_CONTRACT_TABLE_COUNT}" = "1" ]; then
   RESTORED_HAS_CONTRACT_TABLE="yes"
 fi
 if [ "${RESTORED_HAS_CONTRACT_TABLE}" != "${DATABASE_HAS_CONTRACT_TABLE}" ]; then
-  unset MYSQL_PWD
   echo "[restore.sh ERROR] Restored database schema does not match the backup dump." >&2
   exit 1
 fi
 
 if [ "${RESTORED_HAS_CONTRACT_TABLE}" = "yes" ]; then
-  if ! mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" -D "${DB_NAME}" \
+  if ! mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" -D "${DB_NAME}" \
     -N -B -e "SELECT storage_path, file_size, file_hash FROM contract_versions WHERE storage_path IS NOT NULL ORDER BY storage_path;" \
     > "${STAGE_DIR}/database-PDF-references.tsv"; then
-    unset MYSQL_PWD
     echo "[restore.sh ERROR] Could not verify restored Contract PDF references." >&2
     exit 1
   fi
@@ -267,26 +283,22 @@ if [ "${RESTORED_HAS_CONTRACT_TABLE}" = "yes" ]; then
   while IFS=$'\t' read -r storage_key expected_size expected_hash; do
     [ -n "${storage_key}" ] || continue
     if [[ ! "${storage_key}" =~ ^contract-versions/[a-f0-9]{32}\.pdf$ ]]; then
-      unset MYSQL_PWD
       echo "[restore.sh ERROR] Restored database contains an invalid Contract PDF storage key." >&2
       exit 1
     fi
     pdf_path="${CONTRACT_STORAGE_ROOT}/${storage_key}"
     if [ ! -f "${pdf_path}" ] || [ -L "${pdf_path}" ]; then
-      unset MYSQL_PWD
       echo "[restore.sh ERROR] A restored Contract PDF reference is missing or unsafe." >&2
       exit 1
     fi
     actual_size="$(wc -c < "${pdf_path}" | tr -d ' ')"
     if [ "${actual_size}" -le 0 ] || [ "${actual_size}" -gt 10485760 ] \
       || ! head -c 5 "${pdf_path}" | cmp -s - <(printf '%%PDF-'); then
-      unset MYSQL_PWD
       echo "[restore.sh ERROR] Restored Contract PDF is not a valid bounded PDF file." >&2
       exit 1
     fi
     actual_hash="$(sha256sum "${pdf_path}" | cut -d' ' -f1)"
     if [ "${actual_size}" != "${expected_size}" ] || [ "${actual_hash}" != "${expected_hash}" ]; then
-      unset MYSQL_PWD
       echo "[restore.sh ERROR] Restored Contract PDF metadata does not match its file." >&2
       exit 1
     fi
@@ -294,8 +306,6 @@ if [ "${RESTORED_HAS_CONTRACT_TABLE}" = "yes" ]; then
   done < "${STAGE_DIR}/database-PDF-references.tsv"
   sort -o "${EXPECTED_PDF_FILES}" "${EXPECTED_PDF_FILES}"
 fi
-unset MYSQL_PWD
-
 find "${CONTRACT_STORAGE_ROOT}/contract-versions" -maxdepth 1 -type f -printf '%f\n' \
   | sort > "${STAGE_DIR}/actual-PDF-files.txt"
 if ! cmp -s "${EXPECTED_PDF_FILES}" "${STAGE_DIR}/actual-PDF-files.txt"; then

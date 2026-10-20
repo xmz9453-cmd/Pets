@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
-    [string]$ExpectedCommit
+    [string]$ExpectedCommit,
+    [switch]$WebControl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +15,51 @@ $script:SshTarget = 'zhe@175.183.34.91'
 $script:ProductionRoot = '/home/zhe/pets'
 $script:StateFile = '/home/zhe/pets-deploy-state/deployment.state'
 $script:ExpectedRemoteUrl = 'https://github.com/xmz9453-cmd/Pets.git'
+$script:WebRemoteMutationStarted = $false
+
+function Read-DeploymentAuthorization {
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [Parameter(Mandatory = $true)][string]$ExpectedValue
+    )
+
+    if (-not $WebControl) {
+        return Read-Host $Message
+    }
+
+    $event = [pscustomobject]@{
+        type = $Kind
+        message = $Message
+        expectedCommit = $ExpectedCommit.ToLowerInvariant()
+    } | ConvertTo-Json -Compress
+    [Console]::Out.WriteLine("OPS_PROMPT:$event")
+    [Console]::Out.Flush()
+    $response = [Console]::In.ReadLine()
+    if ($null -eq $response) {
+        throw 'Web management confirmation input was closed.'
+    }
+    if ($response -cne $ExpectedValue) {
+        throw 'The web management confirmation did not match the required value.'
+    }
+    return $response
+}
+
+function Write-DeploymentResultEvent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Type,
+        [bool]$RemoteMutationStarted = $false
+    )
+    if (-not $WebControl) { return }
+    $event = [pscustomobject]@{
+        type = $Type
+        status = if ($Type -eq 'deployment-complete') { 'SUCCESS' } else { $null }
+        commit = $ExpectedCommit.ToLowerInvariant()
+        remoteMutationStarted = $RemoteMutationStarted
+    } | ConvertTo-Json -Compress
+    [Console]::Out.WriteLine("OPS_RESULT:$event")
+    [Console]::Out.Flush()
+}
 
 function Invoke-Git {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
@@ -143,6 +189,11 @@ function Assert-ProductionState {
 
 try {
     $ExpectedCommit = $ExpectedCommit.ToLowerInvariant()
+    if ($WebControl) {
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        [Console]::InputEncoding = $utf8
+        [Console]::OutputEncoding = $utf8
+    }
 
     if (-not (Test-Path -LiteralPath $script:SshPath -PathType Leaf)) {
         throw "Windows OpenSSH was not found at '$script:SshPath'."
@@ -184,7 +235,9 @@ try {
         }
 
         Write-Host "GitHub master is behind the requested deployment commit."
-        $pushAuthorization = Read-Host "To authorize pushing exactly $ExpectedCommit to origin/master, type that full SHA"
+        $pushAuthorization = Read-DeploymentAuthorization -Kind 'push-authorization' `
+            -Message "To authorize pushing exactly $ExpectedCommit to origin/master, type that full SHA" `
+            -ExpectedValue $ExpectedCommit
         if ($pushAuthorization -cne $ExpectedCommit) {
             throw 'Push was not explicitly authorized; deployment stopped.'
         }
@@ -193,6 +246,7 @@ try {
             throw 'GitHub master changed during the pre-push checks; deployment stopped.'
         }
 
+        $script:WebRemoteMutationStarted = $true
         [void](Invoke-Git -Arguments @('push', 'origin', "${ExpectedCommit}:refs/heads/master"))
         $remoteSha = Get-GitHubMasterSha
         if ($remoteSha -cne $ExpectedCommit) {
@@ -206,7 +260,9 @@ try {
     }
 
     Write-Warning 'This confirmation does not technically lock GitHub master. Do not allow master updates or another deployment to this Production environment until deployment reaches DEPLOYED.'
-    $deployAuthorization = Read-Host "Confirm all three conditions: no GitHub master updates, no concurrent Production deployment, and GitHub master equals $ExpectedCommit. Type DEPLOY $ExpectedCommit FREEZE"
+    $deployAuthorization = Read-DeploymentAuthorization -Kind 'deploy-freeze' `
+        -Message "Confirm all three conditions: no GitHub master updates, no concurrent Production deployment, and GitHub master equals $ExpectedCommit. Type DEPLOY $ExpectedCommit FREEZE" `
+        -ExpectedValue "DEPLOY $ExpectedCommit FREEZE"
     if ($deployAuthorization -cne "DEPLOY $ExpectedCommit FREEZE") {
         throw 'Production deployment was not explicitly authorized.'
     }
@@ -216,7 +272,8 @@ try {
     $deployCommand = "cd $script:ProductionRoot || exit 1; remote_url=`$(git remote get-url origin) || exit 1; if [ `"`$remote_url`" != $quotedRemoteUrl ]; then echo 'Production origin URL mismatch; refusing deployment.' >&2; exit 41; fi; remote_sha=`$(git ls-remote origin refs/heads/master | cut -f1) || exit 1; if [ `"`$remote_sha`" != $quotedExpectedSha ]; then echo 'GitHub master changed before deployment; refusing deployment.' >&2; exit 42; fi; exec bash $script:ProductionRoot/deploy/deploy.sh $quotedExpectedSha"
 
     Write-Host "Starting Production deployment for $ExpectedCommit."
-    & $script:SshPath -tt -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $deployCommand
+    $script:WebRemoteMutationStarted = $true
+    & $script:SshPath -T -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $deployCommand
     $deployExitCode = $LASTEXITCODE
     if ($deployExitCode -ne 0) {
         throw "Production deploy.sh failed with SSH exit code $deployExitCode; Browser Acceptance was not started."
@@ -228,14 +285,27 @@ try {
     Write-Host ''
     Write-Host 'Deployment completed its technical checks. Perform Browser Acceptance manually at:'
     Write-Host 'http://175.183.34.91/'
-    $acceptance = Read-Host "After Browser Acceptance passes, type PASS to continue"
+    $acceptance = Read-DeploymentAuthorization -Kind 'browser-acceptance' `
+        -Message 'After Browser Acceptance passes, type PASS to continue' `
+        -ExpectedValue 'PASS'
     if ($acceptance -cne 'PASS') {
         throw 'Browser Acceptance was not confirmed with PASS; remote confirmation was not called.'
     }
 
-    $confirmCommand = "cd $script:ProductionRoot && exec bash $script:ProductionRoot/deploy/confirm.sh"
-    Write-Host "Starting the existing Production confirmation script. It will request the separate remote input 'CONFIRM'."
-    & $script:SshPath -tt -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $confirmCommand
+    if ($WebControl) {
+        $remoteConfirmation = Read-DeploymentAuthorization -Kind 'remote-confirmation' `
+            -Message 'Type CONFIRM to certify Production Verification PASS' `
+            -ExpectedValue 'CONFIRM'
+        if ($remoteConfirmation -cne 'CONFIRM') {
+            throw 'Production confirmation was not explicitly authorized.'
+        }
+        $confirmCommand = "cd $script:ProductionRoot && printf '%s\n' CONFIRM | exec bash $script:ProductionRoot/deploy/confirm.sh"
+        & $script:SshPath -T -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $confirmCommand
+    } else {
+        $confirmCommand = "cd $script:ProductionRoot && exec bash $script:ProductionRoot/deploy/confirm.sh"
+        Write-Host "Starting the existing Production confirmation script. It will request the separate remote input 'CONFIRM'."
+        & $script:SshPath -tt -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $confirmCommand
+    }
     $confirmExitCode = $LASTEXITCODE
     if ($confirmExitCode -ne 0) {
         throw "Production confirm.sh failed with SSH exit code $confirmExitCode."
@@ -245,8 +315,10 @@ try {
     Assert-ProductionState -State $finalState -ExpectedStatus 'SUCCESS' -ExpectedVerification 'PASS' -ExpectedSha $ExpectedCommit
 
     Write-Host "Production deployment verified: commit $ExpectedCommit, status SUCCESS, verification PASS."
+    Write-DeploymentResultEvent -Type 'deployment-complete' -RemoteMutationStarted $script:WebRemoteMutationStarted
 }
 catch {
+    Write-DeploymentResultEvent -Type 'deployment-stopped' -RemoteMutationStarted $script:WebRemoteMutationStarted
     [Console]::Error.WriteLine("Production deployment stopped: $($_.Exception.Message)")
     exit 1
 }

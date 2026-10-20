@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${DEPLOY_DIR}/.." && pwd)"
+source "${DEPLOY_DIR}/lib/app-env.sh"
+source "${DEPLOY_DIR}/lib/backup-maintenance.sh"
+source "${DEPLOY_DIR}/lib/mysql-client.sh"
 BACKUP_DIR="${BACKUP_DIR:-/home/zhe/pets-backups}"
 TIMESTAMP="$(date +'%Y%m%d_%H%M%S')"
 ENV_FILE="${PROJECT_ROOT}/.env"
@@ -13,19 +17,20 @@ DB_PASSWORD=""
 CONTRACT_STORAGE_ROOT=""
 
 if [ -f "${ENV_FILE}" ]; then
-  eval "$(grep -E '^(DB_HOST|DB_PORT|DB_NAME|DB_USER|DB_PASSWORD)=' "${ENV_FILE}" | sed 's/"/\\"/g' || true)"
-  CONTRACT_STORAGE_ROOT="$(sed -n 's/^CONTRACT_STORAGE_ROOT=//p' "${ENV_FILE}" | tail -n 1)"
-  CONTRACT_STORAGE_ROOT="${CONTRACT_STORAGE_ROOT#\"}"
-  CONTRACT_STORAGE_ROOT="${CONTRACT_STORAGE_ROOT%\"}"
+  load_deployment_env "${ENV_FILE}"
 fi
 
-if [ -z "${CONTRACT_STORAGE_ROOT}" ] || [ ! -d "${CONTRACT_STORAGE_ROOT}" ]; then
+if [ -z "${CONTRACT_STORAGE_ROOT}" ] || [ ! -d "${CONTRACT_STORAGE_ROOT}" ] || [ -L "${CONTRACT_STORAGE_ROOT}" ]; then
   echo "[backup.sh ERROR] CONTRACT_STORAGE_ROOT must identify an existing contract storage directory." >&2
   exit 1
 fi
 
+umask 077
 mkdir -p "${BACKUP_DIR}"
-chmod 700 "${BACKUP_DIR}"
+if [ -L "${BACKUP_DIR}" ] || [ ! -d "${BACKUP_DIR}" ]; then
+  echo "[backup.sh ERROR] Backup destination must be a real directory, not a symbolic link." >&2
+  exit 1
+fi
 
 STAGE_DIR="$(mktemp -d "${BACKUP_DIR}/.pets-backup.XXXXXX")"
 ARCHIVE_TMP="${BACKUP_DIR}/.pets_backup_${TIMESTAMP}.tar.gz.tmp"
@@ -42,12 +47,16 @@ cleanup() {
     exec {LOCK_READ_FD}<&-
     wait "${LOCK_PID}" 2>/dev/null || true
   fi
-  unset MYSQL_PWD
   rm -rf -- "${STAGE_DIR}"
   rm -f -- "${ARCHIVE_TMP}" "${CHECKSUM_TMP}"
 }
 trap cleanup EXIT
 chmod 700 "${STAGE_DIR}"
+MYSQL_CREDENTIALS_FILE="${STAGE_DIR}/mysql-client.cnf"
+if ! write_mysql_client_defaults "${MYSQL_CREDENTIALS_FILE}"; then
+  echo "[backup.sh ERROR] Could not create a private MySQL client option file." >&2
+  exit 1
+fi
 
 if [ -e "${BACKUP_FILE}" ] || [ -L "${BACKUP_FILE}" ] \
   || [ -e "${CHECKSUM_FILE}" ] || [ -L "${CHECKSUM_FILE}" ] \
@@ -68,9 +77,8 @@ if [ -s "${SYMLINK_LIST}" ]; then
   exit 1
 fi
 
-export MYSQL_PWD="${DB_PASSWORD}"
 coproc PDF_STORAGE_LOCK {
-  mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" \
+  mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" \
     --batch --skip-column-names --unbuffered "${DB_NAME}"
 }
 LOCK_PID="${PDF_STORAGE_LOCK_PID}"
@@ -78,12 +86,11 @@ LOCK_READ_FD="${PDF_STORAGE_LOCK[0]}"
 LOCK_WRITE_FD="${PDF_STORAGE_LOCK[1]}"
 printf "SELECT GET_LOCK('pets_contract_pdf_storage', 30);\n" >&"${LOCK_WRITE_FD}"
 if ! IFS= read -r -t 35 LOCK_RESULT <&"${LOCK_READ_FD}" || [ "${LOCK_RESULT}" != "1" ]; then
-  unset MYSQL_PWD
   echo "[backup.sh ERROR] Could not acquire the Contract PDF storage backup lock." >&2
   exit 1
 fi
 
-if ! mysqldump -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" \
+if ! mysqldump --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" \
   --single-transaction --quick --lock-tables=false "${DB_NAME}" \
   | gzip -9 > "${STAGE_DIR}/database.sql.gz"; then
   echo "[backup.sh ERROR] Database dump failed." >&2
@@ -91,7 +98,7 @@ if ! mysqldump -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" \
 fi
 gzip -t "${STAGE_DIR}/database.sql.gz"
 
-CONTRACT_TABLE_COUNT="$(mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" "${DB_NAME}" \
+CONTRACT_TABLE_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
   --batch --skip-column-names \
   -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'contract_versions';")"
 if [[ ! "${CONTRACT_TABLE_COUNT}" =~ ^[01]$ ]]; then
@@ -100,7 +107,7 @@ if [[ ! "${CONTRACT_TABLE_COUNT}" =~ ^[01]$ ]]; then
 fi
 
 if [ "${CONTRACT_TABLE_COUNT}" = "1" ]; then
-  mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" "${DB_NAME}" \
+  mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
     --batch --skip-column-names \
     -e "SELECT storage_path, file_size, file_hash FROM contract_versions WHERE storage_path IS NOT NULL ORDER BY storage_path;" \
     > "${STAGE_DIR}/database-PDF-references.tsv"
@@ -159,8 +166,6 @@ else
       >> "${STAGE_DIR}/database-PDF-references.tsv"
   done < "${LEGACY_PDF_LIST}"
 fi
-unset MYSQL_PWD
-
 if [ -d "${CONTRACT_STORAGE_ROOT}/contract-versions" ]; then
   stored_pdf_count="$(find "${CONTRACT_STORAGE_ROOT}/contract-versions" -type f -name '*.pdf' | wc -l | tr -d ' ')"
   referenced_pdf_count="$(find "${STAGE_DIR}/pdf-root/contract-versions" -type f -name '*.pdf' | wc -l | tr -d ' ')"
@@ -223,9 +228,6 @@ if [ -e "${ARCHIVE_TMP}" ]; then
   exit 1
 fi
 
-find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'pets_backup_*.tar.gz' -mtime +30 -print0 \
-  | while IFS= read -r -d '' expired_backup; do
-    rm -f -- "${expired_backup}" "${expired_backup}.sha256"
-  done
+remove_expired_backup_bundles "${BACKUP_DIR}"
 echo "[backup.sh SUCCESS] Verified database + contract PDF bundle: ${BACKUP_FILE}"
 echo "BACKUP_FILE=${BACKUP_FILE}"

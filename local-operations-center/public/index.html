@@ -1,0 +1,128 @@
+﻿<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f6f2">
+  <!-- OPS_TOKEN -->
+  <title>寵物3.0 管理中心</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="寵物3.0 管理中心首頁">
+        <span class="brand-mark" aria-hidden="true">P</span>
+        <span>寵物<span class="brand-light">3.0</span></span>
+      </a>
+      <span class="local-tag"><span class="local-dot"></span>僅限本機使用</span>
+    </header>
+
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">OPERATIONS CENTER</p>
+      <h1 id="page-title">寵物3.0 <span>管理中心</span></h1>
+      <p class="intro-copy">查看專案與正式環境狀態，並在確認後執行管理工作。</p>
+    </section>
+
+    <section class="service-panel" aria-label="本機服務狀態">
+      <div class="service-icon" aria-hidden="true"><span></span></div>
+      <div class="service-copy">
+        <p class="service-label">本機服務</p>
+        <p class="service-value" id="service-status">管理中心已連線；正式環境尚未查詢</p>
+      </div>
+      <span class="service-badge"><span class="pulse"></span>本機服務運作中</span>
+    </section>
+
+    <section class="tools-section" aria-labelledby="tools-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">TOOLS</p>
+          <h2 id="tools-title">管理工具</h2>
+        </div>
+        <span class="tool-count">04 項工具</span>
+      </div>
+
+      <section class="status-grid" aria-label="專案及正式環境狀態">
+        <article class="status-card">
+          <div class="status-card-heading"><h3>本機專案</h3><span id="local-status-badge" class="mini-badge">尚未查詢</span></div>
+          <dl>
+            <div><dt>分支</dt><dd id="local-branch">尚未查詢</dd></div>
+            <div><dt>工作目錄</dt><dd id="local-worktree">尚未查詢</dd></div>
+            <div><dt>目前版本</dt><dd id="local-head" class="mono">尚未查詢</dd></div>
+          </dl>
+        </article>
+        <article class="status-card">
+          <div class="status-card-heading"><h3>Production 部署</h3><span id="production-status-badge" class="mini-badge">尚未查詢</span></div>
+          <dl>
+            <div><dt>部署狀態</dt><dd id="production-status">尚未查詢</dd></div>
+            <div><dt>部署版本</dt><dd id="production-commit" class="mono">尚未查詢</dd></div>
+            <div><dt>驗收時間</dt><dd id="production-time">尚未查詢</dd></div>
+          </dl>
+        </article>
+      </section>
+      <div class="status-actions"><span id="status-message" role="status">狀態查詢只會在你點選時執行。</span><button id="refresh-status" class="secondary-button" type="button">查看狀態</button></div>
+
+      <section class="review-card" aria-labelledby="review-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">LOCAL CHANGES</p><h2 id="review-title">本機 Git 提交</h2></div>
+          <button id="load-changes" class="secondary-button" type="button">載入變更</button>
+        </div>
+        <p class="review-help">一次將可提交的本機修改建立成 Git 提交。這不會上傳 GitHub，也不會更新 Production；你可以先查看各檔案差異。</p>
+        <p id="changes-summary" class="review-summary" role="status">尚未載入變更。</p>
+        <div id="change-list" class="change-list" aria-label="本機變更檔案"></div>
+        <div class="review-commit">
+          <label for="commit-message">提交說明<input id="commit-message" type="text" maxlength="200" placeholder="簡短說明這次修改"></label>
+          <button id="commit-selected" class="primary-button" type="button" disabled>提交全部可提交變更</button>
+        </div>
+      </section>
+
+      <div class="tool-grid">
+        <article class="tool-card" data-feature="update">
+          <div class="card-top"><span class="tool-icon icon-update" aria-hidden="true">↻</span><span class="status-pill enabled-pill">需確認後執行</span></div>
+          <h3>更新網站</h3>
+          <p>沿用既有部署檢查、授權與人工驗收流程。</p>
+          <button class="card-action" type="button" data-action="deploy">檢查並更新 <span aria-hidden="true">→</span></button>
+        </article>
+        <article class="tool-card" data-feature="backup">
+          <div class="card-top"><span class="tool-icon icon-backup" aria-hidden="true">▤</span><span class="status-pill enabled-pill">需確認後執行</span></div>
+          <h3>建立備份</h3>
+          <p>建立資料庫及合約 PDF 備份，並驗證 checksum。</p>
+          <button class="card-action" type="button" data-action="backup">開始備份 <span aria-hidden="true">→</span></button>
+        </article>
+        <article class="tool-card" data-feature="restore">
+          <div class="card-top"><span class="tool-icon icon-restore" aria-hidden="true">↶</span><span class="status-pill enabled-pill">需多重確認</span></div>
+          <h3>還原資料</h3>
+          <p>選擇既有備份；執行前須確認應用服務已停止。</p>
+          <button class="card-action" type="button" data-action="restore">選擇備份 <span aria-hidden="true">→</span></button>
+        </article>
+        <article class="tool-card" data-feature="status">
+          <div class="card-top"><span class="tool-icon icon-status" aria-hidden="true">◷</span><span class="status-pill enabled-pill">唯讀查詢</span></div>
+          <h3>查看狀態</h3>
+          <p>查看本機專案及 Production 部署狀態。</p>
+          <button class="card-action" type="button" data-action="status">更新狀態 <span aria-hidden="true">→</span></button>
+        </article>
+      </div>
+    </section>
+
+    <section class="activity-section" aria-labelledby="activity-title">
+      <div class="section-heading"><div><p class="eyebrow">ACTIVITY</p><h2 id="activity-title">操作進度</h2></div><span id="active-operation-label" class="tool-count">尚無進行中的操作</span></div>
+      <div id="operation-panel" class="operation-panel" role="status" aria-live="polite">已就緒。Production 操作只會在確認後開始；操作進行中請保持啟動視窗開啟。</div>
+      <ul id="operation-output" class="operation-output" aria-label="操作摘要"></ul>
+    </section>
+
+    <footer class="page-footer">
+      <span>寵物3.0 管理中心</span>
+      <span><span class="footer-lock" aria-hidden="true">◆</span> 本機頁面 · 操作前需確認</span>
+    </footer>
+  </main>
+  <dialog id="confirm-dialog" class="confirm-dialog">
+    <form id="confirm-form" method="dialog">
+      <p class="eyebrow" id="dialog-eyebrow">確認操作</p>
+      <h2 id="dialog-title">請確認</h2>
+      <div id="dialog-content" class="dialog-content"></div>
+      <div class="dialog-buttons"><button id="dialog-cancel" class="secondary-button" type="button">取消</button><button id="dialog-confirm" class="primary-button" type="submit">確認</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

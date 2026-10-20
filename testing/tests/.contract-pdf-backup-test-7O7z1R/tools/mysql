@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -e
+if [[ "$*" == *"information_schema.tables"* ]]; then
+  if [ "${MOCK_SCHEMA_QUERY_ERROR:-0}" = "1" ]; then
+    echo "schema query failed" >&2
+    exit 9
+  fi
+  if [ -f "$MOCK_RESTORE_MARKER" ]; then
+    printf '%s\n' "$MOCK_RESTORED_SCHEMA_COUNT"
+  else
+    printf '%s\n' "$MOCK_SCHEMA_COUNT"
+  fi
+  exit 0
+fi
+if [[ "$*" == *"SELECT storage_path"* ]]; then
+  printf '%s\n' "$*" > "$MOCK_QUERY_LOG"
+  if [ "${MOCK_AUTH_ERROR:-0}" = "1" ]; then
+    echo "authentication failed" >&2
+    exit 7
+  fi
+  if [ "${MYSQL_PWD:-}" != "$MOCK_EXPECTED_PASSWORD" ]; then
+    echo "authentication failed" >&2
+    exit 7
+  fi
+  if [ "${MOCK_REFERENCE_QUERY_ERROR:-0}" = "1" ]; then
+    echo "reference query failed" >&2
+    exit 8
+  fi
+  references="$MOCK_PDF_REFERENCES"
+  if [ -f "$MOCK_RESTORE_MARKER" ] && [ "${MOCK_RESTORED_REFERENCES_SET:-0}" = "1" ]; then
+    references="$MOCK_RESTORED_PDF_REFERENCES"
+  fi
+  if [ -n "$references" ]; then
+    printf '%s\n' "$references"
+  fi
+  exit 0
+fi
+if [[ "$*" == *"--skip-column-names"* ]]; then
+  while IFS= read -r query; do
+    case "$query" in
+      *GET_LOCK*)
+        printf '%s\n' "$*" > "$MOCK_LOCK_MYSQL_ARGS"
+        printf '1\n'
+        ;;
+      *RELEASE_LOCK*) printf '1\n'; break ;;
+    esac
+  done
+  exit 0
+fi
+cat >/dev/null
+printf 'restored\n' > "$MOCK_RESTORE_MARKER"

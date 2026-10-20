@@ -13,8 +13,15 @@ TARGET_SHA="${1,,}"
 # Design Baseline: Production Deployment Automation Design Freeze v1.0
 # ==============================================================================
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${DEPLOY_DIR}/.." && pwd)"
+source "${DEPLOY_DIR}/lib/state.sh"
+source "${DEPLOY_DIR}/lib/install-paths.sh"
+BACKUP_DIR="${BACKUP_DIR:-/home/zhe/pets-backups}"
 STATE_DIR="${STATE_DIR:-/home/zhe/pets-deploy-state}"
+if ! validate_install_paths "${PROJECT_ROOT}" "${BACKUP_DIR}" "${STATE_DIR}"; then
+  exit 1
+fi
 STATE_FILE="${STATE_DIR}/deployment.state"
 LOCK_FILE="${STATE_DIR}/deployment.lock"
 LOG_DIR="${STATE_DIR}/logs"
@@ -37,16 +44,19 @@ mask_secrets() {
   fi
 }
 
-mkdir -p "${STATE_DIR}" "${LOG_DIR}"
-chmod 700 "${STATE_DIR}" "${LOG_DIR}"
+ensure_private_owned_directory "${BACKUP_DIR}"
+ensure_private_owned_directory "${STATE_DIR}"
+ensure_private_owned_directory "${LOG_DIR}"
 
 # 1. Acquire Deployment Lock
 exec 200>"${LOCK_FILE}"
-if command -v flock >/dev/null 2>&1; then
-  if ! flock -n 200; then
-    echo "[deploy.sh ERROR] Another deployment process is currently running or holds the lock." >&2
-    exit 1
-  fi
+if ! command -v flock >/dev/null 2>&1; then
+  echo "[deploy.sh ERROR] flock is required for safe deployment locking." >&2
+  exit 1
+fi
+if ! flock -n 200; then
+  echo "[deploy.sh ERROR] Another deployment process is currently running or holds the lock." >&2
+  exit 1
 fi
 
 # Secret-masked logging setup (Decision 45: do not dump .env, mask known secrets)
@@ -85,8 +95,11 @@ PREV_COMMIT="NONE"
 PREV_BACKUP="NONE"
 
 if [ -f "${STATE_FILE}" ]; then
-  eval "$(grep -E '^(status|commit|previous_commit|backup|verification)=' "${STATE_FILE}" || true)"
-  EXISTING_STATUS="${status:-}"
+  if ! read_deployment_state "${STATE_FILE}"; then
+    echo "[deploy.sh ERROR] Existing deployment state is malformed or unsafe; refusing to continue." >&2
+    exit 1
+  fi
+  EXISTING_STATUS="${DEPLOY_STATE[status]}"
 
   if [ "${EXISTING_STATUS}" = "RUNNING" ]; then
     echo "[deploy.sh ERROR] Deployment State is RUNNING. Previous deployment did not exit cleanly." >&2
@@ -101,8 +114,12 @@ if [ -f "${STATE_FILE}" ]; then
     echo "Run deploy/confirm.sh to certify the existing deployment before starting a new one." >&2
     exit 1
   fi
-  PREV_COMMIT="${commit:-NONE}"
-  PREV_BACKUP="${backup:-NONE}"
+  if [ "${EXISTING_STATUS}" != "SUCCESS" ]; then
+    echo "[deploy.sh ERROR] Existing deployment state is not a completed SUCCESS state; refusing to continue." >&2
+    exit 1
+  fi
+  PREV_COMMIT="${DEPLOY_STATE[commit]}"
+  PREV_BACKUP="${DEPLOY_STATE[backup]}"
 fi
 
 # 3. Transition State to RUNNING

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+printf 'CREATE TABLE `customers` (id INT);\n'
+if [ "$MOCK_SCHEMA_COUNT" = "1" ]; then
+  printf 'CREATE TABLE `contract_versions` (id INT);\n'
+fi

@@ -8,15 +8,23 @@ set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/home/zhe/pets-backups}"
 STATE_DIR="${STATE_DIR:-/home/zhe/pets-deploy-state}"
-LOG_DIR="${STATE_DIR}/logs"
+DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${DEPLOY_DIR}/.." && pwd)"
+source "${DEPLOY_DIR}/lib/install-paths.sh"
 
-echo "[install.sh] Initializing Pets 2.0 deployment directories..."
+if ! validate_install_paths "${PROJECT_ROOT}" "${BACKUP_DIR}" "${STATE_DIR}"; then
+  exit 1
+fi
 
-# Create directories with 700 permissions
-mkdir -p "${BACKUP_DIR}"
-mkdir -p "${STATE_DIR}"
-mkdir -p "${LOG_DIR}"
+if ! command -v flock >/dev/null 2>&1; then
+  echo "[install.sh ERROR] flock is required for safe deployment state locking." >&2
+  exit 1
+fi
 
-chmod 700 "${BACKUP_DIR}" "${STATE_DIR}" "${LOG_DIR}"
+echo "[install.sh] Initializing private deployment directories..."
+
+ensure_private_owned_directory "${BACKUP_DIR}"
+ensure_private_owned_directory "${STATE_DIR}"
+ensure_private_owned_directory "${LOG_DIR}"
 
 echo "[install.sh] Installation complete. Backup & State directories ready."

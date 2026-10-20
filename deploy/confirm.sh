@@ -7,18 +7,28 @@ set -euo pipefail
 # Requires explicit human typing of 'CONFIRM'.
 # ==============================================================================
 
+DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${DEPLOY_DIR}/.." && pwd)"
+source "${DEPLOY_DIR}/lib/state.sh"
+source "${DEPLOY_DIR}/lib/install-paths.sh"
 STATE_DIR="${STATE_DIR:-/home/zhe/pets-deploy-state}"
+if ! validate_state_path "${PROJECT_ROOT}" "${STATE_DIR}"; then
+  exit 1
+fi
 STATE_FILE="${STATE_DIR}/deployment.state"
 LOCK_FILE="${STATE_DIR}/deployment.lock"
 LOG_DIR="${STATE_DIR}/logs"
 
-mkdir -p "${STATE_DIR}" "${LOG_DIR}"
+ensure_private_owned_directory "${STATE_DIR}"
+ensure_private_owned_directory "${LOG_DIR}"
 exec 200>"${LOCK_FILE}"
-if command -v flock >/dev/null 2>&1; then
-  if ! flock -n 200; then
-    echo "[confirm.sh ERROR] Another deployment process currently holds the lock." >&2
-    exit 1
-  fi
+if ! command -v flock >/dev/null 2>&1; then
+  echo "[confirm.sh ERROR] flock is required for safe state locking." >&2
+  exit 1
+fi
+if ! flock -n 200; then
+  echo "[confirm.sh ERROR] Another deployment process currently holds the lock." >&2
+  exit 1
 fi
 
 if [ ! -f "${STATE_FILE}" ]; then
@@ -26,16 +36,17 @@ if [ ! -f "${STATE_FILE}" ]; then
   exit 1
 fi
 
-# Load current state
-eval "$(grep -E '^(status|commit|previous_commit|timestamp|backup|verification|log_file)=' "${STATE_FILE}")"
-
-CURRENT_STATUS="${status:-}"
-CURRENT_VERIFICATION="${verification:-}"
-CURRENT_COMMIT="${commit:-}"
-CURRENT_PREV_COMMIT="${previous_commit:-}"
-CURRENT_TIMESTAMP="${timestamp:-}"
-CURRENT_BACKUP="${backup:-}"
-CURRENT_LOG_FILE="${log_file:-}"
+if ! read_deployment_state "${STATE_FILE}"; then
+  echo "[confirm.sh ERROR] Deployment state is malformed or unsafe; refusing confirmation." >&2
+  exit 1
+fi
+CURRENT_STATUS="${DEPLOY_STATE[status]}"
+CURRENT_VERIFICATION="${DEPLOY_STATE[verification]}"
+CURRENT_COMMIT="${DEPLOY_STATE[commit]}"
+CURRENT_PREV_COMMIT="${DEPLOY_STATE[previous_commit]}"
+CURRENT_TIMESTAMP="${DEPLOY_STATE[timestamp]}"
+CURRENT_BACKUP="${DEPLOY_STATE[backup]}"
+CURRENT_LOG_FILE="${DEPLOY_STATE[log_file]}"
 
 if [ "${CURRENT_STATUS}" != "DEPLOYED" ] || [ "${CURRENT_VERIFICATION}" != "pending" ]; then
   echo "[confirm.sh ERROR] Invalid state for verification confirmation." >&2
