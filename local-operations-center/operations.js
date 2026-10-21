@@ -22,6 +22,12 @@ const OUTPUT_LINE_LIMIT = 1200;
 const GIT_MUTATION_TIMEOUT = 120000;
 const BLOCKED_REVIEW_PATH = /(^|[\\/])\.github([\\/]|$)/i;
 const SENSITIVE_REVIEW_PATH = /(^|[\\/])(?:\.env(?:\.|$)|[^\\/]*(?:\.pem|\.key|\.pfx|\.p12|\.cer|\.crt)$|id_(?:rsa|ed25519)|[^\\/]*(?:secret|credential|password)[^\\/]*$)/i;
+const REVIEWED_PASSWORD_DIAGNOSTIC = 'local-operations-center/ssh-password-status.ps1';
+
+function isSensitiveReviewPath(filePath) {
+  const normalizedPath = String(filePath).replace(/\\/g, '/');
+  return normalizedPath !== REVIEWED_PASSWORD_DIAGNOSTIC && SENSITIVE_REVIEW_PATH.test(filePath);
+}
 
 function safeText(value) {
   return String(value ?? '')
@@ -228,7 +234,7 @@ class OperationsManager {
       const originalPath = /^[RC]/.test(status[0]) || /^[RC]/.test(status[1]) ? fields[++index] : null;
       if (!filePath || filePath.length > 4096) throw new Error('變更清單含有無效路徑。');
       entries.push({ path: filePath, status, originalPath: originalPath || null,
-        sensitive: SENSITIVE_REVIEW_PATH.test(filePath) || Boolean(originalPath && SENSITIVE_REVIEW_PATH.test(originalPath)) });
+        sensitive: isSensitiveReviewPath(filePath) || Boolean(originalPath && isSensitiveReviewPath(originalPath)) });
     }
     return entries;
   }
@@ -360,7 +366,12 @@ class OperationsManager {
       if (commit.exitCode !== 0) {
         throw new Error(`提交未完成；檔案仍可能已暫存。請重新載入變更清單檢查。${safeText(commit.stderr).slice(-800)}`);
       }
-      return { branch: changes.branch, head: await this.git(['rev-parse', '--verify', 'HEAD']), files: selected.length, output: safeText(commit.stdout).slice(-1600) };
+      return {
+        branch: changes.branch,
+        head: await this.git(['rev-parse', '--verify', 'HEAD']),
+        files: selected.length,
+        output: `本機提交已完成，共整理 ${selected.length} 個檔案。`,
+      };
     } finally { this.gitMutation = false; }
   }
 
