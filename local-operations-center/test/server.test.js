@@ -245,9 +245,9 @@ test('SSH.NET 連線前只註冊已核准套件路徑的組件解析器', () => 
   assert.doesNotMatch(helper, /add_HostKeyReceived\s*\(\s*\{/);
 });
 
-test('Production 狀態查詢從 SSH.NET SshCommand.Result 取得遠端輸出', () => {
+test('Production 狀態查詢轉送 SSH.NET 命令輸出', () => {
   const helper = fs.readFileSync(path.join(__dirname, '..', 'ssh-password-status.ps1'), 'utf8');
-  assert.match(helper, /\$result\.Result\)\s*\{\s*\[Console\]::Out\.Write\(\$result\.Result\)/);
+  assert.match(helper, /\$commandOutput = \$sshCommand\.Execute\(\)\s*if \(\$commandOutput\) \{ \[Console\]::Out\.Write\(\$commandOutput\) \}/);
   assert.doesNotMatch(helper, /\$result\.Output/);
 });
 
@@ -265,6 +265,28 @@ test('確認文字必須精確符合目前等待中的部署關卡', async () =>
   await assert.rejects(manager.submitConfirmation(operation.id, 'DEPLOY'), /確認文字/);
   await manager.submitConfirmation(operation.id, 'PASS');
   assert.equal(resolvePrompt, 'PASS');
+});
+
+test('deploy-freeze confirmation reports a clear deployment stage', async () => {
+  const { OperationsManager } = require('../operations');
+  const manager = new OperationsManager();
+  const expectedCommit = '6b7a79a9651e189600535095a418aaa40bc92514';
+  const operation = {
+    id: 'mock-freeze-operation', kind: 'deploy', status: 'waiting-confirmation', stage: 'deploy-freeze',
+    createdAt: manager.now(), updatedAt: manager.now(),
+    confirmation: { type: 'deploy-freeze', message: 'Mock prompt', expectedCommit },
+    summary: null, output: [], error: null, result: null,
+    pendingPrompt: 'deploy-freeze', promptResolver: null,
+  };
+  manager.operations.set(operation.id, operation);
+  const child = { stdin: { write: (value) => { operation.stdinValue = value; } } };
+  const promptPromise = manager.waitForPrompt(operation, child, { type: 'deploy-freeze', expectedCommit, message: 'Mock prompt' });
+  await manager.submitConfirmation(operation.id, `DEPLOY ${expectedCommit} FREEZE`);
+  await promptPromise;
+  assert.equal(operation.stdinValue, `DEPLOY ${expectedCommit} FREEZE\n`);
+  assert.equal(operation.status, 'running');
+  assert.notEqual(operation.stage, 'deploy-freeze');
+  assert.match(operation.output[0], /deploy-freeze/);
 });
 
 test('取消等待中的部署確認會送出空值，不接受替代確認字串', async () => {
@@ -286,8 +308,8 @@ test('取消等待中的部署確認會送出空值，不接受替代確認字�
 test('遠端備份逾時會標示結果未確認，mock 不會連線 Production', async () => {
   const { OperationsManager } = require('../operations');
   const manager = new OperationsManager();
-  manager.runSsh = async () => ({ exitCode: null, stdout: '', stderr: '', error: null, timedOut: true });
-  const operation = await manager.startOperation('backup', { confirmation: 'BACKUP' });
+  manager.runPasswordSshStatus = async () => ({ exitCode: null, stdout: '', stderr: 'PROD_SSH_COMMAND_STARTED=1', error: null, timedOut: true });
+  const operation = await manager.startOperation('backup', { confirmation: 'BACKUP', credentials: { username: 'mock-user', password: 'mock-password' } });
   await manager.operations.get(operation.id).promise;
   const result = manager.getOperation(operation.id);
   assert.equal(result.status, 'unconfirmed');
@@ -297,8 +319,8 @@ test('遠端備份逾時會標示結果未確認，mock 不會連線 Production'
 test('備份與還原腳本明確回報失敗時標示失敗；mock 不會連線 Production', async () => {
   const { OperationsManager } = require('../operations');
   const backupManager = new OperationsManager();
-  backupManager.runSsh = async () => ({ exitCode: 2, stdout: '[backup.sh ERROR] mock failure', stderr: '', error: null, timedOut: false });
-  const backup = await backupManager.startOperation('backup', { confirmation: 'BACKUP' });
+  backupManager.runPasswordSshStatus = async () => ({ exitCode: 2, stdout: '[backup.sh ERROR] mock failure', stderr: '', error: null, timedOut: false });
+  const backup = await backupManager.startOperation('backup', { confirmation: 'BACKUP', credentials: { username: 'mock-user', password: 'mock-password' } });
   await backupManager.operations.get(backup.id).promise;
   assert.equal(backupManager.getOperation(backup.id).status, 'failed');
 

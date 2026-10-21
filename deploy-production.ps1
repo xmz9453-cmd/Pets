@@ -87,13 +87,35 @@ function Get-GitHubMasterSha {
 function Invoke-ReadOnlySsh {
     param([Parameter(Mandatory = $true)][string]$RemoteCommand)
 
-    $output = & $script:SshPath -T -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $RemoteCommand
+    $output = & $script:SshPath -T -i $script:SshKey `
+        -o IdentitiesOnly=yes `
+        -o StrictHostKeyChecking=yes `
+        -o BatchMode=yes `
+        -o ConnectTimeout=15 `
+        -o ServerAliveInterval=15 `
+        -o ServerAliveCountMax=2 `
+        $script:SshTarget $RemoteCommand
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         throw "Read-only SSH command failed with exit code $exitCode."
     }
 
     return @($output | ForEach-Object { "$_" })
+}
+
+function Test-ProductionSshAuthentication {
+    $output = & $script:SshPath -T -i $script:SshKey `
+        -o IdentitiesOnly=yes `
+        -o StrictHostKeyChecking=yes `
+        -o BatchMode=yes `
+        -o ConnectTimeout=15 `
+        -o ServerAliveInterval=15 `
+        -o ServerAliveCountMax=2 `
+        $script:SshTarget ':' 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "Production SSH key authentication preflight failed with exit code $exitCode; deployment was not authorized or started."
+    }
 }
 
 function Get-ProductionState {
@@ -259,6 +281,10 @@ try {
         throw 'GitHub master changed before deployment; deployment stopped.'
     }
 
+    Write-Host 'Checking Production SSH key authentication before the final deployment confirmation.'
+    Test-ProductionSshAuthentication
+    Write-Host 'Production SSH key authentication succeeded.'
+
     Write-Warning 'This confirmation does not technically lock GitHub master. Do not allow master updates or another deployment to this Production environment until deployment reaches DEPLOYED.'
     $deployAuthorization = Read-DeploymentAuthorization -Kind 'deploy-freeze' `
         -Message "Confirm all three conditions: no GitHub master updates, no concurrent Production deployment, and GitHub master equals $ExpectedCommit. Type DEPLOY $ExpectedCommit FREEZE" `
@@ -269,11 +295,18 @@ try {
 
     $quotedRemoteUrl = "'" + $script:ExpectedRemoteUrl + "'"
     $quotedExpectedSha = "'" + $ExpectedCommit + "'"
-    $deployCommand = "cd $script:ProductionRoot || exit 1; remote_url=`$(git remote get-url origin) || exit 1; if [ `"`$remote_url`" != $quotedRemoteUrl ]; then echo 'Production origin URL mismatch; refusing deployment.' >&2; exit 41; fi; remote_sha=`$(git ls-remote origin refs/heads/master | cut -f1) || exit 1; if [ `"`$remote_sha`" != $quotedExpectedSha ]; then echo 'GitHub master changed before deployment; refusing deployment.' >&2; exit 42; fi; exec bash $script:ProductionRoot/deploy/deploy.sh $quotedExpectedSha"
+    $deployCommand = "cd $script:ProductionRoot || exit 1; remote_url=`$(git remote get-url origin) || exit 1; if [ `"`$remote_url`" != $quotedRemoteUrl ]; then echo 'Production origin URL mismatch; refusing deployment.' >&2; exit 41; fi; set -o pipefail; remote_sha=`$(timeout 45s git ls-remote --exit-code origin refs/heads/master | cut -f1) || exit 43; if [ -z `"`$remote_sha`" ] || [ `"`$remote_sha`" != $quotedExpectedSha ]; then echo 'GitHub master changed before deployment; refusing deployment.' >&2; exit 42; fi; exec bash $script:ProductionRoot/deploy/deploy.sh $quotedExpectedSha"
 
     Write-Host "Starting Production deployment for $ExpectedCommit."
     $script:WebRemoteMutationStarted = $true
-    & $script:SshPath -T -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $deployCommand
+    & $script:SshPath -T -i $script:SshKey `
+        -o IdentitiesOnly=yes `
+        -o StrictHostKeyChecking=yes `
+        -o BatchMode=yes `
+        -o ConnectTimeout=15 `
+        -o ServerAliveInterval=15 `
+        -o ServerAliveCountMax=2 `
+        $script:SshTarget $deployCommand
     $deployExitCode = $LASTEXITCODE
     if ($deployExitCode -ne 0) {
         throw "Production deploy.sh failed with SSH exit code $deployExitCode; Browser Acceptance was not started."
@@ -300,11 +333,25 @@ try {
             throw 'Production confirmation was not explicitly authorized.'
         }
         $confirmCommand = "cd $script:ProductionRoot && printf '%s\n' CONFIRM | exec bash $script:ProductionRoot/deploy/confirm.sh"
-        & $script:SshPath -T -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $confirmCommand
+        & $script:SshPath -T -i $script:SshKey `
+            -o IdentitiesOnly=yes `
+            -o StrictHostKeyChecking=yes `
+            -o BatchMode=yes `
+            -o ConnectTimeout=15 `
+            -o ServerAliveInterval=15 `
+            -o ServerAliveCountMax=2 `
+            $script:SshTarget $confirmCommand
     } else {
         $confirmCommand = "cd $script:ProductionRoot && exec bash $script:ProductionRoot/deploy/confirm.sh"
         Write-Host "Starting the existing Production confirmation script. It will request the separate remote input 'CONFIRM'."
-        & $script:SshPath -tt -i $script:SshKey -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $script:SshTarget $confirmCommand
+        & $script:SshPath -tt -i $script:SshKey `
+            -o IdentitiesOnly=yes `
+            -o StrictHostKeyChecking=yes `
+            -o BatchMode=yes `
+            -o ConnectTimeout=15 `
+            -o ServerAliveInterval=15 `
+            -o ServerAliveCountMax=2 `
+            $script:SshTarget $confirmCommand
     }
     $confirmExitCode = $LASTEXITCODE
     if ($confirmExitCode -ne 0) {

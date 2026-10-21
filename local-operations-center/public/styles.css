@@ -91,6 +91,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .operation-panel[data-state="success"] { border-color: #d7e9dd; background: #f7fbf8; color: #337c55; }
 .operation-output { display: grid; gap: 5px; margin: 9px 0 0; padding: 0; list-style: none; }
 .operation-output li { overflow-wrap: anywhere; padding: 5px 2px; color: #647268; font-size: 13px; line-height: 1.6; }
+.operation-output li.operation-output-empty { color: #78847b; font-style: italic; }
 .confirm-dialog { width: min(520px, calc(100vw - 32px)); max-height: min(82vh, 760px); padding: 0; border: 1px solid #e4ebe3; border-radius: 16px; background: #fff; color: #26392e; box-shadow: 0 24px 80px #17251f40; }
 .confirm-dialog::backdrop { background: #14271d80; backdrop-filter: blur(3px); }
 .confirm-dialog form { padding: 24px; }

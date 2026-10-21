@@ -717,6 +717,16 @@ class OperationsManager {
     operation.pendingPrompt = null;
     operation.promptResolver = null;
     operation.status = 'running';
+    operation.stage = value === ''
+      ? '已取消目前確認；正在結束部署流程'
+      : ({
+        'push-authorization': '已授權推送；正在推送並核對 GitHub master',
+        'deploy-freeze': '已確認部署凍結；正在啟動 Production 部署',
+        'browser-acceptance': '正在確認人工驗收結果',
+        'remote-confirmation': '正在提交 Production 驗收確認',
+      }[prompt.type] || '正在繼續部署流程');
+    operation.updatedAt = this.now();
+    if (value !== '') this.addOutput(operation, `已收到「${prompt.type}」確認；部署流程正在繼續。`);
     child.stdin.write(value + '\n');
     return value;
   }
@@ -757,6 +767,16 @@ class OperationsManager {
           catch { parsed.result = null; }
           return;
         }
+        if (/^Starting Production deployment for [0-9a-f]{40}\.$/i.test(line)) {
+          operation.stage = '正在連線 Production 並啟動部署';
+          operation.updatedAt = this.now();
+        } else {
+          const step = /^\[Step (\d+)\/(\d+)\](?: PASS)?\s*(.*)$/.exec(line);
+          if (step) {
+            operation.stage = `Production 部署進度 ${step[1]}/${step[2]}${step[3] ? `：${safeText(step[3])}` : ''}`;
+            operation.updatedAt = this.now();
+          }
+        }
         if (line.trim()) this.addOutput(operation, line);
       },
     });
@@ -767,9 +787,9 @@ class OperationsManager {
     if (result.error) throw new Error('部署入口無法啟動。');
     if (result.exitCode === 0 && parsed.result?.type === 'deployment-complete' && parsed.result.status === 'SUCCESS' && parsed.result.commit?.toLowerCase() === status.head) {
       operation.status = 'succeeded';
-      operation.stage = 'Production 部署與人工驗收成功';
-      operation.result = { expectedCommit: status.head, status: 'SUCCESS' };
-      operation.summary = `Production 部署及驗收完成：${status.head}`;
+      operation.stage = '部署完成；本機 SHA 與 Production SHA 一致';
+      operation.result = { expectedCommit: status.head, deployedCommit: parsed.result.commit.toLowerCase(), shaMatches: true, status: 'SUCCESS' };
+      operation.summary = `部署成功；本機與 Production SHA 一致：${status.head}`;
       return;
     }
     if (parsed.result?.type === 'deployment-stopped' && parsed.result.remoteMutationStarted === false) {

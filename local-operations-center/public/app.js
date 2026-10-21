@@ -218,7 +218,11 @@ function renderOperation(operation) {
     setPanel(`操作進行中：${operation.stage}。請保持管理中心啟動視窗開啟。`);
   }
   operationOutput.replaceChildren();
-  for (const line of operation.output || []) operationOutput.append(element('li', '', line));
+  const outputLines = operation.output || [];
+  for (const line of outputLines) operationOutput.append(element('li', '', line));
+  if (outputLines.length === 0 && operation.status === 'running') {
+    operationOutput.append(element('li', 'operation-output-empty', '目前沒有新的執行訊息；上方階段會在收到下一個部署回報時更新。請保持管理中心開啟，不要重複啟動部署。'));
+  }
 }
 
 const promptDetails = {
