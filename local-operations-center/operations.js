@@ -792,12 +792,19 @@ class OperationsManager {
       operation.summary = `部署成功；本機與 Production SHA 一致：${status.head}`;
       return;
     }
+    if (parsed.result?.type === 'deployment-stopped' && parsed.result.phase === 'github-push') {
+      operation.sideEffectStarted = true;
+      operation.result = { expectedCommit: status.head, outcome: 'github-push-unconfirmed' };
+      const error = new Error('GitHub master 推送結果未確認；正式伺服器部署尚未開始。請先重新載入本機與 GitHub 狀態，確認 SHA 後再決定下一步，不要直接重試。');
+      error.operationStatus = 'unconfirmed';
+      throw error;
+    }
     if (parsed.result?.type === 'deployment-stopped' && parsed.result.remoteMutationStarted === false) {
       operation.sideEffectStarted = false;
       operation.result = { expectedCommit: status.head, outcome: 'stopped-before-remote-operation' };
     } else if (parsed.result?.type === 'deployment-stopped' && parsed.result.remoteMutationStarted === true) {
       operation.sideEffectStarted = true;
-      operation.result = { expectedCommit: status.head, outcome: 'remote-result-unconfirmed' };
+      operation.result = { expectedCommit: status.head, outcome: 'production-result-unconfirmed', phase: parsed.result.phase || 'unknown' };
       const error = new Error('Production 部署命令已啟動，但未取得最終成功狀態。請先使用唯讀狀態查詢確認伺服器狀態，再決定後續操作；不要直接重試。');
       error.operationStatus = 'unconfirmed';
       throw error;

@@ -289,6 +289,15 @@ test('deploy-freeze confirmation reports a clear deployment stage', async () => 
   assert.match(operation.output[0], /deploy-freeze/);
 });
 
+test('GitHub 推送結果未確認時不會誤報為 Production 部署已開始', () => {
+  const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy-production.ps1'), 'utf8');
+  const operations = fs.readFileSync(path.join(__dirname, '..', 'operations.js'), 'utf8');
+  assert.match(deployment, /phase = \$script:DeploymentPhase/);
+  assert.match(deployment, /\$script:DeploymentPhase = 'github-push'/);
+  assert.match(operations, /parsed\.result\.phase === 'github-push'/);
+  assert.match(operations, /正式伺服器部署尚未開始/);
+});
+
 test('取消等待中的部署確認會送出空值，不接受替代確認字串', async () => {
   const { OperationsManager } = require('../operations');
   const manager = new OperationsManager();

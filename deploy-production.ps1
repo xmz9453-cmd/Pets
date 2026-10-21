@@ -16,6 +16,7 @@ $script:ProductionRoot = '/home/zhe/pets'
 $script:StateFile = '/home/zhe/pets-deploy-state/deployment.state'
 $script:ExpectedRemoteUrl = 'https://github.com/xmz9453-cmd/Pets.git'
 $script:WebRemoteMutationStarted = $false
+$script:DeploymentPhase = 'preflight'
 
 function Read-DeploymentAuthorization {
     param(
@@ -56,6 +57,7 @@ function Write-DeploymentResultEvent {
         status = if ($Type -eq 'deployment-complete') { 'SUCCESS' } else { $null }
         commit = $ExpectedCommit.ToLowerInvariant()
         remoteMutationStarted = $RemoteMutationStarted
+        phase = $script:DeploymentPhase
     } | ConvertTo-Json -Compress
     [Console]::Out.WriteLine("OPS_RESULT:$event")
     [Console]::Out.Flush()
@@ -268,6 +270,7 @@ try {
             throw 'GitHub master changed during the pre-push checks; deployment stopped.'
         }
 
+        $script:DeploymentPhase = 'github-push'
         $script:WebRemoteMutationStarted = $true
         [void](Invoke-Git -Arguments @('push', 'origin', "${ExpectedCommit}:refs/heads/master"))
         $remoteSha = Get-GitHubMasterSha
@@ -276,6 +279,7 @@ try {
         }
     }
 
+    $script:DeploymentPhase = 'pre-deploy-check'
     $preDeploySha = Get-GitHubMasterSha
     if ($preDeploySha -cne $ExpectedCommit) {
         throw 'GitHub master changed before deployment; deployment stopped.'
@@ -298,6 +302,7 @@ try {
     $deployCommand = "cd $script:ProductionRoot || exit 1; remote_url=`$(git remote get-url origin) || exit 1; if [ `"`$remote_url`" != $quotedRemoteUrl ]; then echo 'Production origin URL mismatch; refusing deployment.' >&2; exit 41; fi; set -o pipefail; remote_sha=`$(timeout 45s git ls-remote --exit-code origin refs/heads/master | cut -f1) || exit 43; if [ -z `"`$remote_sha`" ] || [ `"`$remote_sha`" != $quotedExpectedSha ]; then echo 'GitHub master changed before deployment; refusing deployment.' >&2; exit 42; fi; exec bash $script:ProductionRoot/deploy/deploy.sh $quotedExpectedSha"
 
     Write-Host "Starting Production deployment for $ExpectedCommit."
+    $script:DeploymentPhase = 'production-deploy'
     $script:WebRemoteMutationStarted = $true
     & $script:SshPath -T -i $script:SshKey `
         -o IdentitiesOnly=yes `
@@ -326,6 +331,7 @@ try {
     }
 
     if ($WebControl) {
+        $script:DeploymentPhase = 'production-confirmation'
         $remoteConfirmation = Read-DeploymentAuthorization -Kind 'remote-confirmation' `
             -Message 'Type CONFIRM to certify Production Verification PASS' `
             -ExpectedValue 'CONFIRM'
@@ -342,6 +348,7 @@ try {
             -o ServerAliveCountMax=2 `
             $script:SshTarget $confirmCommand
     } else {
+        $script:DeploymentPhase = 'production-confirmation'
         $confirmCommand = "cd $script:ProductionRoot && exec bash $script:ProductionRoot/deploy/confirm.sh"
         Write-Host "Starting the existing Production confirmation script. It will request the separate remote input 'CONFIRM'."
         & $script:SshPath -tt -i $script:SshKey `
