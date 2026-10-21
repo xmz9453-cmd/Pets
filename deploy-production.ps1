@@ -116,6 +116,10 @@ function Test-ProductionSshAuthentication {
         $script:SshTarget ':' 2>&1
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
+        $diagnostic = ($output | ForEach-Object { "$_" }) -join "`n"
+        if ($diagnostic -match '(?im)Permission denied \(publickey(?:,password)?\)') {
+            throw 'SSH 伺服器拒絕了管理中心設定的部署金鑰；正式部署尚未開始。請管理者核對對應公鑰是否已授權給 zhe 帳號，或改用已授權的正確私鑰。'
+        }
         throw "Production SSH key authentication preflight failed with exit code $exitCode; deployment was not authorized or started."
     }
 }

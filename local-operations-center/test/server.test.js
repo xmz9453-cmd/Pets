@@ -324,6 +324,14 @@ test('GitHub 推送結果未確認時不會誤報為 Production 部署已開始'
   assert.match(operations, /正式伺服器部署尚未開始/);
 });
 
+test('部署 SSH 金鑰被拒絕時明確指出部署尚未開始及修正方向', () => {
+  const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy-production.ps1'), 'utf8');
+  assert.ok(deployment.includes('Permission denied'));
+  assert.ok(deployment.includes('publickey(?:,password)?'));
+  assert.match(deployment, /正式部署尚未開始/);
+  assert.match(deployment, /對應公鑰是否已授權給 zhe 帳號/);
+});
+
 test('取消等待中的部署確認會送出空值，不接受替代確認字串', async () => {
   const { OperationsManager } = require('../operations');
   const manager = new OperationsManager();
