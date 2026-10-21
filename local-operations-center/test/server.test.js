@@ -31,6 +31,32 @@ test('首頁、CSS 與前端 JavaScript 可正常取得', async () => {
   });
 });
 
+test('查看狀態以唯讀 mock 顯示本機與 GitHub master SHA', async () => {
+  const { OperationsManager } = require('../operations');
+  const manager = new OperationsManager();
+  const localSha = 'a'.repeat(40);
+  const githubSha = 'b'.repeat(40);
+  manager.git = async (args) => {
+    if (args[0] === 'branch') return 'master';
+    if (args[0] === 'rev-parse') return localSha;
+    if (args[0] === 'status') return '';
+    if (args[0] === 'remote') return 'https://github.com/example/Pets.git';
+    throw new Error('Unexpected git query');
+  };
+  manager.run = async () => ({
+    stdout: `${githubSha}\trefs/heads/master\n`,
+    stderr: '', error: null, timedOut: false, exitCode: 0,
+  });
+  const status = await manager.getLocalStatus();
+  assert.equal(status.head, localSha);
+  assert.equal(status.githubMaster, githubSha);
+  assert.equal(status.clean, true);
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.match(html, /id="github-master"/);
+  assert.match(app, /local\.githubMaster/);
+});
+
 test('不存在的路徑回傳 404', async () => {
   await withServer(async (base) => {
     const response = await fetch(base + '/missing-file');

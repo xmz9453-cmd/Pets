@@ -383,11 +383,35 @@ class OperationsManager {
     ]);
     if (!/^[a-f0-9]{40}$/i.test(head)) throw new Error('本機 HEAD 格式無效。');
     const entries = porcelain ? porcelain.split(/\r?\n/).filter(Boolean) : [];
+    let githubMaster = null;
+    let githubReason = null;
+    try {
+      const origin = await this.git(['remote', 'get-url', 'origin']);
+      const originUrl = new URL(origin);
+      if (originUrl.protocol !== 'https:' || originUrl.hostname.toLowerCase() !== 'github.com' || originUrl.username || originUrl.password) {
+        throw new Error('Origin is not a plain GitHub HTTPS URL.');
+      }
+      const remote = await this.run('git.exe', ['-C', this.root, 'ls-remote', '--exit-code', 'origin', 'refs/heads/master'], {
+        cwd: this.root,
+        timeoutMs: 15000,
+        env: { ...process.env, GIT_NO_LAZY_FETCH: '1', GIT_OPTIONAL_LOCKS: '0' },
+      });
+      const lines = String(remote.stdout || '').split(/\r?\n/).filter(Boolean);
+      const match = lines.length === 1 && /^([a-f0-9]{40})\s+refs\/heads\/master$/i.exec(lines[0]);
+      if (remote.error || remote.timedOut || remote.exitCode !== 0 || !match) {
+        throw new Error('GitHub master could not be confirmed.');
+      }
+      githubMaster = match[1].toLowerCase();
+    } catch {
+      githubReason = '目前無法查詢 GitHub；請確認網路後按「查看狀態」。';
+    }
     return {
       branch: branchValue || 'detached HEAD',
       head: head.toLowerCase(),
       clean: entries.length === 0,
       changedCount: entries.length,
+      githubMaster,
+      githubReason,
     };
   }
 

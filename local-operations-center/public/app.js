@@ -94,11 +94,13 @@ async function refreshStatus() {
       document.querySelector('#local-branch').textContent = local.branch;
       document.querySelector('#local-worktree').textContent = local.clean ? '乾淨' : `有 ${local.changedCount} 項變更`;
       document.querySelector('#local-head').textContent = local.head;
+      document.querySelector('#github-master').textContent = local.githubMaster || local.githubReason || '無法確認';
       setBadge('#local-status-badge', local.clean ? '狀態正常' : '有未提交變更', local.clean ? 'good' : 'bad');
     } else {
       document.querySelector('#local-branch').textContent = '無法取得';
       document.querySelector('#local-worktree').textContent = '無法取得';
       document.querySelector('#local-head').textContent = '無法取得';
+      document.querySelector('#github-master').textContent = '無法確認';
       setBadge('#local-status-badge', '查詢失敗', 'bad');
     }
 
@@ -110,6 +112,17 @@ async function refreshStatus() {
     document.querySelector('#status-message').textContent = localAvailable
       ? production.available ? '狀態已更新；Production 查詢為唯讀。' : `本機狀態已更新；Production 查詢未完成：${production.reason}`
       : `本機狀態查詢失敗：${localResult.reason.message || '查詢失敗。'}`;
+    if (localAvailable) {
+      const local = localResult.value;
+      const comparison = local.githubMaster && production.available
+        ? (local.head === local.githubMaster && local.head === production.commit
+          ? '本機、GitHub 與 Production SHA 完全一致。'
+          : `SHA 不一致：本機 ${local.head}；GitHub ${local.githubMaster}；Production ${production.commit}。`)
+        : local.githubMaster
+          ? `本機與 GitHub SHA ${local.head === local.githubMaster ? '一致' : '不一致'}；Production SHA 尚未確認。`
+          : local.githubReason;
+      document.querySelector('#status-message').textContent += ` ${comparison}`;
+    }
   } catch (error) {
     setBadge('#local-status-badge', '查詢失敗', 'bad');
     document.querySelector('#status-message').textContent = error.message;
