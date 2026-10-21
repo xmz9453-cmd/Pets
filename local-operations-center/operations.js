@@ -679,6 +679,11 @@ class OperationsManager {
     operation.stage = '啟動既有 Production 部署入口';
     const powershell = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const script = path.join(this.root, 'deploy-production.ps1');
+    try {
+      await fs.access(script);
+    } catch {
+      throw new Error('找不到部署入口 deploy-production.ps1；未啟動部署或連線 Production。');
+    }
     const parsed = { prompt: null, result: null };
     const processHandle = createChild(powershell, ['-NoProfile', '-File', script, '-ExpectedCommit', status.head, '-WebControl'], {
       cwd: this.root,
@@ -719,6 +724,17 @@ class OperationsManager {
     }
     if (parsed.result?.type === 'deployment-stopped' && parsed.result.remoteMutationStarted === false) {
       operation.sideEffectStarted = false;
+      operation.result = { expectedCommit: status.head, outcome: 'stopped-before-remote-operation' };
+    } else if (parsed.result?.type === 'deployment-stopped' && parsed.result.remoteMutationStarted === true) {
+      operation.sideEffectStarted = true;
+      operation.result = { expectedCommit: status.head, outcome: 'remote-result-unconfirmed' };
+      const error = new Error('Production 部署命令已啟動，但未取得最終成功狀態。請先使用唯讀狀態查詢確認伺服器狀態，再決定後續操作；不要直接重試。');
+      error.operationStatus = 'unconfirmed';
+      throw error;
+    } else if (operation.sideEffectStarted) {
+      const error = new Error('部署確認後流程中斷，Production 結果未確認。請先使用唯讀狀態查詢確認伺服器狀態，再決定後續操作；不要直接重試。');
+      error.operationStatus = 'unconfirmed';
+      throw error;
     }
     throw new Error(result.exitCode === 0 ? '部署入口未回報有效的最終成功狀態。' : (operation.error || '部署入口未成功完成。'));
   }
