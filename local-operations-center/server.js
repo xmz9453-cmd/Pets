@@ -121,6 +121,27 @@ function createServer({ host = HOST, port = PORT, operations = new OperationsMan
           try { return sendJson(response, 200, await operations.getProductionStatus(credentials)); }
           finally { credentials.password = ''; }
         }
+        if (request.method === 'POST' && pathname === '/api/backups') {
+          const body = await readJsonBody(request);
+          if (typeof body.username !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(body.username) ||
+              typeof body.password !== 'string' || body.password.length < 1 || body.password.length > 1024) {
+            return sendJson(response, 400, { error: '請輸入有效的 Production 帳號與密碼。' });
+          }
+          const credentials = { username: body.username, password: body.password };
+          try { return sendJson(response, 200, await operations.listBackups(credentials)); }
+          finally { credentials.password = ''; }
+        }
+        if (request.method === 'POST' && pathname === '/api/backups/verify') {
+          const body = await readJsonBody(request);
+          if (typeof body.username !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(body.username) ||
+              typeof body.password !== 'string' || body.password.length < 1 || body.password.length > 1024 ||
+              typeof body.backupName !== 'string' || !SAFE_BACKUP_NAME.test(body.backupName)) {
+            return sendJson(response, 400, { error: '帳號、密碼或備份檔名無效；未執行檢查。' });
+          }
+          const credentials = { username: body.username, password: body.password };
+          try { return sendJson(response, 200, await operations.verifyBackupArtifact(credentials, body.backupName)); }
+          finally { credentials.password = ''; }
+        }
         if (request.method === 'GET' && pathname === '/api/backups') {
           return sendJson(response, 200, await operations.listBackups());
         }
@@ -131,6 +152,11 @@ function createServer({ host = HOST, port = PORT, operations = new OperationsMan
           }
           if (body.kind === 'backup' && body.confirmation !== 'BACKUP') {
             return sendJson(response, 400, { error: '備份確認文字不符，未執行操作。' });
+          }
+          if (body.kind === 'backup' && (!body.credentials || typeof body.credentials.username !== 'string' ||
+              !/^[A-Za-z0-9._-]{1,64}$/.test(body.credentials.username) ||
+              typeof body.credentials.password !== 'string' || body.credentials.password.length < 1 || body.credentials.password.length > 1024)) {
+            return sendJson(response, 400, { error: '請輸入有效的 Production 帳號與密碼，未執行備份。' });
           }
           if (body.kind === 'deploy' && body.confirmation !== 'DEPLOY') {
             return sendJson(response, 400, { error: '部署確認文字不符，未執行操作。' });

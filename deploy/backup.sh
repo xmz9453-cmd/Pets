@@ -210,24 +210,16 @@ if ! cmp -s "${STAGE_DIR}/archive-contents.txt" "${STAGE_DIR}/expected-contents.
   echo "[backup.sh ERROR] Backup archive contents failed verification." >&2
   exit 1
 fi
-(
-  cd "${BACKUP_DIR}"
-  sha256sum -- "$(basename "${ARCHIVE_TMP}")" \
-    | awk -v filename="$(basename "${BACKUP_FILE}")" '{ print $1 "  " filename }' \
-    > "$(basename "${CHECKSUM_TMP}")"
-)
-chmod 600 "${CHECKSUM_TMP}"
-mv -n -- "${CHECKSUM_TMP}" "${CHECKSUM_FILE}"
-if [ -e "${CHECKSUM_TMP}" ]; then
-  echo "[backup.sh ERROR] Could not publish the backup checksum sidecar." >&2
-  exit 1
-fi
-mv -n -- "${ARCHIVE_TMP}" "${BACKUP_FILE}"
-if [ -e "${ARCHIVE_TMP}" ]; then
-  echo "[backup.sh ERROR] Could not publish the backup archive." >&2
+if ! publish_backup_bundle "${BACKUP_DIR}" "${ARCHIVE_TMP}" "${BACKUP_FILE}" "${CHECKSUM_TMP}"; then
   exit 1
 fi
 
 remove_expired_backup_bundles "${BACKUP_DIR}"
+if [ ! -f "${BACKUP_FILE}" ] || [ -L "${BACKUP_FILE}" ] ||
+   [ ! -f "${CHECKSUM_FILE}" ] || [ -L "${CHECKSUM_FILE}" ] ||
+   ! (cd "${BACKUP_DIR}" && sha256sum --check --status "$(basename "${CHECKSUM_FILE}")"); then
+  echo "[backup.sh ERROR] Published backup bundle is missing or failed final checksum verification." >&2
+  exit 1
+fi
 echo "[backup.sh SUCCESS] Verified database + contract PDF bundle: ${BACKUP_FILE}"
 echo "BACKUP_FILE=${BACKUP_FILE}"

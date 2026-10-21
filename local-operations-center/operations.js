@@ -416,13 +416,14 @@ class OperationsManager {
     return this.run(sshPath, args, { cwd: this.root, timeoutMs, stdinText, onSpawn });
   }
 
-  async runPasswordSshStatus(username, password) {
-    if (process.platform !== 'win32') throw new Error('唯讀密碼查詢僅支援此 Windows 管理中心。');
+  async runPasswordSshStatus(username, password, action = 'status', backupName) {
+    if (process.platform !== 'win32') throw new Error('Production 密碼 SSH 操作僅支援此 Windows 管理中心。');
     const script = path.join(__dirname, 'ssh-password-status.ps1');
     await fs.access(script);
     const powershell = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const result = await this.run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], {
-      cwd: __dirname, timeoutMs: 45000, stdinText: JSON.stringify({ username, password }),
+      cwd: __dirname, timeoutMs: action === 'backup' ? 60 * 60 * 1000 : 45000,
+      stdinText: JSON.stringify({ username, password, action, backupName }),
     });
     return result;
   }
@@ -491,24 +492,67 @@ class OperationsManager {
     }
   }
 
-  async listBackups() {
-    const command = [
-      `cd -- ${quotePosix(PRODUCTION.projectRoot)} || exit 90`,
-      "database='psop_one'",
-      'if [ -r .env ]; then configured_database=$(sed -n \'s/^DB_NAME=//p\' .env | tail -n 1 | tr -d \'"\\r\'); if [ -n "$configured_database" ]; then database="$configured_database"; fi; fi',
-      'if [[ ! "$database" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then exit 91; fi',
-      'printf "DATABASE=%s\\n" "$database"',
-      `if [ -d ${quotePosix(PRODUCTION.backupDirectory)} ]; then find -- ${quotePosix(PRODUCTION.backupDirectory)} -mindepth 1 -maxdepth 1 -type f -name 'pets_backup_????????_??????.tar.gz' -printf '%f\\n' | sort -r; fi`,
-    ].join('\n');
-    const result = await this.runSsh(command);
+  async listBackups(credentials) {
+    let result;
+    if (credentials && typeof credentials.username === 'string' && typeof credentials.password === 'string') {
+      result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'list-backups');
+    } else {
+      const command = [
+        `cd -- ${quotePosix(PRODUCTION.projectRoot)} || exit 90`,
+        "database='psop_one'",
+        'if [ -r .env ]; then configured_database=$(sed -n \'s/^DB_NAME=//p\' .env | tail -n 1 | tr -d \'"\\r\'); if [ -n "$configured_database" ]; then database="$configured_database"; fi; fi',
+        'if [[ ! "$database" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then exit 91; fi',
+        'printf "DATABASE=%s\\n" "$database"',
+        `if [ -d ${quotePosix(PRODUCTION.backupDirectory)} ]; then find -- ${quotePosix(PRODUCTION.backupDirectory)} -mindepth 1 -maxdepth 1 -type f -name 'pets_backup_????????_??????.tar.gz' -printf '%f\\n' | sort -r; fi`,
+      ].join('\n');
+      result = await this.runSsh(command);
+    }
     if (result.timedOut) throw new Error('Production 備份清單查詢逾時。');
-    if (result.error || result.exitCode !== 0) throw new Error('Production 備份清單查詢失敗。');
+    if (result.error || result.exitCode !== 0) {
+      const category = String(result.stderr || '').match(/(?:^|\r?\n)PROD_SSH_ERROR=([A-Z_]+)(?:\r?\n|$)/)?.[1];
+      const reasons = {
+        AUTHENTICATION_REJECTED: 'SSH 伺服器拒絕帳號或密碼，請確認帳密及伺服器密碼登入設定。',
+        HOST_KEY_MISMATCH: '伺服器主機指紋與已固定指紋不符，為保護連線已停止。',
+        TIMEOUT: '連線逾時，請確認網路及伺服器 SSH 服務。',
+        DEPENDENCY_FILE_MISSING: '本機 SSH 元件不完整，無法查詢備份。',
+        DEPENDENCY_LOAD_FAILED: '本機 SSH 元件載入失敗，無法查詢備份。',
+        REMOTE_COMMAND_FAILED: '已連線，但伺服器未能回傳有效的備份清單。',
+      };
+      throw new Error(reasons[category] || 'Production 備份清單查詢失敗；請確認 SSH 連線及帳號權限。');
+    }
     const lines = result.stdout.split(/\r?\n/).filter(Boolean);
     const databases = lines.filter((line) => /^DATABASE=[A-Za-z0-9_-]{1,64}$/.test(line));
     if (databases.length !== 1) throw new Error('Production 未回傳有效的目標資料庫資訊。');
     const names = lines.filter((line) => !line.startsWith('DATABASE='));
     if (names.some((name) => !SAFE_BACKUP_NAME.test(name))) throw new Error('Production 備份清單包含無效檔名，已停止提供還原選項。');
     return { database: databases[0].slice('DATABASE='.length), backups: names };
+  }
+
+  async verifyBackupArtifact(credentials, backupName) {
+    if (!credentials || typeof credentials.username !== 'string' ||
+        !/^[A-Za-z0-9._-]{1,64}$/.test(credentials.username) ||
+        typeof credentials.password !== 'string' || credentials.password.length < 1 || credentials.password.length > 1024 ||
+        !SAFE_BACKUP_NAME.test(String(backupName || ''))) {
+      throw new Error('帳號、密碼或備份檔名無效；未執行檢查。');
+    }
+    const result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'backup-verify', backupName);
+    if (result.timedOut || result.error) throw new Error('備份檢查連線中斷或逾時；結果未確認。');
+    const marker = String(result.stdout || '').match(/(?:^|\r?\n)BACKUP_VERIFY=([A-Z_]+)(?:\r?\n|$)/)?.[1];
+    if (result.exitCode !== 0 || marker !== 'PASS') {
+      const reasons = {
+        ARCHIVE_INVALID: '備份檔不存在、為空或不是一般檔案。',
+        SIDECAR_SYMLINK: 'checksum 檔是符號連結，安全檢查已拒絕。',
+        SIDECAR_MISSING: '找不到 checksum 檔。',
+        SIDECAR_NOT_REGULAR: 'checksum 路徑不是一般檔案。',
+        SIDECAR_UNREADABLE: '目前 SSH 帳號無法讀取 checksum 檔。',
+        SIDECAR_LINE_COUNT_INVALID: 'checksum 檔不是單一資料列。',
+        SIDECAR_FORMAT_INVALID: 'checksum 內容格式不正確，或記錄的檔名與所選備份不一致。',
+        SIDECAR_READ_FAILED: '無法讀取 checksum 檔。',
+        CHECKSUM_MISMATCH: '備份檔與 checksum 不一致。',
+      };
+      throw new Error(`備份驗證未通過：${reasons[marker] || '遠端未回傳有效的驗證結果。'}`);
+    }
+    return { backupName, verified: true, detail: '備份檔存在且 checksum 相符。' };
   }
 
   async newOperation(kind) {
@@ -539,6 +583,11 @@ class OperationsManager {
     if (this.gitMutation) throw new Error('目前已有本機版本操作執行中，請等待它完成。');
     if (!MUTATING_ACTIONS.has(kind)) throw new Error('不支援的管理操作。');
     if (kind === 'backup' && payload.confirmation !== 'BACKUP') throw new Error('備份確認文字不符；未執行操作。');
+    if (kind === 'backup' && (!payload.credentials || typeof payload.credentials.username !== 'string' ||
+        !/^[A-Za-z0-9._-]{1,64}$/.test(payload.credentials.username) ||
+        typeof payload.credentials.password !== 'string' || payload.credentials.password.length < 1 || payload.credentials.password.length > 1024)) {
+      throw new Error('請重新輸入有效的 Production 帳號與密碼；未執行備份。');
+    }
     if (kind === 'deploy' && payload.confirmation !== 'DEPLOY') throw new Error('部署確認文字不符；未執行操作。');
     if (kind === 'restore' && (!SAFE_BACKUP_NAME.test(String(payload.backupName || '')) ||
         payload.servicesStopped !== true || payload.confirmation !== 'RESTORE')) {
@@ -552,6 +601,7 @@ class OperationsManager {
         operation.stage = operation.status === 'unconfirmed' ? '遠端結果未確認' : '操作未完成';
       })
       .finally(() => {
+        if (payload.credentials) payload.credentials.password = '';
         operation.confirmation = null;
         operation.pendingPrompt = null;
         operation.promptResolver = null;
@@ -562,23 +612,26 @@ class OperationsManager {
   }
 
   async performOperation(operation, payload) {
-    if (operation.kind === 'backup') await this.performBackup(operation);
+    if (operation.kind === 'backup') await this.performBackup(operation, payload);
     else if (operation.kind === 'restore') await this.performRestore(operation, payload);
     else await this.performDeployment(operation);
   }
 
-  async performBackup(operation) {
+  async performBackup(operation, payload) {
     operation.stage = '連線並執行備份腳本';
     this.addOutput(operation, '正在連線並準備執行 Production 備份；請保持管理中心視窗開啟。');
-    const remoteCommand = `cd -- ${quotePosix(PRODUCTION.projectRoot)} && exec bash ${quotePosix(PRODUCTION.projectRoot + '/deploy/backup.sh')}`;
-    const result = await this.runSsh(remoteCommand, {
-      timeoutMs: 60 * 60 * 1000,
-      onSpawn: () => { operation.sideEffectStarted = true; },
-    });
-    for (const line of `${result.stdout}\n${result.stderr}`.split(/\r?\n/).filter(Boolean)) this.addOutput(operation, line);
-    if (result.timedOut || result.error) throw new Error('備份命令中斷或逾時；遠端結果未確認，請先查詢備份清單再決定是否重試。');
+    const credentials = payload.credentials;
+    const result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'backup');
+    operation.sideEffectStarted = /(?:^|\r?\n)PROD_SSH_COMMAND_STARTED=1(?:\r?\n|$)/.test(result.stderr || '');
+    for (const line of `${result.stdout}\n${result.stderr}`.split(/\r?\n/).filter((line) => line && line !== 'PROD_SSH_COMMAND_STARTED=1')) this.addOutput(operation, line);
+    if (result.timedOut || result.error) {
+      if (operation.sideEffectStarted) throw new Error('備份命令中斷或逾時；遠端結果未確認，請先查詢備份清單再決定是否重試。');
+      const error = new Error('SSH 連線未完成，備份命令尚未送出；請確認帳號、密碼及主機指紋。');
+      error.operationStatus = 'failed';
+      throw error;
+    }
     if (result.exitCode !== 0) {
-      if (result.exitCode === 255 && operation.sideEffectStarted) {
+      if (operation.sideEffectStarted && !/^\[backup\.sh ERROR\]/m.test(result.stdout || '')) {
         throw new Error('SSH 連線在備份結果確認前中斷；遠端結果未確認，請先查詢備份清單再決定是否重試。');
       }
       const error = new Error('備份腳本回報失敗；請查看操作摘要並確認遠端備份清單。');
@@ -592,13 +645,10 @@ class OperationsManager {
     const name = backupPath.startsWith(prefix) ? backupPath.slice(prefix.length) : '';
     if (!SAFE_BACKUP_NAME.test(name)) throw new Error('備份檔路徑或檔名不符合允許格式；結果未確認。');
     operation.stage = '驗證備份檔與 checksum';
-    const verifyCommand = `cd -- ${quotePosix(PRODUCTION.backupDirectory)} && test -f ${quotePosix(name)} && test -f ${quotePosix(name + '.sha256')} && sha256sum -c -- ${quotePosix(name + '.sha256')}`;
-    const verification = await this.runSsh(verifyCommand, { timeoutMs: 30000 });
-    if (verification.error || verification.timedOut) {
-      throw new Error('備份產物驗證連線中斷或逾時；遠端結果未確認。');
-    }
-    if (verification.exitCode !== 0 || !verification.stdout.includes(`${name}: OK`)) {
-      const error = new Error('備份產物或 checksum 驗證未通過；不能回報備份成功。');
+    try {
+      await this.verifyBackupArtifact(credentials, name);
+    } catch (verificationError) {
+      const error = new Error(`${verificationError.message} 不能回報備份成功。`);
       error.operationStatus = 'failed';
       throw error;
     }

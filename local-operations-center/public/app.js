@@ -387,7 +387,27 @@ async function commitReviewedChanges() {
 }
 
 async function beginBackup() {
-  const target = await api('/api/backups');
+  const credentials = await openConfirmation({
+    title: '連線查詢備份清單', eyebrow: 'Production 帳號驗證',
+    paragraphs: [
+      { text: '請輸入 Production SSH 帳號與密碼。密碼只用於本次清單查詢及備份操作，操作結束後會清除。' },
+      { text: '連線會核對固定的伺服器主機指紋；管理中心不會儲存密碼。', note: true },
+    ],
+    fields: [
+      { name: 'username', label: 'Production 帳號', value: 'zhe', autocomplete: 'username' },
+      { name: 'password', label: 'Production 密碼', type: 'password', autocomplete: 'current-password' },
+    ],
+    confirmText: '查詢備份清單',
+    validate: (value) => !value.username || !value.password ? '請輸入帳號與密碼。' : '',
+  });
+  if (!credentials) return;
+  let target;
+  try {
+    target = await api('/api/backups', { method: 'POST', body: JSON.stringify(credentials) });
+  } catch (error) {
+    credentials.password = '';
+    throw error;
+  }
   const answer = await openConfirmation({
     title: '建立 Production 備份', eyebrow: '建立備份',
     paragraphs: [
@@ -399,8 +419,60 @@ async function beginBackup() {
     fields: [{ name: 'value', label: '備份確認文字' }], confirmText: '建立備份',
     validate: (value) => value.value === 'BACKUP' ? '' : '請輸入精確的 BACKUP。',
   });
-  if (!answer) return;
-  await beginOperation('backup', { confirmation: answer.value });
+  if (!answer) { credentials.password = ''; return; }
+  try {
+    await beginOperation('backup', { confirmation: answer.value, credentials });
+  } finally {
+    credentials.password = '';
+  }
+}
+
+async function verifyExistingBackup() {
+  const credentials = await openConfirmation({
+    title: '驗證既有備份', eyebrow: '唯讀檢查',
+    paragraphs: [
+      { text: '輸入 Production SSH 帳號密碼後，選擇要檢查的備份。這只會讀取備份檔與 checksum，不會建立、刪除或修改檔案。' },
+      { text: '連線會核對固定的伺服器主機指紋；密碼不會儲存。', note: true },
+    ],
+    fields: [
+      { name: 'username', label: 'Production 帳號', value: 'zhe', autocomplete: 'username' },
+      { name: 'password', label: 'Production 密碼', type: 'password', autocomplete: 'current-password' },
+    ],
+    confirmText: '載入備份清單',
+    validate: (value) => !value.username || !value.password ? '請輸入帳號與密碼。' : '',
+  });
+  if (!credentials) return;
+  busy = true;
+  setButtonsDisabled(true);
+  operationOutput.replaceChildren();
+  try {
+    setPanel('正在唯讀載入 Production 備份清單…');
+    const target = await api('/api/backups', { method: 'POST', body: JSON.stringify(credentials) });
+    if (!target.backups.length) {
+      setPanel(`Production 資料庫 ${target.database} 目前沒有可供檢查的備份。`, 'error');
+      return;
+    }
+    const choice = await openConfirmation({
+      title: '選擇要驗證的備份', eyebrow: '唯讀檢查',
+      paragraphs: [
+        { text: `目標資料庫：${target.database}` },
+        { text: '此操作只讀取所選備份及 checksum，驗證完成後會顯示明確結果。' },
+      ],
+      fields: [{ name: 'backupName', label: '備份檔案', options: target.backups.map((name) => ({ value: name, label: name })) }],
+      confirmText: '開始唯讀驗證',
+    });
+    if (!choice) return;
+    setPanel(`正在唯讀驗證 ${choice.backupName}…`);
+    const result = await api('/api/backups/verify', {
+      method: 'POST', body: JSON.stringify({ ...credentials, backupName: choice.backupName }),
+    });
+    setPanel(`驗證成功：${result.backupName}；備份檔存在且 checksum 相符。`, 'success');
+    operationOutput.replaceChildren(element('li', '', result.detail));
+  } finally {
+    credentials.password = '';
+    busy = false;
+    setButtonsDisabled(false);
+  }
 }
 
 async function beginDeployment() {
@@ -483,6 +555,7 @@ document.querySelectorAll('[data-action]').forEach((button) => {
       const action = button.dataset.action;
       if (action === 'status') await refreshStatus();
       else if (action === 'backup') await beginBackup();
+      else if (action === 'verify-backup') await verifyExistingBackup();
       else if (action === 'deploy') await beginDeployment();
       else if (action === 'restore') await beginRestore();
     } catch (error) {
