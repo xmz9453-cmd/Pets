@@ -126,23 +126,19 @@ function Test-ProductionSshAuthentication {
 
 function Test-ProductionDeploymentTarget {
     param([Parameter(Mandatory = $true)][string]$ExpectedSha)
+
+    if ($ExpectedSha -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Expected deployment SHA is invalid; deployment was not started.'
+    }
+
     $quotedProductionRoot = "'" + $script:ProductionRoot + "'"
     $quotedRemoteUrl = "'" + $script:ExpectedRemoteUrl + "'"
-
-    $quotedExpectedSha = "'" + $ExpectedSha + "'"
-    $remoteCommand = 'cd ' + $quotedProductionRoot + ' || exit 1; remote_url=$(git remote get-url origin) || exit 1; if [ "$remote_url" != ' + $quotedRemoteUrl + ' ]; then echo ''Production origin URL mismatch; refusing deployment.'' >&2; exit 41; fi; set -o pipefail; remote_sha=$(timeout 45s git ls-remote --exit-code origin refs/heads/master | cut -f1) || exit 43; if [ -z "$remote_sha" ] || [ "$remote_sha" != ' + $quotedExpectedSha + ' ]; then echo ''GitHub master changed before deployment; refusing deployment.'' >&2; exit 42; fi; printf ''PETS_DEPLOY_PREFLIGHT_SHA=%s\n'' "$remote_sha"'
+    $quotedDeployScript = "'" + $script:ProductionRoot + "/deploy/deploy.sh'"
+    $remoteCommand = 'cd ' + $quotedProductionRoot + ' || exit 1; remote_url=$(git remote get-url origin) || exit 1; if [ "$remote_url" != ' + $quotedRemoteUrl + ' ]; then echo ''Production origin URL mismatch; refusing deployment.'' >&2; exit 41; fi; if [ ! -f ' + $quotedDeployScript + ' ] || [ -L ' + $quotedDeployScript + ' ]; then echo ''Production deploy.sh is missing or unsafe; refusing deployment.'' >&2; exit 44; fi; printf ''%s\n'' ''PETS_DEPLOY_PREFLIGHT_READY'''
     $outputLines = Invoke-ReadOnlySsh -RemoteCommand $remoteCommand
-    $shaLines = New-Object System.Collections.Generic.List[string]
-    foreach ($line in $outputLines) {
-        if ($line -cmatch '^PETS_DEPLOY_PREFLIGHT_SHA=([0-9a-fA-F]{40})$') {
-            $shaLines.Add($Matches[1].ToLowerInvariant())
-        }
-    }
-    if ($shaLines.Count -ne 1) {
-        throw 'Production deployment preflight did not return one valid GitHub master SHA; deployment was not started.'
-    }
-    if ($shaLines[0] -cne $ExpectedSha) {
-        throw "Production deployment preflight found GitHub master '$($shaLines[0])', expected '$ExpectedSha'; deployment was not started."
+    $readyMarkers = @($outputLines | Where-Object { $_ -ceq 'PETS_DEPLOY_PREFLIGHT_READY' })
+    if ($readyMarkers.Count -ne 1) {
+        throw 'Production target preflight did not return the required readiness marker; deployment was not started.'
     }
 }
 function Get-ProductionState {

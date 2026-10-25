@@ -324,9 +324,10 @@ test('Production deployment target preflight runs read-only before freeze author
   assert.ok(sshAuth >= 0 && targetCheck > sshAuth && freezePrompt > targetCheck && deployStart > freezePrompt);
 
   const targetFunction = deployment.slice(deployment.indexOf('function Test-ProductionDeploymentTarget'), deployment.indexOf('function Get-ProductionState'));
-  assert.match(targetFunction, /git ls-remote --exit-code origin refs\/heads\/master/);
+  assert.doesNotMatch(targetFunction, /git ls-remote|timeout 45s/);
   assert.match(targetFunction, /Invoke-ReadOnlySsh/);
-  assert.match(targetFunction, /PETS_DEPLOY_PREFLIGHT_SHA=/);
+  assert.match(targetFunction, /PETS_DEPLOY_PREFLIGHT_READY/);
+  assert.match(targetFunction, /deploy\/deploy\.sh/);
 
   const deployCommand = deployment.match(/\$deployCommand = "([^"]+)"/)?.[1];
   assert.ok(deployCommand);
