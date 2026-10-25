@@ -25,8 +25,8 @@ fi
 STATE_FILE="${STATE_DIR}/deployment.state"
 LOCK_FILE="${STATE_DIR}/deployment.lock"
 LOG_DIR="${STATE_DIR}/logs"
-TIMESTAMP="$(date +'%Y%m%d-%H%M%S')"
-ISO_TIMESTAMP="$(date +'%Y-%m-%dT%H:%M:%S+08:00')"
+TIMESTAMP="$(TZ=Asia/Taipei date +'%Y%m%d-%H%M%S')"
+ISO_TIMESTAMP="$(TZ=Asia/Taipei date +'%Y-%m-%dT%H:%M:%S%:z')"
 LOG_FILE="${LOG_DIR}/deploy-${TIMESTAMP}.log"
 
 # Read actual DB_PASSWORD from .env without echoing or dumping .env

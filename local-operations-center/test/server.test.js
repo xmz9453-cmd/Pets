@@ -6,6 +6,30 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { HOST, PORT, PUBLIC_ROOT, createServer } = require('../server');
+const { formatTaipeiTimestamp, formatBackupOption } = require('../public/time-format');
+
+test('Production 驗收時間與備份選項以台灣時間顯示', () => {
+  assert.equal(formatTaipeiTimestamp('2026-10-25T07:54:39Z'), '2026-10-25 15:54:39');
+  assert.equal(formatTaipeiTimestamp('2026-10-25T15:54:39+08:00'), '2026-10-25 15:54:39');
+  assert.equal(
+    formatBackupOption('pets_backup_20261025_155544.tar.gz'),
+    '2026-10-25 15:55:44（台灣時間）　pets_backup_20261025_155544.tar.gz',
+  );
+});
+
+test('正式環境查詢入口位於本機服務列，備份時間來源固定為台灣時區', () => {
+  const html = fs.readFileSync(path.join(PUBLIC_ROOT, 'index.html'), 'utf8');
+  const servicePanel = html.slice(html.indexOf('<section class="service-panel"'), html.indexOf('</section>', html.indexOf('<section class="service-panel"')));
+  assert.match(servicePanel, /id="refresh-status"[^>]*>查詢正式環境/);
+  assert.equal((html.match(/id="refresh-status"/g) || []).length, 1);
+
+  const backup = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy', 'backup.sh'), 'utf8');
+  const deploy = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy', 'deploy.sh'), 'utf8');
+  const confirm = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy', 'confirm.sh'), 'utf8');
+  assert.match(backup, /TIMESTAMP="\$\(TZ=Asia\/Taipei date \+/);
+  assert.match(deploy, /ISO_TIMESTAMP="\$\(TZ=Asia\/Taipei date \+/);
+  assert.match(confirm, /VERIFIED_AT="\$\(TZ=Asia\/Taipei date \+/);
+});
 
 async function withServer(run, operations) {
   const server = createServer({ host: HOST, port: 0, operations });

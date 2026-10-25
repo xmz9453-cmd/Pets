@@ -64,7 +64,7 @@ function displayProductionStatus(status) {
   document.querySelector('#production-status').textContent = labels[status.status] || status.status;
   document.querySelector('#production-commit').textContent = status.liveCommit || '無法確認';
   document.querySelector('#production-record-commit').textContent = status.commit;
-  document.querySelector('#production-time').textContent = status.verifiedAt || status.timestamp;
+  document.querySelector('#production-time').textContent = window.OperationsTime.formatTaipeiTimestamp(status.verifiedAt || status.timestamp);
 }
 
 function displayCompletedDeployment(operation) {
@@ -79,7 +79,9 @@ function displayCompletedDeployment(operation) {
   document.querySelector('#production-status').textContent = '部署及驗收成功';
   document.querySelector('#production-commit').textContent = deployedCommit;
   document.querySelector('#production-record-commit').textContent = state.commit || deployedCommit;
-  document.querySelector('#production-time').textContent = state.verifiedAt || state.timestamp || '本次部署已完成';
+  document.querySelector('#production-time').textContent = state.verifiedAt || state.timestamp
+    ? window.OperationsTime.formatTaipeiTimestamp(state.verifiedAt || state.timestamp)
+    : '本次部署已完成';
   setBadge('#production-status-badge', 'SHA 已核對', 'good');
   document.querySelector('#status-message').textContent =
     `部署成功；本機、GitHub、Production SHA 已一致：${deployedCommit}`;
@@ -101,6 +103,7 @@ async function refreshStatus() {
   if (!credentials) return;
   const button = document.querySelector('#refresh-status');
   button.disabled = true;
+  document.querySelector('#service-status').textContent = '管理中心已連線；正在查詢正式環境…';
   document.querySelector('#status-message').textContent = '正在查詢本機與 Production 狀態…';
   setBadge('#local-status-badge', '查詢中');
   setBadge('#production-status-badge', '查詢中');
@@ -128,6 +131,9 @@ async function refreshStatus() {
       ? productionResult.value
       : { available: false, reason: productionResult.reason.message || '查詢失敗。' };
     displayProductionStatus(production);
+    document.querySelector('#service-status').textContent = production.available
+      ? '管理中心已連線；正式環境狀態已更新'
+      : '管理中心已連線；正式環境查詢失敗';
     const localAvailable = localResult.status === 'fulfilled';
     document.querySelector('#status-message').textContent = localAvailable
       ? production.available ? '狀態已更新；Production 查詢為唯讀。' : `本機狀態已更新；Production 查詢未完成：${production.reason}`
@@ -496,7 +502,7 @@ async function verifyExistingBackup() {
         { text: `目標資料庫：${target.database}` },
         { text: '此操作只讀取所選備份及 checksum，驗證完成後會顯示明確結果。' },
       ],
-      fields: [{ name: 'backupName', label: '備份檔案', options: target.backups.map((name) => ({ value: name, label: name })) }],
+      fields: [{ name: 'backupName', label: '備份檔案', options: target.backups.map((name) => ({ value: name, label: window.OperationsTime.formatBackupOption(name) })) }],
       confirmText: '開始唯讀驗證',
     });
     if (!choice) return;
@@ -548,7 +554,7 @@ async function beginRestore() {
       { text: '只有在 pets-backend.service 與 pets-frontend.service 都已停止時才可繼續。請先確認備份選擇正確。' },
     ],
     fields: [
-      { name: 'backupName', label: '選擇備份', options: target.backups.map((name) => ({ value: name, label: name })) },
+      { name: 'backupName', label: '選擇備份', options: target.backups.map((name) => ({ value: name, label: window.OperationsTime.formatBackupOption(name) })) },
       { name: 'confirmation', label: '輸入 RESTORE 確認' },
     ],
     checkbox: { name: 'servicesStopped', label: '我已確認 pets-backend.service 與 pets-frontend.service 均已停止。' },

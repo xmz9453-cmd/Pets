@@ -74,7 +74,7 @@ if [ "${CONFIRMATION}" != "CONFIRM" ]; then
   exit 0
 fi
 
-VERIFIED_AT="$(date +'%Y-%m-%dT%H:%M:%S+08:00')"
+VERIFIED_AT="$(TZ=Asia/Taipei date +'%Y-%m-%dT%H:%M:%S%:z')"
 
 # Atomic state update to SUCCESS & PASS
 cat <<EOF > "${STATE_FILE}.tmp"

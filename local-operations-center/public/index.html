@@ -7,6 +7,7 @@
   <!-- OPS_TOKEN -->
   <title>寵物3.0 管理中心</title>
   <link rel="stylesheet" href="/styles.css">
+  <script src="/time-format.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -29,8 +30,9 @@
       <div class="service-icon" aria-hidden="true"><span></span></div>
       <div class="service-copy">
         <p class="service-label">本機服務</p>
-        <p class="service-value" id="service-status">管理中心已連線；正式環境尚未查詢</p>
+        <p class="service-value" id="service-status">管理中心已連線</p>
       </div>
+      <button id="refresh-status" class="secondary-button service-query-button" type="button">查詢正式環境</button>
       <span class="service-badge"><span class="pulse"></span>本機服務運作中</span>
     </section>
 
@@ -63,7 +65,7 @@
           </dl>
         </article>
       </section>
-      <div class="status-actions"><span id="status-message" role="status">狀態查詢只會在你點選時執行。</span><button id="refresh-status" class="secondary-button" type="button">查看狀態</button></div>
+      <div class="status-actions"><span id="status-message" role="status">點選上方「查詢正式環境」即可更新 Production 狀態。</span></div>
 
       <section class="review-card" aria-labelledby="review-title">
         <div class="section-heading">
