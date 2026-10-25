@@ -325,6 +325,9 @@ test('Production deployment target preflight runs read-only before freeze author
 
   const targetFunction = deployment.slice(deployment.indexOf('function Test-ProductionDeploymentTarget'), deployment.indexOf('function Get-ProductionState'));
   assert.doesNotMatch(targetFunction, /git ls-remote|timeout 45s/);
+  const readOnlySsh = deployment.slice(deployment.indexOf('function Invoke-ReadOnlySsh'), deployment.indexOf('function Test-ProductionSshAuthentication'));
+  assert.match(readOnlySsh, /WaitForExit\(\$TimeoutSeconds \* 1000\)/);
+  assert.match(readOnlySsh, /process\.Kill\(\)/);
   assert.match(targetFunction, /Invoke-ReadOnlySsh/);
   assert.match(targetFunction, /PETS_DEPLOY_PREFLIGHT_READY/);
   assert.match(targetFunction, /deploy\/deploy\.sh/);

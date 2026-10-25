@@ -86,23 +86,101 @@ function Get-GitHubMasterSha {
     return $Matches[1].ToLowerInvariant()
 }
 
-function Invoke-ReadOnlySsh {
-    param([Parameter(Mandatory = $true)][string]$RemoteCommand)
+function ConvertTo-WindowsProcessArgument {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
 
-    $output = & $script:SshPath -T -i $script:SshKey `
-        -o IdentitiesOnly=yes `
-        -o StrictHostKeyChecking=yes `
-        -o BatchMode=yes `
-        -o ConnectTimeout=15 `
-        -o ServerAliveInterval=15 `
-        -o ServerAliveCountMax=2 `
-        $script:SshTarget $RemoteCommand
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        throw "Read-only SSH command failed with exit code $exitCode."
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+        return $Value
     }
 
-    return @($output | ForEach-Object { "$_" })
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $slashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]92) {
+            $slashes++
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$builder.Append(('\' * (2 * $slashes + 1)))
+            [void]$builder.Append('"')
+            $slashes = 0
+            continue
+        }
+        if ($slashes -gt 0) {
+            [void]$builder.Append(('\' * $slashes))
+            $slashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+    if ($slashes -gt 0) {
+        [void]$builder.Append(('\' * (2 * $slashes)))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Invoke-ReadOnlySsh {
+    param(
+        [Parameter(Mandatory = $true)][string]$RemoteCommand,
+        [ValidateRange(1, 300)][int]$TimeoutSeconds = 45
+    )
+
+    $arguments = @(
+        '-T', '-i', $script:SshKey,
+        '-o', 'IdentitiesOnly=yes',
+        '-o', 'StrictHostKeyChecking=yes',
+        '-o', 'BatchMode=yes',
+        '-o', 'ConnectTimeout=15',
+        '-o', 'ConnectionAttempts=1',
+        '-o', 'ServerAliveInterval=10',
+        '-o', 'ServerAliveCountMax=2',
+        $script:SshTarget, $RemoteCommand
+    )
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $script:SshPath
+    $startInfo.Arguments = (($arguments | ForEach-Object {
+        ConvertTo-WindowsProcessArgument -Value ([string]$_)
+    }) -join ' ')
+    $startInfo.WorkingDirectory = $script:RepositoryRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $processStarted = $false
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+        $processStarted = $true
+            throw 'Could not start the read-only SSH preflight process.'
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try {
+                $process.Kill()
+                if (-not $process.WaitForExit(5000)) {
+                    throw 'Read-only SSH preflight timed out and the local SSH process could not be stopped.'
+                }
+            } catch {
+                throw 'Read-only SSH preflight timed out and the local SSH process could not be stopped.'
+            }
+            throw "Read-only SSH preflight timed out after $TimeoutSeconds seconds; deployment was not started."
+        }
+        if (-not $stdoutTask.Wait(3000) -or -not $stderrTask.Wait(3000)) {
+            throw 'Read-only SSH preflight ended but its output could not be collected.'
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "Read-only SSH command failed with exit code $($process.ExitCode)."
+        }
+        return @($stdoutTask.Result -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+    } finally {
+        if (-not $processStarted -or $process.HasExited) {
+            $process.Dispose()
+        }
+    }
 }
 
 function Test-ProductionSshAuthentication {
