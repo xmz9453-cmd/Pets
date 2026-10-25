@@ -274,6 +274,8 @@ test('SSH.NET 連線前只註冊已核准套件路徑的組件解析器', () => 
 test('Production 狀態查詢轉送 SSH.NET 命令輸出', () => {
   const helper = fs.readFileSync(path.join(__dirname, '..', 'ssh-password-status.ps1'), 'utf8');
   assert.match(helper, /\$commandOutput = \$sshCommand\.Execute\(\)\s*if \(\$commandOutput\) \{ \[Console\]::Out\.Write\(\$commandOutput\) \}/);
+  assert.match(helper, /PETS_LIVE_COMMIT=%s/);
+  assert.match(helper, /git -C '\/home\/zhe\/pets' rev-parse --verify 'HEAD\^\{commit\}'/);
   assert.doesNotMatch(helper, /\$result\.Output/);
 });
 
@@ -291,6 +293,33 @@ test('確認文字必須精確符合目前等待中的部署關卡', async () =>
   await assert.rejects(manager.submitConfirmation(operation.id, 'DEPLOY'), /確認文字/);
   await manager.submitConfirmation(operation.id, 'PASS');
   assert.equal(resolvePrompt, 'PASS');
+});
+
+test('Production status returns both live checkout SHA and recorded deployment SHA', async () => {
+  const { OperationsManager } = require('../operations');
+  const manager = new OperationsManager();
+  const recordedCommit = 'a'.repeat(40);
+  const liveCommit = 'b'.repeat(40);
+  const state = [
+    'status=SUCCESS', `commit=${recordedCommit}`, `previous_commit=${'c'.repeat(40)}`,
+    'timestamp=2026-10-20T12:00:00+08:00', 'backup=/home/zhe/pets-backups/pets_backup_20261020_120000.tar.gz',
+    'verification=PASS', 'log_file=/home/zhe/pets-deploy-state/logs/deploy-20261020-120000.log',
+    'verified_at=2026-10-20T12:10:00+08:00',
+  ].join('\n');
+  manager.runPasswordSshStatus = async () => ({
+    exitCode: 0, stdout: `${state}\nPETS_LIVE_COMMIT=${liveCommit}\n`, stderr: '', error: null, timedOut: false,
+  });
+  const status = await manager.getProductionStatus({ username: 'zhe', password: 'mock-secret' });
+  assert.equal(status.available, true);
+  assert.equal(status.commit, recordedCommit);
+  assert.equal(status.liveCommit, liveCommit);
+
+  manager.runPasswordSshStatus = async () => ({
+    exitCode: 0, stdout: state, stderr: '', error: null, timedOut: false,
+  });
+  const missingLiveSha = await manager.getProductionStatus({ username: 'zhe', password: 'mock-secret' });
+  assert.equal(missingLiveSha.available, false);
+  assert.match(missingLiveSha.reason, /目前程式 SHA/);
 });
 
 test('deploy-freeze confirmation reports a clear deployment stage', async () => {
@@ -313,6 +342,17 @@ test('deploy-freeze confirmation reports a clear deployment stage', async () => 
   assert.equal(operation.status, 'running');
   assert.notEqual(operation.stage, 'deploy-freeze');
   assert.match(operation.output[0], /deploy-freeze/);
+});
+
+test('confirmed deployment sends final state to the page and updates all SHA fields', () => {
+  const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy-production.ps1'), 'utf8');
+  const operations = fs.readFileSync(path.join(__dirname, '..', 'operations.js'), 'utf8');
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.match(deployment, /deploymentState = if \(\$Type -eq 'deployment-complete'/);
+  assert.match(operations, /deploymentState: parsed\.result\.deploymentState/);
+  assert.match(app, /displayCompletedDeployment\(operation\)/);
+  assert.match(app, /#production-record-commit/);
+  assert.match(app, /本機、GitHub、Production SHA 已一致/);
 });
 
 test('Production deployment target preflight runs read-only before freeze authorization', () => {

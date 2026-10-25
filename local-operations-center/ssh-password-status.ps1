@@ -200,7 +200,14 @@ namespace PetsOperations
     $hostKeyVerified = [bool]$hostKeyState.Verified
     $stage = 'REMOTE_COMMAND'
     switch ($action) {
-        'status' { $remoteCommand = "if [ -f /home/zhe/pets-deploy-state/deployment.state ]; then cat -- /home/zhe/pets-deploy-state/deployment.state; else exit 44; fi" }
+        'status' {
+            $remoteCommand = @(
+                'if [ -f /home/zhe/pets-deploy-state/deployment.state ]; then cat -- /home/zhe/pets-deploy-state/deployment.state; else exit 44; fi'
+                "live_commit=`$(git -C '/home/zhe/pets' rev-parse --verify 'HEAD^{commit}') || exit 45"
+                'if [[ ! "$live_commit" =~ ^[0-9a-f]{40}$ ]]; then exit 45; fi'
+                'printf ''PETS_LIVE_COMMIT=%s\n'' "$live_commit"'
+            ) -join "`n"
+        }
         'list-backups' {
             $remoteCommand = @(
                 'cd -- /home/zhe/pets || exit 90'

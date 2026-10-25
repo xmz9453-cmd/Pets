@@ -453,7 +453,6 @@ class OperationsManager {
   }
 
   async getProductionStatus(credentials) {
-    const command = `if [ -f ${quotePosix(PRODUCTION.stateFile)} ]; then cat -- ${quotePosix(PRODUCTION.stateFile)}; else exit 44; fi`;
     let result;
     try {
       if (!credentials || typeof credentials.username !== 'string' || typeof credentials.password !== 'string') {
@@ -510,7 +509,15 @@ class OperationsManager {
       return { available: false, reason };
     }
     try {
-      return { available: true, ...parseDeploymentState(result.stdout) };
+      const outputLines = String(result.stdout || '').split(/\r?\n/).filter(Boolean);
+      const liveCommitLines = outputLines.filter((line) => /^PETS_LIVE_COMMIT=[a-f0-9]{40}$/i.test(line));
+      if (liveCommitLines.length !== 1) {
+        return { available: false, reason: 'Production 未回報唯一有效的目前程式 SHA；狀態無法確認。' };
+      }
+      const stateText = outputLines.filter((line) => !line.startsWith('PETS_LIVE_COMMIT=')).join('\n');
+      const state = parseDeploymentState(stateText);
+      const liveCommit = liveCommitLines[0].slice('PETS_LIVE_COMMIT='.length).toLowerCase();
+      return { available: true, ...state, liveCommit };
     } catch (error) {
       return { available: false, reason: safeText(error.message) };
     }
@@ -812,7 +819,13 @@ class OperationsManager {
     if (result.exitCode === 0 && parsed.result?.type === 'deployment-complete' && parsed.result.status === 'SUCCESS' && parsed.result.commit?.toLowerCase() === status.head) {
       operation.status = 'succeeded';
       operation.stage = '部署完成；本機 SHA 與 Production SHA 一致';
-      operation.result = { expectedCommit: status.head, deployedCommit: parsed.result.commit.toLowerCase(), shaMatches: true, status: 'SUCCESS' };
+      operation.result = {
+        expectedCommit: status.head,
+        deployedCommit: parsed.result.commit.toLowerCase(),
+        shaMatches: true,
+        status: 'SUCCESS',
+        deploymentState: parsed.result.deploymentState || null,
+      };
       operation.summary = `部署成功；本機與 Production SHA 一致：${status.head}`;
       return;
     }

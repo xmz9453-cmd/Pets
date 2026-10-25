@@ -17,6 +17,7 @@ $script:StateFile = '/home/zhe/pets-deploy-state/deployment.state'
 $script:ExpectedRemoteUrl = 'https://github.com/xmz9453-cmd/Pets.git'
 $script:WebRemoteMutationStarted = $false
 $script:DeploymentPhase = 'preflight'
+$script:DeploymentFinalState = $null
 
 function Read-DeploymentAuthorization {
     param(
@@ -56,6 +57,15 @@ function Write-DeploymentResultEvent {
         type = $Type
         status = if ($Type -eq 'deployment-complete') { 'SUCCESS' } else { $null }
         commit = $ExpectedCommit.ToLowerInvariant()
+        deploymentState = if ($Type -eq 'deployment-complete' -and $script:DeploymentFinalState) {
+            [pscustomobject]@{
+                status = $script:DeploymentFinalState['status']
+                commit = $script:DeploymentFinalState['commit']
+                verification = $script:DeploymentFinalState['verification']
+                timestamp = $script:DeploymentFinalState['timestamp']
+                verifiedAt = $script:DeploymentFinalState['verified_at']
+            }
+        } else { $null }
         remoteMutationStarted = $RemoteMutationStarted
         phase = $script:DeploymentPhase
     } | ConvertTo-Json -Compress
@@ -469,6 +479,7 @@ try {
 
     $finalState = Get-ProductionState
     Assert-ProductionState -State $finalState -ExpectedStatus 'SUCCESS' -ExpectedVerification 'PASS' -ExpectedSha $ExpectedCommit
+    $script:DeploymentFinalState = $finalState
 
     Write-Host "Production deployment verified: commit $ExpectedCommit, status SUCCESS, verification PASS."
     Write-DeploymentResultEvent -Type 'deployment-complete' -RemoteMutationStarted $script:WebRemoteMutationStarted

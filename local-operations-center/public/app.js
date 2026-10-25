@@ -55,14 +55,34 @@ function displayProductionStatus(status) {
     setBadge('#production-status-badge', '無法確認', 'bad');
     document.querySelector('#production-status').textContent = status.reason;
     document.querySelector('#production-commit').textContent = '無法確認';
+    document.querySelector('#production-record-commit').textContent = '無法確認';
     document.querySelector('#production-time').textContent = '無法確認';
     return;
   }
   setBadge('#production-status-badge', '已取得', 'good');
   const labels = { RUNNING: '部署進行中', FAILED: '部署失敗', DEPLOYED: '部署完成，等待人工驗收', SUCCESS: '部署及驗收成功' };
   document.querySelector('#production-status').textContent = labels[status.status] || status.status;
-  document.querySelector('#production-commit').textContent = status.commit;
+  document.querySelector('#production-commit').textContent = status.liveCommit || '無法確認';
+  document.querySelector('#production-record-commit').textContent = status.commit;
   document.querySelector('#production-time').textContent = status.verifiedAt || status.timestamp;
+}
+
+function displayCompletedDeployment(operation) {
+  const result = operation.result;
+  if (operation.kind !== 'deploy' || operation.status !== 'succeeded' ||
+      !result?.shaMatches || !/^[a-f0-9]{40}$/.test(result.deployedCommit || '')) return;
+
+  const deployedCommit = result.deployedCommit;
+  const state = result.deploymentState || {};
+  document.querySelector('#local-head').textContent = deployedCommit;
+  document.querySelector('#github-master').textContent = deployedCommit;
+  document.querySelector('#production-status').textContent = '部署及驗收成功';
+  document.querySelector('#production-commit').textContent = deployedCommit;
+  document.querySelector('#production-record-commit').textContent = state.commit || deployedCommit;
+  document.querySelector('#production-time').textContent = state.verifiedAt || state.timestamp || '本次部署已完成';
+  setBadge('#production-status-badge', 'SHA 已核對', 'good');
+  document.querySelector('#status-message').textContent =
+    `部署成功；本機、GitHub、Production SHA 已一致：${deployedCommit}`;
 }
 
 async function refreshStatus() {
@@ -115,9 +135,9 @@ async function refreshStatus() {
     if (localAvailable) {
       const local = localResult.value;
       const comparison = local.githubMaster && production.available
-        ? (local.head === local.githubMaster && local.head === production.commit
-          ? '本機、GitHub 與 Production SHA 完全一致。'
-          : `SHA 不一致：本機 ${local.head}；GitHub ${local.githubMaster}；Production ${production.commit}。`)
+        ? (local.head === local.githubMaster && local.head === production.liveCommit && production.commit === production.liveCommit
+          ? '本機、GitHub、Production 程式與部署紀錄 SHA 完全一致。'
+          : `SHA 不一致：本機 ${local.head}；GitHub ${local.githubMaster}；Production 程式 ${production.liveCommit}；部署紀錄 ${production.commit}。`)
         : local.githubMaster
           ? `本機與 GitHub SHA ${local.head === local.githubMaster ? '一致' : '不一致'}；Production SHA 尚未確認。`
           : local.githubReason;
@@ -291,6 +311,7 @@ async function watchOperation(operationId) {
     while (currentOperationId === operationId) {
       const operation = await api(`/api/operations/${operationId}`);
       renderOperation(operation);
+      displayCompletedDeployment(operation);
       if (operation.status === 'waiting-confirmation' && operation.confirmation) {
         const promptKey = `${operation.id}:${operation.confirmation.type}`;
         if (handledPrompt !== promptKey) {
