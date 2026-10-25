@@ -315,6 +315,29 @@ test('deploy-freeze confirmation reports a clear deployment stage', async () => 
   assert.match(operation.output[0], /deploy-freeze/);
 });
 
+test('Production deployment target preflight runs read-only before freeze authorization', () => {
+  const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy-production.ps1'), 'utf8');
+  const sshAuth = deployment.indexOf('Test-ProductionSshAuthentication');
+  const targetCheck = deployment.indexOf('Test-ProductionDeploymentTarget -ExpectedSha $ExpectedCommit');
+  const freezePrompt = deployment.indexOf("-Kind 'deploy-freeze'");
+  const deployStart = deployment.indexOf('Starting Production deployment for');
+  assert.ok(sshAuth >= 0 && targetCheck > sshAuth && freezePrompt > targetCheck && deployStart > freezePrompt);
+
+  const targetFunction = deployment.slice(deployment.indexOf('function Test-ProductionDeploymentTarget'), deployment.indexOf('function Get-ProductionState'));
+  assert.match(targetFunction, /git ls-remote --exit-code origin refs\/heads\/master/);
+  assert.match(targetFunction, /Invoke-ReadOnlySsh/);
+  assert.match(targetFunction, /PETS_DEPLOY_PREFLIGHT_SHA=/);
+
+  const deployCommand = deployment.match(/\$deployCommand = "([^"]+)"/)?.[1];
+  assert.ok(deployCommand);
+  assert.match(deployCommand, /deploy\/deploy\.sh/);
+  assert.doesNotMatch(deployCommand, /ls-remote|remote_url/);
+  const mutationStart = deployment.indexOf("$script:DeploymentPhase = 'production-deploy'");
+  const mutationFlag = deployment.indexOf('$script:WebRemoteMutationStarted = $true', mutationStart);
+  const sshInvocation = deployment.indexOf('& $script:SshPath', mutationStart);
+  assert.ok(mutationFlag > mutationStart && sshInvocation > mutationFlag);
+});
+
 test('GitHub 推送結果未確認時不會誤報為 Production 部署已開始', () => {
   const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy-production.ps1'), 'utf8');
   const operations = fs.readFileSync(path.join(__dirname, '..', 'operations.js'), 'utf8');

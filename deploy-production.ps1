@@ -124,6 +124,27 @@ function Test-ProductionSshAuthentication {
     }
 }
 
+function Test-ProductionDeploymentTarget {
+    param([Parameter(Mandatory = $true)][string]$ExpectedSha)
+    $quotedProductionRoot = "'" + $script:ProductionRoot + "'"
+    $quotedRemoteUrl = "'" + $script:ExpectedRemoteUrl + "'"
+
+    $quotedExpectedSha = "'" + $ExpectedSha + "'"
+    $remoteCommand = 'cd ' + $quotedProductionRoot + ' || exit 1; remote_url=$(git remote get-url origin) || exit 1; if [ "$remote_url" != ' + $quotedRemoteUrl + ' ]; then echo ''Production origin URL mismatch; refusing deployment.'' >&2; exit 41; fi; set -o pipefail; remote_sha=$(timeout 45s git ls-remote --exit-code origin refs/heads/master | cut -f1) || exit 43; if [ -z "$remote_sha" ] || [ "$remote_sha" != ' + $quotedExpectedSha + ' ]; then echo ''GitHub master changed before deployment; refusing deployment.'' >&2; exit 42; fi; printf ''PETS_DEPLOY_PREFLIGHT_SHA=%s\n'' "$remote_sha"'
+    $outputLines = Invoke-ReadOnlySsh -RemoteCommand $remoteCommand
+    $shaLines = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $outputLines) {
+        if ($line -cmatch '^PETS_DEPLOY_PREFLIGHT_SHA=([0-9a-fA-F]{40})$') {
+            $shaLines.Add($Matches[1].ToLowerInvariant())
+        }
+    }
+    if ($shaLines.Count -ne 1) {
+        throw 'Production deployment preflight did not return one valid GitHub master SHA; deployment was not started.'
+    }
+    if ($shaLines[0] -cne $ExpectedSha) {
+        throw "Production deployment preflight found GitHub master '$($shaLines[0])', expected '$ExpectedSha'; deployment was not started."
+    }
+}
 function Get-ProductionState {
     $remoteCommand = "cat -- $script:StateFile"
     $lines = Invoke-ReadOnlySsh -RemoteCommand $remoteCommand
@@ -293,6 +314,10 @@ try {
     Test-ProductionSshAuthentication
     Write-Host 'Production SSH key authentication succeeded.'
 
+    Write-Host 'Checking Production deployment target before the final deployment confirmation.'
+    Test-ProductionDeploymentTarget -ExpectedSha $ExpectedCommit
+    Write-Host 'Production deployment target is ready.'
+
     Write-Warning 'This confirmation does not technically lock GitHub master. Do not allow master updates or another deployment to this Production environment until deployment reaches DEPLOYED.'
     $deployAuthorization = Read-DeploymentAuthorization -Kind 'deploy-freeze' `
         -Message "Confirm all three conditions: no GitHub master updates, no concurrent Production deployment, and GitHub master equals $ExpectedCommit. Type DEPLOY $ExpectedCommit FREEZE" `
@@ -301,9 +326,8 @@ try {
         throw 'Production deployment was not explicitly authorized.'
     }
 
-    $quotedRemoteUrl = "'" + $script:ExpectedRemoteUrl + "'"
     $quotedExpectedSha = "'" + $ExpectedCommit + "'"
-    $deployCommand = "cd $script:ProductionRoot || exit 1; remote_url=`$(git remote get-url origin) || exit 1; if [ `"`$remote_url`" != $quotedRemoteUrl ]; then echo 'Production origin URL mismatch; refusing deployment.' >&2; exit 41; fi; set -o pipefail; remote_sha=`$(timeout 45s git ls-remote --exit-code origin refs/heads/master | cut -f1) || exit 43; if [ -z `"`$remote_sha`" ] || [ `"`$remote_sha`" != $quotedExpectedSha ]; then echo 'GitHub master changed before deployment; refusing deployment.' >&2; exit 42; fi; exec bash $script:ProductionRoot/deploy/deploy.sh $quotedExpectedSha"
+    $deployCommand = "cd '$($script:ProductionRoot)' && exec bash '$($script:ProductionRoot)/deploy/deploy.sh' $quotedExpectedSha"
 
     Write-Host "Starting Production deployment for $ExpectedCommit."
     $script:DeploymentPhase = 'production-deploy'
