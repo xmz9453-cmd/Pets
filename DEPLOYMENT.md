@@ -9,7 +9,7 @@ This document provides standard operating procedures (SOP) for **Pets 2.0 Produc
 ### Key Infrastructure Baseline
 - **OS**: Ubuntu 24.04.5 LTS
 - **User**: `zhe` (`/home/zhe/pets`)
-- **Runtime**: Node.js `v24.21.0`, npm `11.19.0`, MySQL `8.0.46`, Nginx `1.24.0`
+- **Runtime**: Node.js `v24.22.1`, npm `11.19.1`, MySQL `8.0.46`, Nginx `1.24.0`
 - **Git Repository**: `https://github.com/xmz9453-cmd/Pets.git` (`master` branch)
 - **Database Target**: `psop_one` (MySQL)
 - **Contract PDF Storage**: private filesystem directory configured by `CONTRACT_STORAGE_ROOT`; not part of the Git checkout or Nginx document root.
