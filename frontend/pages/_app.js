@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: '/services', label: '服務', icon: 'scissors', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
   { href: '/products', label: '商品', icon: 'box', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
   { href: '/appointments', label: '預約', icon: 'calendar', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
+  { href: '/booking', label: '公開預約入口', icon: 'calendar', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'], openInNewTab: true },
   { href: '/calendar', label: '行事曆', icon: 'calendar', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
   { href: '/operations', label: '日常營運', icon: 'list', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
   { href: '/orders', label: '訂單', icon: 'receipt', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
@@ -115,12 +116,17 @@ function AppShell({ Component, pageProps }) {
             <nav className="app-sidebar-nav" aria-label="主要導覽">
               {visibleNavItems.map((item) => {
                 const isActive = router.pathname === item.href || router.pathname.startsWith(`${item.href}/`);
+                const href = item.href === '/booking' && selectedShopId
+                  ? `/booking?shop_id=${encodeURIComponent(selectedShopId)}`
+                  : item.href;
                 return (
                   <a
                     key={item.href}
-                    href={item.href}
+                    href={href}
                     className={`app-nav-link${isActive ? ' active' : ''}`}
                     aria-current={isActive ? 'page' : undefined}
+                    target={item.openInNewTab ? '_blank' : undefined}
+                    rel={item.openInNewTab ? 'noreferrer' : undefined}
                   >
                     <AppIcon name={item.icon} />
                     {item.label}
