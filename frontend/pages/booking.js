@@ -38,7 +38,7 @@ export default function BookingPage() {
       await router.push(`/onboarding/${encodeURIComponent(result.token)}`);
     } catch (createError) {
       setError(createError.code === 'CONTRACT_VERSION_NOT_AVAILABLE'
-        ? '目前尚未設定可用的預約資訊，請稍後再試或聯絡店家。'
+        ? '目前店家尚未設定可用的電子契約。請至「店家設定」的「電子契約版本」上傳 PDF、發布版本並設為目前使用版本後，再試一次。'
         : createError.message || '目前無法開始預約，請稍後再試。');
     } finally {
       setCreating(false);

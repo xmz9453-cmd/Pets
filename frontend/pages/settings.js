@@ -358,6 +358,46 @@ function BookingScheduleSettings() {
   );
 }
 
+function PublicBookingLink({ shopId }) {
+  const [url, setUrl] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (shopId) {
+      setUrl(`${window.location.origin}/booking?shop_id=${encodeURIComponent(shopId)}`);
+    }
+  }, [shopId]);
+
+  async function copyUrl() {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <section className="card shadow-sm mb-4">
+      <div className="card-body py-3">
+        <div className="d-flex flex-wrap align-items-center gap-2">
+          <div className="me-auto">
+            <h2 className="h6 mb-1">公開預約網址</h2>
+            <p className="small text-muted mb-0">可複製到 LINE，讓客戶直接進入預約。</p>
+          </div>
+          <input className="form-control form-control-sm" style={{ maxWidth: 440 }} value={url} readOnly aria-label="公開預約網址" />
+          <button type="button" className="btn btn-sm btn-outline-dark" onClick={copyUrl} disabled={!url}>
+            {copied ? '已複製' : '複製網址'}
+          </button>
+          {url ? <a className="btn btn-sm btn-link" href={url} target="_blank" rel="noreferrer">預覽</a> : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const [staff, setStaff] = useState(null);
@@ -737,6 +777,8 @@ export default function SettingsPage() {
           <p className="text-muted mb-0">管理店家資料與每週營業時間。</p>
         </div>
       </div>
+
+      {canEdit ? <PublicBookingLink shopId={staff?.shop_id} /> : null}
 
       {error ? <div className="alert alert-danger">{error}</div> : null}
       {success ? <div className="alert alert-success">{success}</div> : null}
