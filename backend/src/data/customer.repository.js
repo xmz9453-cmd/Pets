@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 const contractHistoryRepository = require('./contract-history.repository');
 
 function normalizeCustomer(row) {
@@ -26,8 +27,8 @@ async function listCustomers(filters = {}) {
     limit = 20,
   } = filters;
 
-  const conditions = [];
-  const params = [];
+  const conditions = ['c.shop_id = ?'];
+  const params = [getCurrentShopId()];
 
   if (status && status !== 'ALL') {
     conditions.push('c.status = ?');
@@ -46,7 +47,7 @@ async function listCustomers(filters = {}) {
     `SELECT c.*, (
       SELECT COUNT(*)
       FROM pet_customer_relationships pcr
-      WHERE pcr.customer_id = c.id
+      WHERE pcr.customer_id = c.id AND pcr.shop_id = c.shop_id
     ) AS pet_count
      FROM customers c
      ${whereClause}
@@ -73,12 +74,12 @@ async function getCustomerById(customerId) {
     `SELECT c.*, (
       SELECT COUNT(*)
       FROM pet_customer_relationships pcr
-      WHERE pcr.customer_id = c.id
+      WHERE pcr.customer_id = c.id AND pcr.shop_id = c.shop_id
     ) AS pet_count
      FROM customers c
-     WHERE c.id = ?
+     WHERE c.id = ? AND c.shop_id = ?
      LIMIT 1`,
-    [customerId],
+    [customerId, getCurrentShopId()],
   );
 
   if (!rows[0]) {
@@ -90,9 +91,9 @@ async function getCustomerById(customerId) {
     `SELECT p.id, p.name, p.species, p.status, pcr.is_primary
      FROM pet_customer_relationships pcr
      INNER JOIN pets p ON p.id = pcr.pet_id
-     WHERE pcr.customer_id = ?
+     WHERE pcr.customer_id = ? AND pcr.shop_id = ? AND p.shop_id = pcr.shop_id
      ORDER BY p.name ASC`,
-    [customerId],
+    [customerId, getCurrentShopId()],
   );
 
   return {
@@ -111,9 +112,10 @@ async function getCustomerById(customerId) {
 
 async function createCustomer(payload, connection = getPool()) {
   const [result] = await connection.query(
-    `INSERT INTO customers (name, phone, address, line_id, id_card_number, emergency_contact_name, emergency_contact_phone, note, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
+    `INSERT INTO customers (shop_id, name, phone, address, line_id, id_card_number, emergency_contact_name, emergency_contact_phone, note, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
     [
+      getCurrentShopId(),
       payload.name,
       payload.phone,
       payload.address || null,
@@ -131,9 +133,9 @@ async function createCustomer(payload, connection = getPool()) {
 async function findActiveCustomerIdByPhoneAndName(phone, name, connection = getPool()) {
   const [rows] = await connection.query(
     `SELECT id FROM customers
-     WHERE phone = ? AND name = ? AND status = 'ACTIVE'
+     WHERE phone = ? AND name = ? AND status = 'ACTIVE' AND shop_id = ?
      LIMIT 1`,
-    [phone, name],
+    [phone, name, getCurrentShopId()],
   );
   return rows[0] || null;
 }
@@ -183,9 +185,9 @@ async function updateCustomer(customerId, patch) {
     return getCustomerById(customerId);
   }
 
-  values.push(customerId);
+  values.push(customerId, getCurrentShopId());
   await getPool().query(
-    `UPDATE customers SET ${fields.join(', ')} WHERE id = ?`,
+    `UPDATE customers SET ${fields.join(', ')} WHERE id = ? AND shop_id = ?`,
     values,
   );
 
@@ -194,8 +196,8 @@ async function updateCustomer(customerId, patch) {
 
 async function updateStatus(customerId, status) {
   const [result] = await getPool().query(
-    'UPDATE customers SET status = ? WHERE id = ?',
-    [status, customerId],
+    'UPDATE customers SET status = ? WHERE id = ? AND shop_id = ?',
+    [status, customerId, getCurrentShopId()],
   );
 
   if (result.affectedRows === 0) {
@@ -211,8 +213,8 @@ async function deleteCustomer(customerId) {
     await connection.beginTransaction();
 
     const [customerRows] = await connection.query(
-      'SELECT id FROM customers WHERE id = ? LIMIT 1 FOR UPDATE',
-      [customerId],
+      'SELECT id FROM customers WHERE id = ? AND shop_id = ? LIMIT 1 FOR UPDATE',
+      [customerId, getCurrentShopId()],
     );
     if (!customerRows[0]) {
       const error = new Error('Customer not found');
@@ -222,56 +224,56 @@ async function deleteCustomer(customerId) {
     }
 
     const [orderRows] = await connection.query(
-      'SELECT id FROM orders WHERE customer_id = ? LIMIT 1',
-      [customerId],
+      'SELECT id FROM orders WHERE customer_id = ? AND shop_id = ? LIMIT 1',
+      [customerId, getCurrentShopId()],
     );
     const [appointmentRows] = await connection.query(
-      'SELECT id FROM appointments WHERE customer_id = ? LIMIT 1',
-      [customerId],
+      'SELECT id FROM appointments WHERE customer_id = ? AND shop_id = ? LIMIT 1',
+      [customerId, getCurrentShopId()],
     );
     const [petRows] = await connection.query(
-      'SELECT pet_id FROM pet_customer_relationships WHERE customer_id = ? LIMIT 1',
-      [customerId],
+      'SELECT pet_id FROM pet_customer_relationships WHERE customer_id = ? AND shop_id = ? LIMIT 1',
+      [customerId, getCurrentShopId()],
     );
     const [paymentRows] = await connection.query(
       `SELECT p.id
        FROM payments p
        INNER JOIN orders o ON o.id = p.order_id
-       WHERE o.customer_id = ?
+       WHERE o.customer_id = ? AND p.shop_id = ? AND o.shop_id = p.shop_id
        LIMIT 1`,
-      [customerId],
+      [customerId, getCurrentShopId()],
     );
     const [boardingRows] = await connection.query(
-      `SELECT id FROM boardings WHERE customer_id = ?
+      `SELECT id FROM boardings WHERE customer_id = ? AND shop_id = ?
        UNION
        SELECT b.id
        FROM boardings b
        INNER JOIN appointments a ON a.id = b.appointment_id
-       WHERE a.customer_id = ?
+       WHERE a.customer_id = ? AND b.shop_id = ? AND a.shop_id = b.shop_id
        LIMIT 1`,
-      [customerId, customerId],
+      [customerId, getCurrentShopId(), customerId, getCurrentShopId()],
     );
     const [groomingRows] = await connection.query(
       `SELECT g.id
        FROM groomings g
        INNER JOIN daily_operations d ON d.id = g.daily_operation_id
        INNER JOIN appointments a ON a.id = d.appointment_id
-       WHERE a.customer_id = ?
+       WHERE a.customer_id = ? AND g.shop_id = ? AND d.shop_id = g.shop_id AND a.shop_id = g.shop_id
        UNION
        SELECT g.id
        FROM groomings g
        INNER JOIN pet_customer_relationships pcr ON pcr.pet_id = g.pet_id
-       WHERE pcr.customer_id = ?
+       WHERE pcr.customer_id = ? AND g.shop_id = ? AND pcr.shop_id = g.shop_id
        LIMIT 1`,
-      [customerId, customerId],
+      [customerId, getCurrentShopId(), customerId, getCurrentShopId()],
     );
     const [completedRows] = await connection.query(
       `SELECT d.id
        FROM daily_operations d
        INNER JOIN appointments a ON a.id = d.appointment_id
-       WHERE a.customer_id = ? AND d.status = 'COMPLETED'
+       WHERE a.customer_id = ? AND d.status = 'COMPLETED' AND d.shop_id = ? AND a.shop_id = d.shop_id
        LIMIT 1`,
-      [customerId],
+      [customerId, getCurrentShopId()],
     );
 
     if (petRows.length || appointmentRows.length || orderRows.length || paymentRows.length || boardingRows.length || groomingRows.length || completedRows.length) {
@@ -281,7 +283,7 @@ async function deleteCustomer(customerId) {
       throw error;
     }
 
-    await connection.query('DELETE FROM customers WHERE id = ?', [customerId]);
+    await connection.query('DELETE FROM customers WHERE id = ? AND shop_id = ?', [customerId, getCurrentShopId()]);
     await connection.commit();
   } catch (error) {
     await connection.rollback();

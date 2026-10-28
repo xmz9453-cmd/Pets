@@ -10,7 +10,7 @@ const cookieOptions = {
 async function login(req, res, next) {
   try {
     const { username, password } = req.body || {};
-    const result = await authService.login(username, password);
+    const result = await authService.login(username, password, req.get('x-shop-id'));
 
     res.cookie(authService.SESSION_COOKIE_NAME, result.token, {
       ...cookieOptions,
@@ -39,7 +39,7 @@ async function register(req, res, next) {
 
 async function listStaff(req, res, next) {
   try {
-    res.json({ success: true, data: { staff: await authService.listStaff() } });
+    res.json({ success: true, data: { staff: await authService.listStaff(req.auth.staff.shop_id) } });
   } catch (error) {
     next(error);
   }
@@ -47,7 +47,7 @@ async function listStaff(req, res, next) {
 
 async function updateStaffRoles(req, res, next) {
   try {
-    const staff = await authService.updateStaffRoles(req.params.id, req.body?.roles);
+    const staff = await authService.updateStaffRoles(req.params.id, req.body?.roles, req.auth.staff.shop_id);
     res.json({ success: true, data: { staff } });
   } catch (error) {
     next(error);

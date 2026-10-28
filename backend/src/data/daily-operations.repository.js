@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 function getLocalDateString(date = new Date()) {
   const year = date.getFullYear();
@@ -9,16 +10,16 @@ function getLocalDateString(date = new Date()) {
 
 async function findByAppointmentId(appointmentId) {
   const [rows] = await getPool().query(
-    'SELECT * FROM daily_operations WHERE appointment_id = ? LIMIT 1',
-    [appointmentId]
+    'SELECT * FROM daily_operations WHERE appointment_id = ? AND shop_id = ? LIMIT 1',
+    [appointmentId, getCurrentShopId()]
   );
   return rows && rows.length > 0 ? rows[0] : null;
 }
 
 async function findById(id) {
   const [rows] = await getPool().query(
-    'SELECT * FROM daily_operations WHERE id = ? LIMIT 1',
-    [id]
+    'SELECT * FROM daily_operations WHERE id = ? AND shop_id = ? LIMIT 1',
+    [id, getCurrentShopId()]
   );
   return rows && rows.length > 0 ? rows[0] : null;
 }
@@ -45,12 +46,12 @@ async function findByIdWithRelations(id, connection = null) {
       c.phone as customer_phone,
       s.display_name as responsible_staff_name
     FROM daily_operations do
-    LEFT JOIN appointments a ON do.appointment_id = a.id
-    LEFT JOIN customers c ON a.customer_id = c.id
+    LEFT JOIN appointments a ON do.appointment_id = a.id AND a.shop_id = do.shop_id
+    LEFT JOIN customers c ON a.customer_id = c.id AND c.shop_id = do.shop_id
     LEFT JOIN staff s ON do.responsible_staff_id = s.id
-    WHERE do.id = ?
+    WHERE do.id = ? AND do.shop_id = ?
     LIMIT 1
-  `, [id]);
+  `, [id, getCurrentShopId()]);
   return rows && rows.length > 0 ? rows[0] : null;
 }
 
@@ -79,13 +80,13 @@ async function listTodayOperations(filters = {}, connection = null) {
       CASE WHEN EXISTS (
         SELECT 1
         FROM appointment_pets eligible_ap
-        INNER JOIN appointment_pet_services eligible_aps ON eligible_aps.appointment_pet_id = eligible_ap.id
-        INNER JOIN services eligible_srv ON eligible_srv.id = eligible_aps.service_id
-        LEFT JOIN groomings eligible_g ON eligible_g.daily_operation_id = do.id AND eligible_g.pet_id = eligible_ap.pet_id
-        LEFT JOIN boardings eligible_b ON eligible_b.appointment_id = a.id
+        INNER JOIN appointment_pet_services eligible_aps ON eligible_aps.appointment_pet_id = eligible_ap.id AND eligible_aps.shop_id = do.shop_id
+        INNER JOIN services eligible_srv ON eligible_srv.id = eligible_aps.service_id AND eligible_srv.shop_id = do.shop_id
+        LEFT JOIN groomings eligible_g ON eligible_g.daily_operation_id = do.id AND eligible_g.pet_id = eligible_ap.pet_id AND eligible_g.shop_id = do.shop_id
+        LEFT JOIN boardings eligible_b ON eligible_b.appointment_id = a.id AND eligible_b.shop_id = do.shop_id
           AND eligible_b.pet_id = eligible_ap.pet_id
           AND eligible_b.service_id = eligible_aps.service_id
-        WHERE eligible_ap.appointment_id = a.id
+        WHERE eligible_ap.appointment_id = a.id AND eligible_ap.shop_id = do.shop_id
           AND ((eligible_srv.type = 'GROOMING' AND do.status = 'COMPLETED'
                 AND eligible_g.id IS NOT NULL
                 AND eligible_g.before_condition IS NOT NULL
@@ -100,18 +101,18 @@ async function listTodayOperations(filters = {}, connection = null) {
       GROUP_CONCAT(srv.type ORDER BY srv.id SEPARATOR ',') as service_types,
       s.display_name as responsible_staff_name
     FROM daily_operations do
-    JOIN appointments a ON do.appointment_id = a.id
-    JOIN customers c ON a.customer_id = c.id
-    LEFT JOIN appointment_pets ap ON a.id = ap.appointment_id
-    LEFT JOIN pets p ON ap.pet_id = p.id
-    LEFT JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
-    LEFT JOIN services srv ON srv.id = aps.service_id
+    JOIN appointments a ON do.appointment_id = a.id AND a.shop_id = do.shop_id
+    JOIN customers c ON a.customer_id = c.id AND c.shop_id = do.shop_id
+    LEFT JOIN appointment_pets ap ON a.id = ap.appointment_id AND ap.shop_id = do.shop_id
+    LEFT JOIN pets p ON ap.pet_id = p.id AND p.shop_id = do.shop_id
+    LEFT JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id AND aps.shop_id = do.shop_id
+    LEFT JOIN services srv ON srv.id = aps.service_id AND srv.shop_id = do.shop_id
     LEFT JOIN staff s ON do.responsible_staff_id = s.id
-    WHERE DATE(a.appointment_date) = ?
+    WHERE do.shop_id = ? AND DATE(a.appointment_date) = ?
       AND a.status != 'CANCELLED'
   `;
 
-  const params = [filters.date || getLocalDateString()];
+  const params = [getCurrentShopId(), filters.date || getLocalDateString()];
 
   // Status filter
   if (filters.status && filters.status !== 'ALL') {
@@ -130,9 +131,9 @@ async function listTodayOperations(filters = {}, connection = null) {
     query += `
       AND EXISTS (
         SELECT 1 FROM appointment_pet_services aps
-        JOIN services srv ON aps.service_id = srv.id
+        JOIN services srv ON aps.service_id = srv.id AND srv.shop_id = do.shop_id AND aps.shop_id = do.shop_id
         WHERE aps.appointment_pet_id IN (
-          SELECT id FROM appointment_pets WHERE appointment_id = a.id
+          SELECT id FROM appointment_pets WHERE appointment_id = a.id AND shop_id = do.shop_id
         )
         AND srv.type = ?
       )
@@ -204,8 +205,8 @@ async function listTodayOperations(filters = {}, connection = null) {
 async function create(appointmentId, connection = null) {
   const pool = connection || getPool();
   const [result] = await pool.query(
-    'INSERT INTO daily_operations (appointment_id, status) VALUES (?, ?)',
-    [appointmentId, 'SCHEDULED']
+    'INSERT INTO daily_operations (shop_id, appointment_id, status) VALUES (?, ?, ?)',
+    [getCurrentShopId(), appointmentId, 'SCHEDULED']
   );
   return result.insertId;
 }
@@ -213,8 +214,8 @@ async function create(appointmentId, connection = null) {
 async function updateStatus(id, newStatus, connection = null) {
   const pool = connection || getPool();
   const [result] = await pool.query(
-    'UPDATE daily_operations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [newStatus, id]
+    'UPDATE daily_operations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shop_id = ?',
+    [newStatus, id, getCurrentShopId()]
   );
   return result.affectedRows > 0;
 }
@@ -222,8 +223,8 @@ async function updateStatus(id, newStatus, connection = null) {
 async function updateCheckInTime(id, connection = null) {
   const pool = connection || getPool();
   const [result] = await pool.query(
-    'UPDATE daily_operations SET check_in_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [id]
+    'UPDATE daily_operations SET check_in_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shop_id = ?',
+    [id, getCurrentShopId()]
   );
   return result.affectedRows > 0;
 }
@@ -231,8 +232,8 @@ async function updateCheckInTime(id, connection = null) {
 async function updateStartedTime(id, connection = null) {
   const pool = connection || getPool();
   const [result] = await pool.query(
-    'UPDATE daily_operations SET started_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [id]
+    'UPDATE daily_operations SET started_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shop_id = ?',
+    [id, getCurrentShopId()]
   );
   return result.affectedRows > 0;
 }
@@ -240,8 +241,8 @@ async function updateStartedTime(id, connection = null) {
 async function updateCompletedTime(id, connection = null) {
   const pool = connection || getPool();
   const [result] = await pool.query(
-    'UPDATE daily_operations SET completed_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [id]
+    'UPDATE daily_operations SET completed_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shop_id = ?',
+    [id, getCurrentShopId()]
   );
   return result.affectedRows > 0;
 }
@@ -249,8 +250,8 @@ async function updateCompletedTime(id, connection = null) {
 async function updateResponsibleStaff(id, staffId, connection = null) {
   const pool = connection || getPool();
   const [result] = await pool.query(
-    'UPDATE daily_operations SET responsible_staff_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [staffId, id]
+    'UPDATE daily_operations SET responsible_staff_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shop_id = ?',
+    [staffId, id, getCurrentShopId()]
   );
   return result.affectedRows > 0;
 }
@@ -258,8 +259,8 @@ async function updateResponsibleStaff(id, staffId, connection = null) {
 async function updateWorkNote(id, note, connection = null) {
   const pool = connection || getPool();
   const [result] = await pool.query(
-    'UPDATE daily_operations SET work_note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [note, id]
+    'UPDATE daily_operations SET work_note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shop_id = ?',
+    [note, id, getCurrentShopId()]
   );
   return result.affectedRows > 0;
 }

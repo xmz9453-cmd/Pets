@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 const appointmentRepository = require('../data/appointment.repository');
 const dailyOperationsRepository = require('../data/daily-operations.repository');
 const dailyOperationsService = require('./daily-operations.service');
@@ -50,8 +51,8 @@ async function ensurePetBelongsToOperation(dailyOperationId, petId) {
   const operation = await ensureDailyOperationExists(dailyOperationId);
 
   const [rows] = await getPool().query(
-    'SELECT 1 FROM appointment_pets WHERE appointment_id = ? AND pet_id = ? LIMIT 1',
-    [operation.appointment_id, petId],
+    'SELECT 1 FROM appointment_pets WHERE appointment_id = ? AND pet_id = ? AND shop_id = ? LIMIT 1',
+    [operation.appointment_id, petId, getCurrentShopId()],
   );
 
   if (!rows || rows.length === 0) {

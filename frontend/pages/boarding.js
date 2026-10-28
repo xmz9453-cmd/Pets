@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { getUserFacingErrorMessage } from '../utils/error-message';
-import { API_BASE_URL } from '../api/client';
+import { API_BASE_URL, fetchWithShop as fetch } from '../api/client';
 const STATUS_LABELS = { PENDING: '待入住', IN_PROGRESS: '住宿中', COMPLETED: '已完成' };
 const ERROR_MESSAGES = {
   ACTIVE_BOARDING_EXISTS: '寵物目前已有進行中的住宿',

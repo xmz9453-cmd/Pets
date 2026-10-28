@@ -1,12 +1,13 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 async function createOnboarding({ tokenHash, contractVersionId, staffId }, connection = getPool()) {
   const [result] = await connection.query(
-    `INSERT INTO onboardings (public_token_hash, contract_version_id, created_by_staff_id)
-     VALUES (?, ?, ?)`,
-    [tokenHash, contractVersionId, staffId],
+    `INSERT INTO onboardings (shop_id, public_token_hash, contract_version_id, created_by_staff_id)
+     VALUES (?, ?, ?, ?)`,
+    [getCurrentShopId(), tokenHash, contractVersionId, staffId],
   );
-  await connection.query('INSERT INTO onboarding_pets (onboarding_id) VALUES (?)', [result.insertId]);
+  await connection.query('INSERT INTO onboarding_pets (shop_id, onboarding_id) VALUES (?, ?)', [getCurrentShopId(), result.insertId]);
   return result.insertId;
 }
 
@@ -15,7 +16,7 @@ async function getByTokenHash(tokenHash, connection = getPool(), forUpdate = fal
     `SELECT o.*, op.id AS onboarding_pet_id, op.pet_data, op.resolution AS pet_resolution,
             op.matched_pet_id, op.candidates AS pet_candidates
      FROM onboardings o
-     INNER JOIN onboarding_pets op ON op.onboarding_id = o.id
+     INNER JOIN onboarding_pets op ON op.onboarding_id = o.id AND op.shop_id = o.shop_id
      WHERE o.public_token_hash = ?
      LIMIT 1${forUpdate ? ' FOR UPDATE' : ''}`,
     [tokenHash],
@@ -25,13 +26,13 @@ async function getByTokenHash(tokenHash, connection = getPool(), forUpdate = fal
 
 async function getPublicData(tokenHash) {
   const [rows] = await getPool().query(
-    `SELECT o.id, o.status, o.customer_data, o.appointment_data, o.customer_resolution,
+    `SELECT o.id, o.shop_id, o.status, o.customer_data, o.appointment_data, o.customer_resolution,
             o.created_at, o.expires_at, o.contract_version_id, o.matched_customer_id,
             op.pet_data, op.resolution AS pet_resolution, op.matched_pet_id,
             cv.version_label, cv.file_name, cv.mime_type, cv.file_size, cv.storage_path, cv.file_hash
      FROM onboardings o
-     INNER JOIN onboarding_pets op ON op.onboarding_id = o.id
-     INNER JOIN contract_versions cv ON cv.id = o.contract_version_id
+     INNER JOIN onboarding_pets op ON op.onboarding_id = o.id AND op.shop_id = o.shop_id
+     INNER JOIN contract_versions cv ON cv.id = o.contract_version_id AND cv.shop_id = o.shop_id
      WHERE o.public_token_hash = ?
      LIMIT 1`,
     [tokenHash],
@@ -41,12 +42,12 @@ async function getPublicData(tokenHash) {
 
 async function saveData(onboardingId, { customerData, petData, appointmentData }, connection = getPool()) {
   await connection.query(
-    'UPDATE onboardings SET customer_data = ?, appointment_data = ? WHERE id = ?',
-    [JSON.stringify(customerData), JSON.stringify(appointmentData), onboardingId],
+    'UPDATE onboardings SET customer_data = ?, appointment_data = ? WHERE id = ? AND shop_id = ?',
+    [JSON.stringify(customerData), JSON.stringify(appointmentData), onboardingId, getCurrentShopId()],
   );
   await connection.query(
-    'UPDATE onboarding_pets SET pet_data = ? WHERE onboarding_id = ?',
-    [JSON.stringify(petData), onboardingId],
+    'UPDATE onboarding_pets SET pet_data = ? WHERE onboarding_id = ? AND shop_id = ?',
+    [JSON.stringify(petData), onboardingId, getCurrentShopId()],
   );
 }
 
@@ -56,30 +57,30 @@ async function saveCandidates(onboardingId, field, candidates, connection = getP
     pet: 'candidates',
   };
   await connection.query(
-    `UPDATE ${field === 'customer' ? 'onboardings' : 'onboarding_pets'} SET ${columns[field]} = ? WHERE ${field === 'customer' ? 'id' : 'onboarding_id'} = ?`,
-    [JSON.stringify(candidates), onboardingId],
+    `UPDATE ${field === 'customer' ? 'onboardings' : 'onboarding_pets'} SET ${columns[field]} = ? WHERE ${field === 'customer' ? 'id' : 'onboarding_id'} = ? AND shop_id = ?`,
+    [JSON.stringify(candidates), onboardingId, getCurrentShopId()],
   );
 }
 
 async function setCustomerResolution(onboardingId, resolution, matchedId, connection = getPool()) {
   await connection.query(
-    'UPDATE onboardings SET customer_resolution = ?, matched_customer_id = ? WHERE id = ?',
-    [resolution, matchedId, onboardingId],
+    'UPDATE onboardings SET customer_resolution = ?, matched_customer_id = ? WHERE id = ? AND shop_id = ?',
+    [resolution, matchedId, onboardingId, getCurrentShopId()],
   );
 }
 
 async function setPetResolution(onboardingId, resolution, matchedId, connection = getPool()) {
   await connection.query(
-    'UPDATE onboarding_pets SET resolution = ?, matched_pet_id = ? WHERE onboarding_id = ?',
-    [resolution, matchedId, onboardingId],
+    'UPDATE onboarding_pets SET resolution = ?, matched_pet_id = ? WHERE onboarding_id = ? AND shop_id = ?',
+    [resolution, matchedId, onboardingId, getCurrentShopId()],
   );
 }
 
 async function expire(onboardingId, connection = getPool()) {
   await connection.query(
     `UPDATE onboardings SET status = 'EXPIRED'
-     WHERE id = ? AND status IN ('NOT_STARTED', 'IN_PROGRESS')`,
-    [onboardingId],
+     WHERE id = ? AND shop_id = ? AND status IN ('NOT_STARTED', 'IN_PROGRESS')`,
+    [onboardingId, getCurrentShopId()],
   );
 }
 

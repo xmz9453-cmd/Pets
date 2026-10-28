@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 const WEEKDAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 
@@ -36,34 +37,36 @@ function normalizeBusinessHour(row) {
 
 async function getShopSettings(connection = getPool()) {
   const [rows] = await connection.query(
-    'SELECT * FROM shop_settings ORDER BY id DESC LIMIT 1',
+    'SELECT * FROM shop_settings WHERE shop_id = ? ORDER BY id DESC LIMIT 1',
+    [getCurrentShopId()],
   );
   return normalizeShop(rows[0] || null);
 }
 
 async function createShopSettings(shop, connection = getPool()) {
   const [result] = await connection.query(
-    'INSERT INTO shop_settings (name, phone, address, email) VALUES (?, ?, ?, ?)',
-    [shop.name, shop.phone || null, shop.address || null, shop.email || null],
+    'INSERT INTO shop_settings (shop_id, name, phone, address, email) VALUES (?, ?, ?, ?, ?)',
+    [getCurrentShopId(), shop.name, shop.phone || null, shop.address || null, shop.email || null],
   );
 
-  const [rows] = await connection.query('SELECT * FROM shop_settings WHERE id = ? LIMIT 1', [result.insertId]);
+  const [rows] = await connection.query('SELECT * FROM shop_settings WHERE id = ? AND shop_id = ? LIMIT 1', [result.insertId, getCurrentShopId()]);
   return normalizeShop(rows[0] || null);
 }
 
 async function updateShopSettings(shopId, shop, connection = getPool()) {
   await connection.query(
-    'UPDATE shop_settings SET name = ?, phone = ?, address = ?, email = ? WHERE id = ?',
-    [shop.name, shop.phone || null, shop.address || null, shop.email || null, shopId],
+    'UPDATE shop_settings SET name = ?, phone = ?, address = ?, email = ? WHERE id = ? AND shop_id = ?',
+    [shop.name, shop.phone || null, shop.address || null, shop.email || null, shopId, getCurrentShopId()],
   );
 
-  const [rows] = await connection.query('SELECT * FROM shop_settings WHERE id = ? LIMIT 1', [shopId]);
+  const [rows] = await connection.query('SELECT * FROM shop_settings WHERE id = ? AND shop_id = ? LIMIT 1', [shopId, getCurrentShopId()]);
   return normalizeShop(rows[0] || null);
 }
 
 async function listBusinessHours(connection = getPool()) {
   const [rows] = await connection.query(
     `SELECT * FROM shop_business_hours
+     WHERE shop_id = ?
      ORDER BY CASE weekday
        WHEN 'MONDAY' THEN 1
        WHEN 'TUESDAY' THEN 2
@@ -74,6 +77,7 @@ async function listBusinessHours(connection = getPool()) {
        WHEN 'SUNDAY' THEN 7
        ELSE 8
      END ASC`,
+    [getCurrentShopId()],
   );
 
   return rows.map(normalizeBusinessHour);
@@ -82,8 +86,8 @@ async function listBusinessHours(connection = getPool()) {
 async function createDefaultBusinessHours(connection = getPool()) {
   for (const weekday of WEEKDAYS) {
     await connection.query(
-      'INSERT INTO shop_business_hours (weekday, is_closed, open_time, close_time) VALUES (?, TRUE, NULL, NULL)',
-      [weekday],
+      'INSERT INTO shop_business_hours (shop_id, weekday, is_closed, open_time, close_time) VALUES (?, ?, TRUE, NULL, NULL)',
+      [getCurrentShopId(), weekday],
     );
   }
 
@@ -100,8 +104,8 @@ async function ensureBusinessHoursComplete(connection = getPool()) {
     }
 
     await connection.query(
-      'INSERT INTO shop_business_hours (weekday, is_closed, open_time, close_time) VALUES (?, TRUE, NULL, NULL)',
-      [weekday],
+      'INSERT INTO shop_business_hours (shop_id, weekday, is_closed, open_time, close_time) VALUES (?, ?, TRUE, NULL, NULL)',
+      [getCurrentShopId(), weekday],
     );
   }
 
@@ -111,14 +115,15 @@ async function ensureBusinessHoursComplete(connection = getPool()) {
 async function upsertBusinessHours(hours, connection = getPool()) {
   for (const item of hours) {
     await connection.query(
-      `INSERT INTO shop_business_hours (weekday, is_closed, open_time, close_time)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO shop_business_hours (shop_id, weekday, is_closed, open_time, close_time)
+       VALUES (?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          is_closed = VALUES(is_closed),
          open_time = VALUES(open_time),
          close_time = VALUES(close_time),
          updated_at = CURRENT_TIMESTAMP`,
       [
+        getCurrentShopId(),
         item.weekday,
         item.is_closed ? 1 : 0,
         item.is_closed ? null : (item.open_time || null),

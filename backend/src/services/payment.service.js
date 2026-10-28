@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 const paymentRepository = require('../data/payment.repository');
 
 const VALID_METHODS = new Set(['CASH', 'CREDIT_CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT']);
@@ -13,7 +14,7 @@ async function refreshOrderPaymentStatus(order, connection) {
   const paidAmount = roundAmount(await paymentRepository.getPaidAmount(order.id, connection));
   const remainingAmount = roundAmount(Math.max(0, Number(order.total_amount) - paidAmount));
   const status = paidAmount >= Number(order.total_amount) ? 'PAID' : 'UNPAID';
-  await connection.query('UPDATE orders SET status = ? WHERE id = ?', [status, order.id]);
+  await connection.query('UPDATE orders SET status = ? WHERE id = ? AND shop_id = ?', [status, order.id, getCurrentShopId()]);
   return { paid_amount: paidAmount, remaining_amount: remainingAmount, payment_status: status };
 }
 
@@ -21,7 +22,7 @@ async function getPayments(orderId) {
   const parsedId = parseId(orderId);
   if (!parsedId) throw notFound('ORDER_NOT_FOUND', 'Order not found');
   const connection = getPool();
-  const [orders] = await connection.query('SELECT id, total_amount, status FROM orders WHERE id = ? LIMIT 1', [parsedId]);
+  const [orders] = await connection.query('SELECT id, total_amount, status FROM orders WHERE id = ? AND shop_id = ? LIMIT 1', [parsedId, getCurrentShopId()]);
   if (!orders[0]) throw notFound('ORDER_NOT_FOUND', 'Order not found');
   const paidAmount = roundAmount(await paymentRepository.getPaidAmount(parsedId, connection));
   return { payments: await paymentRepository.listPayments(parsedId, connection), summary: { order_total: Number(orders[0].total_amount), paid_amount: paidAmount, remaining_amount: roundAmount(Math.max(0, Number(orders[0].total_amount) - paidAmount)), payment_status: orders[0].status } };

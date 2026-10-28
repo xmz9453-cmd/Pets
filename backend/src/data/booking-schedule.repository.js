@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 function normalizeRule(row) {
   return {
@@ -31,7 +32,9 @@ function normalizeOverride(row) {
 async function listRules() {
   const [rows] = await getPool().query(
     `SELECT * FROM booking_schedule_rules
+     WHERE shop_id = ?
      ORDER BY species ASC, start_time ASC`,
+    [getCurrentShopId()],
   );
   return rows.map(normalizeRule);
 }
@@ -39,24 +42,26 @@ async function listRules() {
 async function listOverrides() {
   const [rows] = await getPool().query(
     `SELECT * FROM booking_schedule_overrides
+     WHERE shop_id = ?
      ORDER BY override_date ASC, species ASC, start_time ASC`,
+    [getCurrentShopId()],
   );
   return rows.map(normalizeOverride);
 }
 
 async function getRuleById(id) {
   const [rows] = await getPool().query(
-    'SELECT * FROM booking_schedule_rules WHERE id = ? LIMIT 1',
-    [id],
+    'SELECT * FROM booking_schedule_rules WHERE id = ? AND shop_id = ? LIMIT 1',
+    [id, getCurrentShopId()],
   );
   return rows[0] ? normalizeRule(rows[0]) : null;
 }
 
 async function createRule(rule) {
   const [result] = await getPool().query(
-    `INSERT INTO booking_schedule_rules (species, start_time, capacity, is_closed, status)
-     VALUES (?, ?, ?, ?, ?)`,
-    [rule.species, rule.start_time, rule.capacity, rule.is_closed, rule.status],
+    `INSERT INTO booking_schedule_rules (shop_id, species, start_time, capacity, is_closed, status)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [getCurrentShopId(), rule.species, rule.start_time, rule.capacity, rule.is_closed, rule.status],
   );
   return getRuleById(result.insertId);
 }
@@ -65,24 +70,24 @@ async function updateRule(id, rule) {
   await getPool().query(
     `UPDATE booking_schedule_rules
      SET species = ?, start_time = ?, capacity = ?, is_closed = ?, status = ?
-     WHERE id = ?`,
-    [rule.species, rule.start_time, rule.capacity, rule.is_closed, rule.status, id],
+     WHERE id = ? AND shop_id = ?`,
+    [rule.species, rule.start_time, rule.capacity, rule.is_closed, rule.status, id, getCurrentShopId()],
   );
   return getRuleById(id);
 }
 
 async function deleteRule(id) {
   const [result] = await getPool().query(
-    'DELETE FROM booking_schedule_rules WHERE id = ?',
-    [id],
+    'DELETE FROM booking_schedule_rules WHERE id = ? AND shop_id = ?',
+    [id, getCurrentShopId()],
   );
   return result.affectedRows > 0;
 }
 
 async function getOverrideById(id) {
   const [rows] = await getPool().query(
-    'SELECT * FROM booking_schedule_overrides WHERE id = ? LIMIT 1',
-    [id],
+    'SELECT * FROM booking_schedule_overrides WHERE id = ? AND shop_id = ? LIMIT 1',
+    [id, getCurrentShopId()],
   );
   return rows[0] ? normalizeOverride(rows[0]) : null;
 }
@@ -90,9 +95,9 @@ async function getOverrideById(id) {
 async function createOverride(override) {
   const [result] = await getPool().query(
     `INSERT INTO booking_schedule_overrides
-       (override_date, species, start_time, is_closed, capacity)
-     VALUES (?, ?, ?, ?, ?)`,
-    [override.override_date, override.species, override.start_time, override.is_closed, override.capacity],
+       (shop_id, override_date, species, start_time, is_closed, capacity)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [getCurrentShopId(), override.override_date, override.species, override.start_time, override.is_closed, override.capacity],
   );
   return getOverrideById(result.insertId);
 }
@@ -101,16 +106,16 @@ async function updateOverride(id, override) {
   await getPool().query(
     `UPDATE booking_schedule_overrides
      SET override_date = ?, species = ?, start_time = ?, is_closed = ?, capacity = ?
-     WHERE id = ?`,
-    [override.override_date, override.species, override.start_time, override.is_closed, override.capacity, id],
+     WHERE id = ? AND shop_id = ?`,
+    [override.override_date, override.species, override.start_time, override.is_closed, override.capacity, id, getCurrentShopId()],
   );
   return getOverrideById(id);
 }
 
 async function deleteOverride(id) {
   const [result] = await getPool().query(
-    'DELETE FROM booking_schedule_overrides WHERE id = ?',
-    [id],
+    'DELETE FROM booking_schedule_overrides WHERE id = ? AND shop_id = ?',
+    [id, getCurrentShopId()],
   );
   return result.affectedRows > 0;
 }

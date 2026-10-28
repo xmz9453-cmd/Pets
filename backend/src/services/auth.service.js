@@ -1,6 +1,8 @@
 const authRepository = require('../data/auth.repository');
 const { hashSessionToken, createSessionToken } = require('../utils/session-token');
 const { hashPassword, verifyPassword } = require('../utils/password');
+const shopsRepository = require('../data/shops.repository');
+const { setCurrentShopId } = require('../utils/shop-context');
 
 const SESSION_COOKIE_NAME = 'psop_session';
 const SESSION_TTL_DAYS = 7;
@@ -84,6 +86,10 @@ async function register(payload) {
     }, connection);
     if (isFirstUser) {
       await authRepository.replaceRolesForStaff(staffId, ['OWNER'], connection);
+      await shopsRepository.addMembership(staffId, 1, ['OWNER'], connection);
+      await connection.query('INSERT IGNORE INTO platform_shop_managers (staff_id) VALUES (?)', [staffId]);
+    } else {
+      await shopsRepository.addMembership(staffId, 1, [], connection);
     }
     await connection.commit();
     return {
@@ -93,6 +99,8 @@ async function register(payload) {
         display_name: values.displayName,
         status: 'ACTIVE',
         roles: isFirstUser ? ['OWNER'] : [],
+        shop_id: 1,
+        is_platform_shop_manager: isFirstUser,
       },
     };
   } catch (error) {
@@ -114,8 +122,8 @@ async function register(payload) {
   }
 }
 
-async function listStaff() {
-  return (await authRepository.listStaffWithRoles()).map(toAccountStatus);
+async function listStaff(shopId) {
+  return (await shopsRepository.listStaffWithRolesAtShop(shopId)).map(toAccountStatus);
 }
 
 async function updateStaffStatus(actor, staffId, requestedStatus) {
@@ -170,21 +178,21 @@ async function updateStaffStatus(actor, staffId, requestedStatus) {
   }
 }
 
-async function updateStaffRoles(staffId, roles) {
+async function updateStaffRoles(staffId, roles, shopId) {
   const allowedRoles = ['OWNER', 'FRONT_DESK', 'GROOMER'];
   const normalizedRoles = Array.isArray(roles) ? [...new Set(roles)] : null;
   if (!normalizedRoles || normalizedRoles.some((role) => !allowedRoles.includes(role))) {
     throw createValidationError({ roles: 'Roles must be OWNER, FRONT_DESK, or GROOMER' });
   }
-  if (!Number.isInteger(Number(staffId))) {
+  if (!Number.isInteger(Number(staffId)) || !Number.isInteger(Number(shopId))) {
     throw createValidationError({ staff_id: 'Staff id is invalid' });
   }
 
   const connection = await authRepository.getPool().getConnection();
   try {
     await connection.beginTransaction();
-    await authRepository.replaceRolesForStaff(Number(staffId), normalizedRoles, connection);
-    const staff = (await authRepository.listStaffWithRoles(connection)).find((item) => item.id === Number(staffId));
+    await shopsRepository.addMembership(Number(staffId), Number(shopId), normalizedRoles, connection);
+    const staff = (await shopsRepository.listStaffWithRolesAtShop(Number(shopId), connection)).find((item) => item.id === Number(staffId));
     if (!staff) {
       const error = new Error('Staff not found');
       error.statusCode = 404;
@@ -200,7 +208,7 @@ async function updateStaffRoles(staffId, roles) {
   }
 }
 
-async function login(username, password) {
+async function login(username, password, requestedShopId) {
   if (!username || !password) {
     throw createAuthError('Invalid username or password');
   }
@@ -228,14 +236,28 @@ async function login(username, password) {
     expiresAt,
   });
 
-  const roles = await authRepository.listRolesForStaff(staff.id);
+  const isPlatformShopManager = await shopsRepository.isPlatformShopManager(staff.id);
+  const shops = isPlatformShopManager
+    ? await shopsRepository.listAllShops()
+    : await shopsRepository.listShopsForStaff(staff.id);
+  if (!shops.length) throw createAuthError();
+  const selectedShop = shops.find((shop) => shop.id === Number(requestedShopId)) || shops[0];
+  setCurrentShopId(selectedShop.id);
+  const roles = isPlatformShopManager
+    ? ['OWNER']
+    : await shopsRepository.listRolesForStaffAtShop(staff.id, selectedShop.id);
   return {
     token,
-    staff: toStaffContext(staff, roles),
+    staff: {
+      ...toStaffContext(staff, roles),
+      shop_id: selectedShop.id,
+      shops,
+      is_platform_shop_manager: isPlatformShopManager,
+    },
   };
 }
 
-async function authenticateToken(token) {
+async function authenticateToken(token, requestedShopId) {
   if (!token) {
     throw createAuthError();
   }
@@ -254,8 +276,23 @@ async function authenticateToken(token) {
     throw createAuthError();
   }
 
-  const roles = await authRepository.listRolesForStaff(staff.id);
-  return toStaffContext(staff, roles);
+  const isPlatformShopManager = await shopsRepository.isPlatformShopManager(staff.id);
+  const shops = isPlatformShopManager
+    ? await shopsRepository.listAllShops()
+    : await shopsRepository.listShopsForStaff(staff.id);
+  const selectedShop = shops.find((shop) => shop.id === Number(requestedShopId))
+    || (!requestedShopId ? shops[0] : null);
+  if (!selectedShop) throw createAuthError();
+  setCurrentShopId(selectedShop.id);
+  const roles = isPlatformShopManager
+    ? ['OWNER']
+    : await shopsRepository.listRolesForStaffAtShop(staff.id, selectedShop.id);
+  return {
+    ...toStaffContext(staff, roles),
+    shop_id: selectedShop.id,
+    shops,
+    is_platform_shop_manager: isPlatformShopManager,
+  };
 }
 
 async function logout(token) {

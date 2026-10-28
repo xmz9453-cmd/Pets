@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { getStaffAccounts, API_BASE_URL } from '../api/client';
+import { getStaffAccounts, API_BASE_URL, fetchWithShop as fetch } from '../api/client';
 import { getUserFacingErrorMessage } from '../utils/error-message';
 
 function localDateInputValue(date = new Date()) {

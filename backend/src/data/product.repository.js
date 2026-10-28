@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 function normalize(row) {
   if (!row) return null;
@@ -6,8 +7,8 @@ function normalize(row) {
 }
 
 async function listProducts(filters = {}) {
-  const conditions = [];
-  const params = [];
+  const conditions = ['shop_id = ?'];
+  const params = [getCurrentShopId()];
   if (filters.status && filters.status !== 'ALL') { conditions.push('status = ?'); params.push(filters.status); }
   if (filters.search) { conditions.push('name LIKE ?'); params.push(`%${filters.search}%`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -16,13 +17,13 @@ async function listProducts(filters = {}) {
 }
 
 async function getProductById(id, connection = getPool()) {
-  const [rows] = await connection.query('SELECT * FROM products WHERE id = ? LIMIT 1', [id]);
+  const [rows] = await connection.query('SELECT * FROM products WHERE id = ? AND shop_id = ? LIMIT 1', [id, getCurrentShopId()]);
   return normalize(rows[0]);
 }
 
 async function findByName(name, excludeId = null) {
-  const params = [name];
-  let sql = 'SELECT * FROM products WHERE name = ?';
+  const params = [name, getCurrentShopId()];
+  let sql = 'SELECT * FROM products WHERE name = ? AND shop_id = ?';
   if (excludeId !== null) { sql += ' AND id <> ?'; params.push(excludeId); }
   const [rows] = await getPool().query(`${sql} LIMIT 1`, params);
   return normalize(rows[0]);
@@ -30,8 +31,8 @@ async function findByName(name, excludeId = null) {
 
 async function createProduct(payload) {
   const [result] = await getPool().query(
-    'INSERT INTO products (name, description, price, unit, species, status) VALUES (?, ?, ?, ?, ?, ?)',
-    [payload.name, payload.description || null, payload.price, payload.unit, payload.species, payload.status || 'ACTIVE'],
+    'INSERT INTO products (shop_id, name, description, price, unit, species, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [getCurrentShopId(), payload.name, payload.description || null, payload.price, payload.unit, payload.species, payload.status || 'ACTIVE'],
   );
   return getProductById(result.insertId);
 }
@@ -42,12 +43,12 @@ async function updateProduct(id, payload) {
   for (const key of ['name', 'description', 'price', 'unit', 'species', 'status']) {
     if (payload[key] !== undefined) { fields.push(`${key} = ?`); values.push(payload[key] === '' ? null : payload[key]); }
   }
-  if (fields.length) { values.push(id); await getPool().query(`UPDATE products SET ${fields.join(', ')} WHERE id = ?`, values); }
+  if (fields.length) { values.push(id, getCurrentShopId()); await getPool().query(`UPDATE products SET ${fields.join(', ')} WHERE id = ? AND shop_id = ?`, values); }
   return getProductById(id);
 }
 
 async function updateProductStatus(id, status) {
-  await getPool().query('UPDATE products SET status = ? WHERE id = ?', [status, id]);
+  await getPool().query('UPDATE products SET status = ? WHERE id = ? AND shop_id = ?', [status, id, getCurrentShopId()]);
   return getProductById(id);
 }
 

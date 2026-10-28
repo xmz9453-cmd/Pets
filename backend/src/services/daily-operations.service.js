@@ -236,8 +236,10 @@ async function updateStaffAssignment(id, staffId, userStaff) {
     // Verify staff exists
     if (staffId) {
       const [staffRows] = await connection.query(
-        'SELECT id FROM staff WHERE id = ? AND status = ? LIMIT 1',
-        [staffId, 'ACTIVE']
+        `SELECT st.id FROM staff st
+         INNER JOIN staff_shop_memberships m ON m.staff_id = st.id
+         WHERE st.id = ? AND st.status = ? AND m.shop_id = ? LIMIT 1`,
+        [staffId, 'ACTIVE', require('../utils/shop-context').getCurrentShopId()]
       );
       if (!staffRows || staffRows.length === 0) {
         throw createValidationError({

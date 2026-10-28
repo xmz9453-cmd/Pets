@@ -1,5 +1,7 @@
 const shopSettingsRepository = require('../data/shop-settings.repository');
+const shopsRepository = require('../data/shops.repository');
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 const { resetOperationalDataForApplication } = require('../../../database/scripts/reset-operational-data');
 
 const WEEKDAYS = shopSettingsRepository.WEEKDAYS;
@@ -177,6 +179,8 @@ async function updateShopSettings(payload = {}) {
       shop = await shopSettingsRepository.updateShopSettings(existing.id, normalizedShop, connection);
     }
 
+    await connection.query('UPDATE shops SET name = ? WHERE id = ?', [normalizedShop.name, getCurrentShopId()]);
+
     await shopSettingsRepository.upsertBusinessHours(normalizedBusinessHours, connection);
 
     const complete = await shopSettingsRepository.getShopSettingsWithHours(connection);
@@ -187,11 +191,30 @@ async function updateShopSettings(payload = {}) {
   });
 }
 
-async function resetOperationalData() {
-  await resetOperationalDataForApplication();
+async function resetOperationalData({ confirmation, expectedShopId } = {}) {
+  const shopId = getCurrentShopId();
+  if (!shopId || Number(expectedShopId) !== shopId) {
+    const error = new Error('目前選取的店家已變更，資料未清除。請重新開啟清除流程。');
+    error.statusCode = 409;
+    error.code = 'RESET_SHOP_CONTEXT_CHANGED';
+    throw error;
+  }
+  const shop = await shopsRepository.getShopById(shopId);
+  if (!shop || typeof confirmation !== 'string' || confirmation.trim() !== shop.name) {
+    const error = new Error('店家名稱確認不符，資料未清除。');
+    error.statusCode = 400;
+    error.code = 'RESET_CONFIRMATION_MISMATCH';
+    throw error;
+  }
+  const result = await resetOperationalDataForApplication({
+    shopId,
+    confirmation,
+  });
   return {
     reset: true,
-    message: '測試／營運資料已清除。',
+    shop_id: result.shop_id,
+    reset_counts: result.resetCounts,
+    message: '目前店家的測試／營運資料已清除；店家設定、員工資料與已簽署的合約紀錄均保留。',
   };
 }
 

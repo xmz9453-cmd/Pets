@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 const EDITABLE_FIELDS = {
   version_label: 'version_label',
@@ -22,7 +23,9 @@ async function listContractVersions(connection = getPool()) {
     `SELECT id, version_label, status, is_current, file_name, mime_type,
             file_size, storage_path, file_hash, created_at, updated_at
      FROM contract_versions
+     WHERE shop_id = ?
      ORDER BY created_at DESC, id DESC`,
+    [getCurrentShopId()],
   );
 
   return rows.map(normalizeContractVersion);
@@ -33,9 +36,9 @@ async function getContractVersionById(versionId, connection = getPool(), forUpda
     `SELECT id, version_label, status, is_current, file_name, mime_type,
             file_size, storage_path, file_hash, created_at, updated_at
      FROM contract_versions
-     WHERE id = ?
+     WHERE id = ? AND shop_id = ?
      LIMIT 1${forUpdate ? ' FOR UPDATE' : ''}`,
-    [versionId],
+    [versionId, getCurrentShopId()],
   );
 
   return normalizeContractVersion(rows[0] || null);
@@ -44,9 +47,10 @@ async function getContractVersionById(versionId, connection = getPool(), forUpda
 async function createDraft(payload, connection = getPool()) {
   const [result] = await connection.query(
     `INSERT INTO contract_versions
-       (version_label, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
-     VALUES (?, 'DRAFT', FALSE, ?, ?, ?, ?, ?)`,
+       (shop_id, version_label, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
+     VALUES (?, ?, 'DRAFT', FALSE, ?, ?, ?, ?, ?)`,
     [
+      getCurrentShopId(),
       payload.version_label,
       payload.file_name ?? null,
       payload.mime_type ?? null,
@@ -72,11 +76,11 @@ async function updateDraft(versionId, patch, connection = getPool()) {
   }
 
   if (fields.length) {
-    values.push(versionId);
+    values.push(versionId, getCurrentShopId());
     await connection.query(
       `UPDATE contract_versions
        SET ${fields.join(', ')}
-       WHERE id = ? AND status = 'DRAFT' AND is_current = FALSE`,
+       WHERE id = ? AND shop_id = ? AND status = 'DRAFT' AND is_current = FALSE`,
       values,
     );
   }
@@ -88,7 +92,7 @@ async function updateDraftPdf(versionId, metadata, connection) {
   const [result] = await connection.query(
     `UPDATE contract_versions
      SET file_name = ?, mime_type = ?, file_size = ?, storage_path = ?, file_hash = ?
-     WHERE id = ? AND status = 'DRAFT' AND is_current = FALSE`,
+     WHERE id = ? AND shop_id = ? AND status = 'DRAFT' AND is_current = FALSE`,
     [
       metadata.file_name,
       metadata.mime_type,
@@ -96,6 +100,7 @@ async function updateDraftPdf(versionId, metadata, connection) {
       metadata.storage_path,
       metadata.file_hash,
       versionId,
+      getCurrentShopId(),
     ],
   );
 
@@ -106,8 +111,8 @@ async function publishDraft(versionId, connection) {
   const [result] = await connection.query(
     `UPDATE contract_versions
      SET status = 'PUBLISHED'
-     WHERE id = ? AND status = 'DRAFT' AND is_current = FALSE`,
-    [versionId],
+     WHERE id = ? AND shop_id = ? AND status = 'DRAFT' AND is_current = FALSE`,
+    [versionId, getCurrentShopId()],
   );
 
   return result.affectedRows === 1;
@@ -115,7 +120,8 @@ async function publishDraft(versionId, connection) {
 
 async function clearCurrent(connection) {
   await connection.query(
-    'UPDATE contract_versions SET is_current = FALSE WHERE is_current = TRUE',
+    'UPDATE contract_versions SET is_current = FALSE WHERE is_current = TRUE AND shop_id = ?',
+    [getCurrentShopId()],
   );
 }
 
@@ -123,8 +129,8 @@ async function markCurrent(versionId, connection) {
   const [result] = await connection.query(
     `UPDATE contract_versions
      SET is_current = TRUE
-     WHERE id = ? AND status = 'PUBLISHED'`,
-    [versionId],
+     WHERE id = ? AND shop_id = ? AND status = 'PUBLISHED'`,
+    [versionId, getCurrentShopId()],
   );
 
   return result.affectedRows === 1;

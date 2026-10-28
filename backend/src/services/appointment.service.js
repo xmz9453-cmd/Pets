@@ -3,6 +3,7 @@ const dailyOperationsRepository = require('../data/daily-operations.repository')
 const petRepository = require('../data/pet.repository');
 const { isSpeciesCompatible } = require('./service.service');
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 const VALID_STATUSES = new Set(['PENDING', 'SCHEDULED', 'CONFIRMED', 'CANCELLED']);
 
@@ -129,8 +130,8 @@ async function validatePetEntries(customerId, petEntries = []) {
     }
 
     const relationship = await getPool().query(
-      'SELECT 1 FROM pet_customer_relationships WHERE pet_id = ? AND customer_id = ? LIMIT 1',
-      [petId, customerId],
+      'SELECT 1 FROM pet_customer_relationships WHERE pet_id = ? AND customer_id = ? AND shop_id = ? LIMIT 1',
+      [petId, customerId, getCurrentShopId()],
     );
 
     if (!relationship[0] || relationship[0].length === 0) {
@@ -386,8 +387,8 @@ async function updateAppointment(appointmentId, payload = {}) {
     for (let index = 0; index < existingPetEntries.length; index += 1) {
       const petId = Number(existingPetEntries[index].pet_id ?? existingPetEntries[index].id);
       const [relationship] = await getPool().query(
-        'SELECT 1 FROM pet_customer_relationships WHERE pet_id = ? AND customer_id = ? LIMIT 1',
-        [petId, targetCustomerId],
+        'SELECT 1 FROM pet_customer_relationships WHERE pet_id = ? AND customer_id = ? AND shop_id = ? LIMIT 1',
+        [petId, targetCustomerId, getCurrentShopId()],
       );
       if (!relationship.length) {
         throw createValidationError({ pets: 'Appointment pets must belong to the selected customer' });

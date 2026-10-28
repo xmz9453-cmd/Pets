@@ -17,10 +17,13 @@ const reportRoutes = require('./routes/report.routes');
 const contractVersionRoutes = require('./routes/contract-version.routes');
 const onboardingRoutes = require('./routes/onboarding.routes');
 const publicBookingRoutes = require('./routes/public-booking.routes');
+const shopsRoutes = require('./routes/shops.routes');
 const { errorHandler } = require('./middleware/error-handler');
+const { requestContext } = require('./utils/shop-context');
 
 const app = express();
 
+app.use(requestContext);
 app.use(cors({
   origin: true,
   credentials: true,
@@ -30,6 +33,7 @@ app.use(express.json());
 
 app.use('/api', healthRoutes);
 app.use('/api', authRoutes);
+app.use('/api', shopsRoutes);
 app.use('/api', petRoutes);
 app.use('/api', customerRoutes);
 app.use('/api', appointmentRoutes);

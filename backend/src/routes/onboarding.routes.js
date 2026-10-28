@@ -2,11 +2,12 @@ const express = require('express');
 const onboardingController = require('../controllers/onboarding.controller');
 const { requireAuthentication } = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/authorize');
+const { publicShopContext } = require('../middleware/public-shop-context');
 
 const router = express.Router();
 
 router.post('/onboardings', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), onboardingController.create);
-router.post('/public/onboardings', onboardingController.createPublic);
+router.post('/public/onboardings', publicShopContext, onboardingController.createPublic);
 router.get('/public/onboardings/:token', onboardingController.getPublic);
 router.get('/public/onboardings/:token/contract.pdf', onboardingController.getContractPdf);
 router.put('/public/onboardings/:token', onboardingController.autosave);

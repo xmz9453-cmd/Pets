@@ -3,6 +3,7 @@ const customerRepository = require('../data/customer.repository');
 const bookingSessionRepository = require('../data/booking-session.repository');
 const petRepository = require('../data/pet.repository');
 const serviceRepository = require('../data/service.repository');
+const { setCurrentShopId } = require('../utils/shop-context');
 
 const SESSION_LIFETIME_MILLISECONDS = 2 * 60 * 60 * 1000;
 const BOOKING_SESSION_TOKEN_PATTERN = /^[a-f0-9]{64}$/;
@@ -69,6 +70,7 @@ async function listPetsForBookingSession(token) {
   if (!session) {
     throw createInvalidSessionError();
   }
+  setCurrentShopId(session.shop_id);
 
   return { pets: await petRepository.listActivePetsByCustomerId(session.customer_id) };
 }
@@ -83,6 +85,7 @@ async function listServicesForBookingSession(token, petId) {
   if (!session) {
     throw createInvalidSessionError();
   }
+  setCurrentShopId(session.shop_id);
 
   const parsedPetId = Number(petId);
   if (!Number.isInteger(parsedPetId) || parsedPetId <= 0) {

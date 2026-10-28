@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 const customerRepository = require('../data/customer.repository');
 const productRepository = require('../data/product.repository');
 const serviceRepository = require('../data/service.repository');
@@ -51,7 +52,7 @@ async function validateOrderSource(payload, customerId, connection) {
     return { sourceType, appointmentId: null };
   }
   if (!appointmentId) throw validation({ appointment_id: 'Appointment is required for appointment orders' });
-  const [appointments] = await connection.query('SELECT id, customer_id, status FROM appointments WHERE id = ? LIMIT 1', [appointmentId]);
+  const [appointments] = await connection.query('SELECT id, customer_id, status FROM appointments WHERE id = ? AND shop_id = ? LIMIT 1', [appointmentId, getCurrentShopId()]);
   const appointment = appointments[0];
   if (!appointment) throw validation({ appointment_id: 'Appointment is invalid' });
   if (Number(appointment.customer_id) !== customerId) throw validation({ appointment_id: 'Appointment does not belong to customer' });
@@ -62,8 +63,8 @@ async function validateAppointmentServiceItems(appointmentId, items, connection)
   const serviceItems = (items || []).filter((item) => id(item?.service_id));
 
   const [operationRows] = await connection.query(
-    "SELECT id FROM daily_operations WHERE appointment_id = ? AND status = 'COMPLETED' LIMIT 1",
-    [appointmentId],
+    "SELECT id FROM daily_operations WHERE appointment_id = ? AND shop_id = ? AND status = 'COMPLETED' LIMIT 1",
+    [appointmentId, getCurrentShopId()],
   );
   if (!operationRows.length) {
     throw validation({ items: 'Daily operation must be completed before billing' });
@@ -77,15 +78,15 @@ async function validateAppointmentServiceItems(appointmentId, items, connection)
     const [petRows] = await connection.query(
       `SELECT p.species
        FROM appointment_pets ap
-       INNER JOIN pets p ON p.id = ap.pet_id
-       WHERE ap.appointment_id = ? AND ap.pet_id = ?
+       INNER JOIN pets p ON p.id = ap.pet_id AND p.shop_id = ap.shop_id
+       WHERE ap.appointment_id = ? AND ap.pet_id = ? AND ap.shop_id = ?
        LIMIT 1`,
-      [appointmentId, petId],
+      [appointmentId, petId, getCurrentShopId()],
     );
     if (!petRows.length) throw validation({ items: 'Pet is not linked to this appointment' });
     const [serviceRows] = await connection.query(
-      'SELECT id, type, status, species FROM services WHERE id = ? LIMIT 1',
-      [serviceId],
+      'SELECT id, type, status, species FROM services WHERE id = ? AND shop_id = ? LIMIT 1',
+      [serviceId, getCurrentShopId()],
     );
     const service = serviceRows[0];
     if (!service || service.status !== 'ACTIVE') {
@@ -100,25 +101,25 @@ async function validateAppointmentServiceItems(appointmentId, items, connection)
       [completedRows] = await connection.query(
         `SELECT 1
          FROM appointment_pets ap
-         INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
-         INNER JOIN daily_operations d ON d.appointment_id = ap.appointment_id
-         INNER JOIN groomings g ON g.daily_operation_id = d.id AND g.pet_id = ap.pet_id
-         WHERE ap.appointment_id = ?
+         INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id AND aps.shop_id = ap.shop_id
+         INNER JOIN daily_operations d ON d.appointment_id = ap.appointment_id AND d.shop_id = ap.shop_id
+         INNER JOIN groomings g ON g.daily_operation_id = d.id AND g.pet_id = ap.pet_id AND g.shop_id = d.shop_id
+         WHERE ap.appointment_id = ? AND ap.shop_id = ?
            AND ap.pet_id = ?
            AND d.status = 'COMPLETED'
            AND g.before_condition IS NOT NULL
            AND g.actual_grooming_content IS NOT NULL
            AND g.grooming_result IS NOT NULL
          LIMIT 1`,
-        [appointmentId, petId],
+        [appointmentId, getCurrentShopId(), petId],
       );
     } else if (service.type === 'BOARDING') {
       [completedRows] = await connection.query(
         `SELECT 1
          FROM boardings b
-         WHERE b.appointment_id = ? AND b.pet_id = ? AND b.status = 'COMPLETED'
+         WHERE b.appointment_id = ? AND b.pet_id = ? AND b.shop_id = ? AND b.status = 'COMPLETED'
          LIMIT 1`,
-        [appointmentId, petId],
+        [appointmentId, petId, getCurrentShopId()],
       );
     } else {
       throw validation({ items: 'Appointment source orders only support grooming or boarding services' });
@@ -131,11 +132,11 @@ async function validateAppointmentServiceItems(appointmentId, items, connection)
     const [billedRows] = await connection.query(
       `SELECT 1
        FROM order_items oi
-       INNER JOIN orders o ON o.id = oi.order_id
-       WHERE o.appointment_id = ? AND o.source_type = 'APPOINTMENT'
+       INNER JOIN orders o ON o.id = oi.order_id AND o.shop_id = oi.shop_id
+       WHERE o.appointment_id = ? AND o.shop_id = ? AND o.source_type = 'APPOINTMENT'
          AND oi.service_id = ? AND oi.pet_id = ? AND oi.item_type = 'SERVICE'
        LIMIT 1`,
-      [appointmentId, serviceId, petId],
+      [appointmentId, getCurrentShopId(), serviceId, petId],
     );
     if (billedRows.length) {
       throw conflict('SERVICE_ALREADY_BILLED', 'Completed appointment service has already been billed');

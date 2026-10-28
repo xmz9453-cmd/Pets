@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import '../styles/globals.css';
-import { getCurrentStaff, getShopIdentity, logout } from '../api/client';
+import { getCurrentStaff, logout } from '../api/client';
 
 const NAV_ITEMS = [
   { href: '/customers', label: '客戶', icon: 'user', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
@@ -39,6 +39,8 @@ function AppIcon({ name }) {
 function AppShell({ Component, pageProps }) {
   const router = useRouter();
   const [staff, setStaff] = useState(null);
+  const [shops, setShops] = useState([]);
+  const [selectedShopId, setSelectedShopId] = useState('');
   const [shopName, setShopName] = useState('店家');
   const [error, setError] = useState('');
 
@@ -64,11 +66,11 @@ function AppShell({ Component, pageProps }) {
           return;
         }
 
-        const settings = currentStaff.staff.roles.includes('OWNER')
-          ? await getShopIdentity()
-          : await getShopIdentity();
         setStaff(currentStaff.staff);
-        setShopName(settings?.shop?.name || '店家');
+        const availableShops = currentStaff.staff.shops || [];
+        setShops(availableShops);
+        setSelectedShopId(String(currentStaff.staff.shop_id || ''));
+        setShopName(availableShops.find((shop) => Number(shop.id) === Number(currentStaff.staff.shop_id))?.name || '店家');
       } catch (sessionError) {
         setStaff(null);
       }
@@ -89,12 +91,27 @@ function AppShell({ Component, pageProps }) {
     }
   }
 
+  function handleShopChange(event) {
+    const nextShopId = event.target.value;
+    window.localStorage.setItem('psop.currentShopId', nextShopId);
+    setSelectedShopId(nextShopId);
+    window.location.reload();
+  }
+
   return (
     <>
       {shouldShowNav ? (
         <div className="app-shell">
           <aside className="app-sidebar">
             <div className="app-sidebar-brand">{shopName}</div>
+            {staff?.is_platform_shop_manager && shops.length > 1 ? (
+              <div className="px-3 pb-3">
+                <label className="form-label small mb-1" htmlFor="current-shop">目前店家</label>
+                <select id="current-shop" className="form-select form-select-sm" value={selectedShopId} onChange={handleShopChange}>
+                  {shops.map((shop) => <option key={shop.id} value={shop.id}>{shop.name}</option>)}
+                </select>
+              </div>
+            ) : null}
             <nav className="app-sidebar-nav" aria-label="主要導覽">
               {visibleNavItems.map((item) => {
                 const isActive = router.pathname === item.href || router.pathname.startsWith(`${item.href}/`);
@@ -118,6 +135,18 @@ function AppShell({ Component, pageProps }) {
                 >
                   <AppIcon name="settings" />
                   店家設定
+                </a>
+              ) : null}
+              {staff?.is_platform_shop_manager ? (
+                <a href="/shops" className={`app-nav-link${router.pathname === '/shops' ? ' active' : ''}`} aria-current={router.pathname === '/shops' ? 'page' : undefined}>
+                  <AppIcon name="settings" />
+                  多店管理
+                </a>
+              ) : null}
+              {staff?.is_platform_shop_manager ? (
+                <a href="/system-maintenance" className={`app-nav-link${router.pathname === '/system-maintenance' ? ' active' : ''}`} aria-current={router.pathname === '/system-maintenance' ? 'page' : undefined}>
+                  <AppIcon name="settings" />
+                  系統管理
                 </a>
               ) : null}
             </nav>

@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 function normalizeService(row) {
   if (!row) return null;
@@ -12,8 +13,8 @@ function normalizeService(row) {
 }
 
 async function listServices(filters = {}) {
-  const conditions = [];
-  const params = [];
+  const conditions = ['shop_id = ?'];
+  const params = [getCurrentShopId()];
   if (filters.search) {
     conditions.push('name LIKE ?');
     params.push(`%${filters.search}%`);
@@ -35,10 +36,10 @@ async function listActiveServicesBySpecies(species, connection = getPool()) {
   const [rows] = await connection.query(
     `SELECT id, name, type, price, unit
      FROM services
-     WHERE status = 'ACTIVE'
+     WHERE shop_id = ? AND status = 'ACTIVE'
        AND (species = 'BOTH' OR species = ?)
      ORDER BY sort_order ASC, name ASC`,
-    [species],
+    [getCurrentShopId(), species],
   );
 
   return rows.map((row) => ({
@@ -51,13 +52,13 @@ async function listActiveServicesBySpecies(species, connection = getPool()) {
 }
 
 async function getServiceById(id, connection = getPool()) {
-  const [rows] = await connection.query('SELECT * FROM services WHERE id = ? LIMIT 1', [id]);
+  const [rows] = await connection.query('SELECT * FROM services WHERE id = ? AND shop_id = ? LIMIT 1', [id, getCurrentShopId()]);
   return normalizeService(rows[0]);
 }
 
 async function findByName(name, species, excludeId = null) {
-  const params = [name, species];
-  let sql = 'SELECT * FROM services WHERE name = ? AND species = ?';
+  const params = [name, species, getCurrentShopId()];
+  let sql = 'SELECT * FROM services WHERE name = ? AND species = ? AND shop_id = ?';
   if (excludeId !== null) {
     sql += ' AND id <> ?';
     params.push(excludeId);
@@ -68,9 +69,9 @@ async function findByName(name, species, excludeId = null) {
 
 async function createService(payload) {
   const [result] = await getPool().query(
-    `INSERT INTO services (name, type, description, price, unit, species, duration_minutes, sort_order, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
-    [payload.name, payload.type, payload.description || null, payload.price, payload.unit, payload.species, payload.duration_minutes, payload.sort_order],
+    `INSERT INTO services (shop_id, name, type, description, price, unit, species, duration_minutes, sort_order, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
+    [getCurrentShopId(), payload.name, payload.type, payload.description || null, payload.price, payload.unit, payload.species, payload.duration_minutes, payload.sort_order],
   );
   return getServiceById(result.insertId);
 }
@@ -85,19 +86,19 @@ async function updateService(id, payload) {
     }
   }
   if (fields.length) {
-    values.push(id);
-    await getPool().query(`UPDATE services SET ${fields.join(', ')} WHERE id = ?`, values);
+    values.push(id, getCurrentShopId());
+    await getPool().query(`UPDATE services SET ${fields.join(', ')} WHERE id = ? AND shop_id = ?`, values);
   }
   return getServiceById(id);
 }
 
 async function countHistoricalUsage(id) {
-  const [rows] = await getPool().query('SELECT COUNT(*) AS total FROM appointment_pet_services WHERE service_id = ?', [id]);
+  const [rows] = await getPool().query('SELECT COUNT(*) AS total FROM appointment_pet_services WHERE service_id = ? AND shop_id = ?', [id, getCurrentShopId()]);
   return Number(rows[0].total);
 }
 
 async function deleteService(id) {
-  await getPool().query('DELETE FROM services WHERE id = ?', [id]);
+  await getPool().query('DELETE FROM services WHERE id = ? AND shop_id = ?', [id, getCurrentShopId()]);
 }
 
 module.exports = { countHistoricalUsage, createService, deleteService, findByName, getServiceById, listActiveServicesBySpecies, listServices, updateService };

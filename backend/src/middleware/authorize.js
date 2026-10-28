@@ -20,6 +20,11 @@ function requireRole(allowedRoles) {
   };
 }
 
-module.exports = {
-  requireRole,
-};
+function requirePlatformShopManager(req, res, next) {
+  if (req.auth?.staff?.is_platform_shop_manager) return next();
+  const error = new Error('Forbidden');
+  error.statusCode = 403;
+  return next(error);
+}
+
+module.exports = { requirePlatformShopManager, requireRole };

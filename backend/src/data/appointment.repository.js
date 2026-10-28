@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 function toIsoDateString(value) {
   if (!value) {
@@ -46,8 +47,8 @@ async function listAppointments(filters = {}) {
     limit = 20,
   } = filters;
 
-  const conditions = [];
-  const params = [];
+  const conditions = ['a.shop_id = ?'];
+  const params = [getCurrentShopId()];
 
   if (status && status !== 'ALL') {
     conditions.push('a.status = ?');
@@ -71,8 +72,8 @@ async function listAppointments(filters = {}) {
     `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone,
             COUNT(ap.id) AS pet_count
      FROM appointments a
-     LEFT JOIN customers c ON c.id = a.customer_id
-     LEFT JOIN appointment_pets ap ON ap.appointment_id = a.id
+     LEFT JOIN customers c ON c.id = a.customer_id AND c.shop_id = a.shop_id
+     LEFT JOIN appointment_pets ap ON ap.appointment_id = a.id AND ap.shop_id = a.shop_id
      ${whereClause}
      GROUP BY a.id, c.name, c.phone
      ORDER BY a.appointment_date DESC, a.appointment_time DESC
@@ -99,10 +100,10 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
   const [rows] = await connection.query(
     `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone
      FROM appointments a
-     LEFT JOIN customers c ON c.id = a.customer_id
-     WHERE a.id = ?
+     LEFT JOIN customers c ON c.id = a.customer_id AND c.shop_id = a.shop_id
+     WHERE a.id = ? AND a.shop_id = ?
      LIMIT 1`,
-    [appointmentId],
+    [appointmentId, getCurrentShopId()],
   );
 
   if (!rows[0]) {
@@ -113,10 +114,10 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
   const [petRows] = await connection.query(
     `SELECT ap.id AS appointment_pet_id, ap.pet_id, p.name AS pet_name, p.species, p.gender, p.status AS pet_status
      FROM appointment_pets ap
-     INNER JOIN pets p ON p.id = ap.pet_id
-     WHERE ap.appointment_id = ?
+     INNER JOIN pets p ON p.id = ap.pet_id AND p.shop_id = ap.shop_id
+     WHERE ap.appointment_id = ? AND ap.shop_id = ?
      ORDER BY ap.id ASC`,
-    [appointmentId],
+    [appointmentId, getCurrentShopId()],
   );
 
   const appointmentPetIds = petRows.map((row) => Number(row.appointment_pet_id));
@@ -127,10 +128,10 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
     [serviceRows] = await connection.query(
       `SELECT aps.appointment_pet_id, aps.service_id, aps.duration_minutes, s.name AS service_name, s.status AS service_status, s.price
        FROM appointment_pet_services aps
-       INNER JOIN services s ON s.id = aps.service_id
-       WHERE aps.appointment_pet_id IN (${placeholders})
+       INNER JOIN services s ON s.id = aps.service_id AND s.shop_id = aps.shop_id
+       WHERE aps.appointment_pet_id IN (${placeholders}) AND aps.shop_id = ?
        ORDER BY s.name ASC`,
-      appointmentPetIds,
+      [...appointmentPetIds, getCurrentShopId()],
     );
   }
 
@@ -174,9 +175,10 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
 
 async function createAppointment(payload, connection = getPool()) {
   const [result] = await connection.query(
-    `INSERT INTO appointments (customer_id, appointment_date, appointment_time, status, note)
-     VALUES (?, ?, ?, ?, ?)` ,
+    `INSERT INTO appointments (shop_id, customer_id, appointment_date, appointment_time, status, note)
+     VALUES (?, ?, ?, ?, ?, ?)` ,
     [
+      getCurrentShopId(),
       payload.customer_id,
       payload.appointment_date,
       payload.appointment_time,
@@ -204,9 +206,9 @@ async function updateAppointment(appointmentId, patch, connection = getPool()) {
   }
 
   if (fields.length) {
-    values.push(appointmentId);
+    values.push(appointmentId, getCurrentShopId());
     await connection.query(
-      `UPDATE appointments SET ${fields.join(', ')} WHERE id = ?`,
+      `UPDATE appointments SET ${fields.join(', ')} WHERE id = ? AND shop_id = ?`,
       values,
     );
   }
@@ -216,8 +218,8 @@ async function updateAppointment(appointmentId, patch, connection = getPool()) {
 
 async function createAppointmentPet({ appointmentId, petId }, connection = getPool()) {
   const [result] = await connection.query(
-    'INSERT INTO appointment_pets (appointment_id, pet_id) VALUES (?, ?)',
-    [appointmentId, petId],
+    'INSERT INTO appointment_pets (shop_id, appointment_id, pet_id) VALUES (?, ?, ?)',
+    [getCurrentShopId(), appointmentId, petId],
   );
 
   return result.insertId;
@@ -229,27 +231,27 @@ async function createAppointmentPetService({ appointmentPetId, serviceId, durati
   }
 
   await connection.query(
-    'INSERT INTO appointment_pet_services (appointment_pet_id, service_id, duration_minutes) VALUES (?, ?, ?)',
-    [appointmentPetId, serviceId, durationMinutes],
+    'INSERT INTO appointment_pet_services (shop_id, appointment_pet_id, service_id, duration_minutes) VALUES (?, ?, ?, ?)',
+    [getCurrentShopId(), appointmentPetId, serviceId, durationMinutes],
   );
 }
 
 async function replaceAppointmentPetRelations(appointmentId, petEntries, connection = getPool()) {
   const existingPetRows = await connection.query(
-    'SELECT id FROM appointment_pets WHERE appointment_id = ?',
-    [appointmentId],
+    'SELECT id FROM appointment_pets WHERE appointment_id = ? AND shop_id = ?',
+    [appointmentId, getCurrentShopId()],
   );
 
   const existingPetIds = existingPetRows[0].map((row) => row.id);
   if (existingPetIds.length) {
     const placeholders = existingPetIds.map(() => '?').join(', ');
     await connection.query(
-      `DELETE FROM appointment_pet_services WHERE appointment_pet_id IN (${placeholders})`,
-      existingPetIds,
+      `DELETE FROM appointment_pet_services WHERE appointment_pet_id IN (${placeholders}) AND shop_id = ?`,
+      [...existingPetIds, getCurrentShopId()],
     );
     await connection.query(
-      'DELETE FROM appointment_pets WHERE appointment_id = ?',
-      [appointmentId],
+      'DELETE FROM appointment_pets WHERE appointment_id = ? AND shop_id = ?',
+      [appointmentId, getCurrentShopId()],
     );
   }
 
@@ -266,22 +268,22 @@ async function replaceAppointmentPetRelations(appointmentId, petEntries, connect
 }
 
 async function findCustomerById(customerId, connection = getPool()) {
-  const [rows] = await connection.query('SELECT * FROM customers WHERE id = ? LIMIT 1', [customerId]);
+  const [rows] = await connection.query('SELECT * FROM customers WHERE id = ? AND shop_id = ? LIMIT 1', [customerId, getCurrentShopId()]);
   return rows[0] || null;
 }
 
 async function findPetById(petId, connection = getPool()) {
-  const [rows] = await connection.query('SELECT * FROM pets WHERE id = ? LIMIT 1', [petId]);
+  const [rows] = await connection.query('SELECT * FROM pets WHERE id = ? AND shop_id = ? LIMIT 1', [petId, getCurrentShopId()]);
   return rows[0] || null;
 }
 
 async function findServiceById(serviceId, connection = getPool()) {
-  const [rows] = await connection.query('SELECT * FROM services WHERE id = ? LIMIT 1', [serviceId]);
+  const [rows] = await connection.query('SELECT * FROM services WHERE id = ? AND shop_id = ? LIMIT 1', [serviceId, getCurrentShopId()]);
   return rows[0] || null;
 }
 
 async function findAppointmentById(appointmentId, connection = getPool()) {
-  const [rows] = await connection.query('SELECT * FROM appointments WHERE id = ? LIMIT 1', [appointmentId]);
+  const [rows] = await connection.query('SELECT * FROM appointments WHERE id = ? AND shop_id = ? LIMIT 1', [appointmentId, getCurrentShopId()]);
   return rows[0] || null;
 }
 
@@ -300,28 +302,28 @@ async function deleteAppointment(appointmentId) {
     const [dailyOperationRows] = await connection.query(
       `SELECT id, status, check_in_time, started_time, completed_time, responsible_staff_id, work_note
        FROM daily_operations
-       WHERE appointment_id = ?
+       WHERE appointment_id = ? AND shop_id = ?
        LIMIT 1
        FOR UPDATE`,
-      [appointmentId],
+      [appointmentId, getCurrentShopId()],
     );
     const [groomingRows] = await connection.query(
       `SELECT g.id
        FROM groomings g
-       INNER JOIN daily_operations d ON d.id = g.daily_operation_id
-       WHERE d.appointment_id = ?
+       INNER JOIN daily_operations d ON d.id = g.daily_operation_id AND d.shop_id = g.shop_id
+       WHERE d.appointment_id = ? AND g.shop_id = ?
        LIMIT 1`,
-      [appointmentId],
+      [appointmentId, getCurrentShopId()],
     );
-    const [boardingRows] = await connection.query('SELECT id FROM boardings WHERE appointment_id = ? LIMIT 1', [appointmentId]);
-    const [orderRows] = await connection.query('SELECT id FROM orders WHERE appointment_id = ? LIMIT 1', [appointmentId]);
+    const [boardingRows] = await connection.query('SELECT id FROM boardings WHERE appointment_id = ? AND shop_id = ? LIMIT 1', [appointmentId, getCurrentShopId()]);
+    const [orderRows] = await connection.query('SELECT id FROM orders WHERE appointment_id = ? AND shop_id = ? LIMIT 1', [appointmentId, getCurrentShopId()]);
     const [paymentRows] = await connection.query(
       `SELECT p.id
        FROM payments p
-       INNER JOIN orders o ON o.id = p.order_id
-       WHERE o.appointment_id = ?
+       INNER JOIN orders o ON o.id = p.order_id AND o.shop_id = p.shop_id
+       WHERE o.appointment_id = ? AND p.shop_id = ?
        LIMIT 1`,
-      [appointmentId],
+      [appointmentId, getCurrentShopId()],
     );
 
     const dailyOperation = dailyOperationRows[0];
@@ -341,9 +343,9 @@ async function deleteAppointment(appointmentId) {
     }
 
     if (dailyOperation) {
-      await connection.query('DELETE FROM daily_operations WHERE id = ?', [dailyOperation.id]);
+      await connection.query('DELETE FROM daily_operations WHERE id = ? AND shop_id = ?', [dailyOperation.id, getCurrentShopId()]);
     }
-    await connection.query('DELETE FROM appointments WHERE id = ?', [appointmentId]);
+    await connection.query('DELETE FROM appointments WHERE id = ? AND shop_id = ?', [appointmentId, getCurrentShopId()]);
     await connection.commit();
   } catch (error) {
     await connection.rollback();

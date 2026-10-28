@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { getPool } = require('../config/database');
+const { setCurrentShopId, getCurrentShopId } = require('../utils/shop-context');
 const customerRepository = require('../data/customer.repository');
 const petRepository = require('../data/pet.repository');
 const { normalizeMultiSelectValue } = require('./pet.service');
@@ -107,8 +108,9 @@ async function createWithCreator(staffId) {
     await connection.beginTransaction();
     const [versions] = await connection.query(
       `SELECT id FROM contract_versions
-       WHERE status = 'PUBLISHED' AND is_current = TRUE
+       WHERE shop_id = ? AND status = 'PUBLISHED' AND is_current = TRUE
        LIMIT 1 FOR UPDATE`,
+      [getCurrentShopId()],
     );
     if (!versions[0]) {
       throw createError('A current published contract is required', 409, 'CONTRACT_VERSION_NOT_AVAILABLE');
@@ -140,11 +142,13 @@ async function createPublic() {
 async function getPublic(token) {
   const row = await onboardingRepository.getPublicData(tokenHash(token));
   if (!row) throw createError('Onboarding not found', 404, 'ONBOARDING_NOT_FOUND');
+  setCurrentShopId(row.shop_id);
   const expired = row.status === 'EXPIRED' || dbDateMilliseconds(row.expires_at) <= Date.now();
   const [services] = await getPool().query(
     `SELECT id, name, type, species, price
-     FROM services WHERE status = 'ACTIVE'
+     FROM services WHERE shop_id = ? AND status = 'ACTIVE'
      ORDER BY sort_order ASC, name ASC`,
+    [row.shop_id],
   );
   return {
     onboarding: {
@@ -170,11 +174,12 @@ async function loadMutable(token, connection = getPool()) {
   const hash = tokenHash(token);
   const row = await onboardingRepository.getByTokenHash(hash, connection);
   if (!row) throw createError('Onboarding not found', 404, 'ONBOARDING_NOT_FOUND');
+  setCurrentShopId(row.shop_id);
   if (dbDateMilliseconds(row.expires_at) <= Date.now()) {
     await connection.query(
       `UPDATE onboardings SET status = 'EXPIRED'
-       WHERE public_token_hash = ? AND status IN ('NOT_STARTED', 'IN_PROGRESS')`,
-      [hash],
+       WHERE public_token_hash = ? AND shop_id = ? AND status IN ('NOT_STARTED', 'IN_PROGRESS')`,
+      [hash, getCurrentShopId()],
     );
   }
   checkWritable(row);
@@ -195,7 +200,7 @@ async function autosave(token, payload = {}) {
       const locked = await loadMutable(token, connection);
       await onboardingRepository.saveData(locked.id, data, connection);
       if (locked.status === 'NOT_STARTED') {
-        await connection.query(`UPDATE onboardings SET status = 'IN_PROGRESS' WHERE id = ?`, [locked.id]);
+        await connection.query(`UPDATE onboardings SET status = 'IN_PROGRESS' WHERE id = ? AND shop_id = ?`, [locked.id, getCurrentShopId()]);
       }
       await connection.commit();
     } catch (error) {
@@ -218,9 +223,9 @@ async function searchCustomers(token, query) {
   if (search.length < 2) throw validation({ query: 'Enter at least 2 characters' });
   const [rows] = await getPool().query(
     `SELECT id, name, phone FROM customers
-     WHERE status = 'ACTIVE' AND (name LIKE ? OR phone LIKE ?)
+     WHERE shop_id = ? AND status = 'ACTIVE' AND (name LIKE ? OR phone LIKE ?)
      ORDER BY name ASC LIMIT 20`,
-    [`%${search}%`, `%${search}%`],
+    [getCurrentShopId(), `%${search}%`, `%${search}%`],
   );
   const candidates = rows.map((item) => ({ key: makeCandidateKey(), id: Number(item.id) }));
   await onboardingRepository.saveCandidates(row.id, 'customer', candidates);
@@ -233,9 +238,9 @@ async function searchPets(token, query) {
   if (search.length < 2) throw validation({ query: 'Enter at least 2 characters' });
   const [rows] = await getPool().query(
     `SELECT p.id, p.name, p.species, p.breed, p.chip_number
-     FROM pets p WHERE p.status = 'ACTIVE' AND (p.name LIKE ? OR p.chip_number LIKE ?)
+     FROM pets p WHERE p.shop_id = ? AND p.status = 'ACTIVE' AND (p.name LIKE ? OR p.chip_number LIKE ?)
      ORDER BY p.name ASC LIMIT 20`,
-    [`%${search}%`, `%${search}%`],
+    [getCurrentShopId(), `%${search}%`, `%${search}%`],
   );
   const candidates = rows.map((item) => ({ key: makeCandidateKey(), id: Number(item.id) }));
   await onboardingRepository.saveCandidates(row.id, 'pet', candidates);
@@ -340,6 +345,7 @@ async function submit(token, payload = {}) {
     await connection.beginTransaction();
     const row = await onboardingRepository.getByTokenHash(hash, connection, true);
     if (!row) throw createError('Onboarding not found', 404, 'ONBOARDING_NOT_FOUND');
+    setCurrentShopId(row.shop_id);
     if (dbDateMilliseconds(row.expires_at) <= Date.now()
         && row.status !== 'COMPLETED' && row.status !== 'EXPIRED') {
       await onboardingRepository.expire(row.id, connection);
@@ -356,15 +362,15 @@ async function submit(token, payload = {}) {
     const services = await serviceRepository.getServiceById(Number(appointment.service_id), connection);
     if (!services || services.status !== 'ACTIVE') throw validation({ 'appointment.service_id': 'Service is unavailable' });
     const [customerRows] = await connection.query(
-      'SELECT id, status FROM customers WHERE id = ? LIMIT 1',
-      [row.matched_customer_id || 0],
+      'SELECT id, status FROM customers WHERE id = ? AND shop_id = ? LIMIT 1',
+      [row.matched_customer_id || 0, getCurrentShopId()],
     );
     if (row.customer_resolution === 'EXISTING' && (!customerRows[0] || customerRows[0].status !== 'ACTIVE')) {
       throw validation({ customer_resolution: 'The selected Customer is no longer available' });
     }
     const [petRows] = await connection.query(
-      'SELECT id, species, status FROM pets WHERE id = ? LIMIT 1',
-      [row.matched_pet_id || 0],
+      'SELECT id, species, status FROM pets WHERE id = ? AND shop_id = ? LIMIT 1',
+      [row.matched_pet_id || 0, getCurrentShopId()],
     );
     if (row.pet_resolution === 'EXISTING' && (!petRows[0] || petRows[0].status !== 'ACTIVE')) {
       throw validation({ pet_resolution: 'The selected Pet is no longer available' });
@@ -400,8 +406,8 @@ async function submit(token, payload = {}) {
         notes: pet.note,
       }, connection);
     const [relationshipRows] = await connection.query(
-      'SELECT 1 FROM pet_customer_relationships WHERE pet_id = ? AND customer_id = ? LIMIT 1',
-      [petId, customerId],
+      'SELECT 1 FROM pet_customer_relationships WHERE pet_id = ? AND customer_id = ? AND shop_id = ? LIMIT 1',
+      [petId, customerId, getCurrentShopId()],
     );
     if (!relationshipRows.length) {
       await petRepository.createPetRelationship({ petId, customerId, isPrimary: row.pet_resolution === 'NEW' }, connection);
@@ -424,14 +430,14 @@ async function submit(token, payload = {}) {
     const signatureHash = crypto.createHash('sha256').update(signature).digest('hex');
     await connection.query(
       `INSERT INTO contract_history
-       (onboarding_id, customer_id, pet_id, appointment_id, contract_version_id, version,
+       (shop_id, onboarding_id, customer_id, pet_id, appointment_id, contract_version_id, version,
         pdf_hash, storage_path, agreed_at, signature_evidence, signature_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), ?, ?)`,
-      [row.id, customerId, petId, appointmentId, contract.id, contract.version_label, contract.file_hash, contract.storage_path, signature, signatureHash],
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), ?, ?)`,
+      [getCurrentShopId(), row.id, customerId, petId, appointmentId, contract.id, contract.version_label, contract.file_hash, contract.storage_path, signature, signatureHash],
     );
     await connection.query(
-      `UPDATE onboardings SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ?`,
-      [row.id],
+      `UPDATE onboardings SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ? AND shop_id = ?`,
+      [row.id, getCurrentShopId()],
     );
     await connection.commit();
     transactionCommitted = true;
@@ -447,6 +453,7 @@ async function submit(token, payload = {}) {
 async function getContractPdf(token) {
   const row = await onboardingRepository.getPublicData(tokenHash(token));
   if (!row) throw createError('Onboarding not found', 404, 'ONBOARDING_NOT_FOUND');
+  setCurrentShopId(row.shop_id);
   if (row.status === 'COMPLETED' || row.status === 'EXPIRED' || dbDateMilliseconds(row.expires_at) <= Date.now()) {
     throw createError('Onboarding can no longer be used', 410, 'ONBOARDING_UNAVAILABLE');
   }

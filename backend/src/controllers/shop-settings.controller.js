@@ -37,7 +37,10 @@ async function updateShopSettings(req, res, next) {
 
 async function resetOperationalData(req, res, next) {
   try {
-    const result = await shopSettingsService.resetOperationalData();
+    const result = await shopSettingsService.resetOperationalData({
+      confirmation: req.body?.confirmation,
+      expectedShopId: Number(req.body?.expected_shop_id),
+    });
     sendSuccess(res, result);
   } catch (error) {
     next(error);

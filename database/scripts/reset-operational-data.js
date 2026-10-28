@@ -8,6 +8,9 @@ const RESET_TABLES = [
   'orders',
   'groomings',
   'boardings',
+  'onboarding_pets',
+  'onboardings',
+  'booking_sessions',
   'appointment_pet_services',
   'appointment_pets',
   'daily_operations',
@@ -22,12 +25,20 @@ const RESET_TABLES = [
 const PRESERVE_TABLES = [
   'schema_migrations',
   'foundation_verification',
+  'shops',
+  'staff_shop_memberships',
+  'staff_shop_roles',
+  'platform_shop_managers',
   'staff',
   'roles',
   'staff_roles',
   'auth_sessions',
   'shop_settings',
   'shop_business_hours',
+  'booking_schedule_rules',
+  'booking_schedule_overrides',
+  'contract_versions',
+  'contract_history',
 ];
 
 const ENVIRONMENT_DATABASES = new Map([
@@ -40,7 +51,10 @@ function assertResetEnvironment() {
   if (!ENVIRONMENT_DATABASES.has(config.nodeEnv)
     || !LOCAL_HOSTS.has(config.database.host)
     || ENVIRONMENT_DATABASES.get(config.nodeEnv) !== config.database.name) {
-    throw new Error('此腳本僅允許在 Development / Test 環境執行。');
+    const error = new Error('此功能僅允許在本機 Development／Test 環境執行，資料未清除。');
+    error.statusCode = 403;
+    error.code = 'RESET_ENVIRONMENT_NOT_ALLOWED';
+    throw error;
   }
 }
 
@@ -54,6 +68,15 @@ async function getRowCounts(connection, tables) {
   const counts = {};
   for (const table of tables) {
     const [rows] = await connection.query(`SELECT COUNT(*) AS count FROM \`${table}\``);
+    counts[table] = Number(rows[0].count);
+  }
+  return counts;
+}
+
+async function getShopRowCounts(connection, tables, shopId) {
+  const counts = {};
+  for (const table of tables) {
+    const [rows] = await connection.query(`SELECT COUNT(*) AS count FROM \`${table}\` WHERE shop_id = ?`, [shopId]);
     counts[table] = Number(rows[0].count);
   }
   return counts;
@@ -82,23 +105,42 @@ async function assertTablesExist(connection, tables) {
 async function resetOperationalData({ args = process.argv.slice(2) } = {}) {
   assertResetEnvironment();
   assertConfirmation(args);
-
-  return executeResetOperationalData();
+  const shopIdArgument = args.find((argument) => argument.startsWith('--shop-id='));
+  const shopIdIndex = args.indexOf('--shop-id');
+  const shopId = Number(shopIdArgument
+    ? shopIdArgument.slice('--shop-id='.length)
+    : shopIdIndex >= 0 ? args[shopIdIndex + 1] : NaN);
+  if (!Number.isInteger(shopId) || shopId <= 0) {
+    throw new Error('請指定有效的店家 ID，例如 --shop-id=1。');
+  }
+  return executeResetOperationalData(shopId);
 }
 
-async function executeResetOperationalData() {
+async function executeResetOperationalData(shopId) {
   const connection = await getPool().getConnection();
   try {
     await assertTablesExist(connection, [...RESET_TABLES, ...PRESERVE_TABLES]);
+    const [shopRows] = await connection.query('SELECT id FROM shops WHERE id = ?', [shopId]);
+    if (!shopRows.length) throw new Error('找不到指定店家，資料未清除。');
     const preserveCountsBefore = await getRowCounts(connection, PRESERVE_TABLES);
+
+    const [contractRows] = await connection.query(
+      'SELECT COUNT(*) AS count FROM contract_history WHERE shop_id = ?',
+      [shopId],
+    );
+    if (Number(contractRows[0].count) > 0) {
+      const error = new Error('此店仍有已簽署的電子合約與簽名證據。為保留法律紀錄，資料未清除；請先另行確認合約保存與移轉方式。');
+      error.statusCode = 409;
+      error.code = 'RESET_BLOCKED_BY_SIGNED_CONTRACTS';
+      throw error;
+    }
 
     await connection.beginTransaction();
     for (const table of RESET_TABLES) {
-      await connection.query(`DELETE FROM \`${table}\``);
-      await connection.query(`ALTER TABLE \`${table}\` AUTO_INCREMENT = 1`);
+      await connection.query(`DELETE FROM \`${table}\` WHERE shop_id = ?`, [shopId]);
     }
 
-    const resetCounts = await getRowCounts(connection, RESET_TABLES);
+    const resetCounts = await getShopRowCounts(connection, RESET_TABLES, shopId);
     assertResetTablesEmpty(resetCounts);
 
     const preserveCountsAfter = await getRowCounts(connection, PRESERVE_TABLES);
@@ -109,7 +151,7 @@ async function executeResetOperationalData() {
     }
 
     await connection.commit();
-    return { resetCounts, preserveCounts: preserveCountsAfter };
+    return { shop_id: shopId, resetCounts, preserveCounts: preserveCountsAfter };
   } catch (error) {
     await connection.rollback();
     throw error;
@@ -118,9 +160,19 @@ async function executeResetOperationalData() {
   }
 }
 
-async function resetOperationalDataForApplication() {
+async function resetOperationalDataForApplication({ shopId, confirmation } = {}) {
   assertResetEnvironment();
-  return executeResetOperationalData();
+  if (!Number.isInteger(Number(shopId)) || Number(shopId) <= 0) {
+    throw new Error('無法確認目前店家，資料未清除。');
+  }
+  const [shops] = await getPool().query('SELECT name FROM shops WHERE id = ?', [Number(shopId)]);
+  if (!shops.length || typeof confirmation !== 'string' || confirmation.trim() !== shops[0].name) {
+    const error = new Error('店家名稱確認不符，資料未清除。');
+    error.statusCode = 400;
+    error.code = 'RESET_CONFIRMATION_MISMATCH';
+    throw error;
+  }
+  return executeResetOperationalData(Number(shopId));
 }
 
 if (require.main === module) {

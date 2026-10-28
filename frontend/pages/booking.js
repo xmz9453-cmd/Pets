@@ -12,6 +12,7 @@ const SPECIES_LABELS = { DOG: '狗', CAT: '貓' };
 
 export default function BookingPage() {
   const router = useRouter();
+  const publicShopId = router.isReady ? String(router.query.shop_id || '') : '';
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
@@ -33,7 +34,7 @@ export default function BookingPage() {
     setError('');
     setMessage('');
     try {
-      const result = await createPublicOnboarding();
+      const result = await createPublicOnboarding(publicShopId);
       await router.push(`/onboarding/${encodeURIComponent(result.token)}`);
     } catch (createError) {
       setError(createError.code === 'CONTRACT_VERSION_NOT_AVAILABLE'
@@ -57,7 +58,7 @@ export default function BookingPage() {
     setError('');
     setMessage('');
     try {
-      await confirmExistingBookingCustomer(phone, name);
+      await confirmExistingBookingCustomer(phone, name, publicShopId);
     } catch {
       setError(BOOKING_MESSAGES.confirmationFailure);
       setConfirming(false);
@@ -66,7 +67,7 @@ export default function BookingPage() {
 
     setLoadingPets(true);
     try {
-      const result = await getPublicBookingPets();
+      const result = await getPublicBookingPets(publicShopId);
       setPets(result.pets || []);
       setPetsLoaded(true);
     } catch {
@@ -86,7 +87,7 @@ export default function BookingPage() {
     setError('');
 
     try {
-      const result = await getPublicBookingServices(petId);
+      const result = await getPublicBookingServices(petId, publicShopId);
       setServices(result.services || []);
       setServicesLoaded(true);
     } catch (serviceError) {

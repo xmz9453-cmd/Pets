@@ -1,4 +1,8 @@
 const ERROR_MESSAGES = {
+  RESET_BLOCKED_BY_SIGNED_CONTRACTS: '此店仍有已簽署的電子合約與簽名證據。為保留法律紀錄，資料未清除；請先另行確認合約保存與移轉方式。',
+  RESET_CONFIRMATION_MISMATCH: '店家名稱確認不符，資料未清除。',
+  RESET_ENVIRONMENT_NOT_ALLOWED: '此功能僅允許在本機 Development／Test 環境執行，資料未清除。',
+  RESET_SHOP_CONTEXT_CHANGED: '目前選取的店家已變更，資料未清除。請重新開啟清除流程。',
   APPOINTMENT_DELETE_PROTECTED: '此預約已有相關營運資料，無法刪除。',
   APPOINTMENT_NOT_FOUND: '找不到指定的預約資料。',
   BOARDING_NOT_FOUND: '找不到住宿資料。',

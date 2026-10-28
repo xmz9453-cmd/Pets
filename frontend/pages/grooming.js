@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { getUserFacingErrorMessage } from '../utils/error-message';
-import { API_BASE_URL } from '../api/client';
+import { API_BASE_URL, fetchWithShop as fetch } from '../api/client';
 const SPECIES_LABELS = { DOG: '狗', CAT: '貓' };
 
 export default function GroomingPage() {

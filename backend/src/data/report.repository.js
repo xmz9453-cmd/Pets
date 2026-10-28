@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 function toNumber(value) {
   return Number(value || 0);
@@ -16,89 +17,89 @@ async function getReport(filters) {
             SUM(o.status = 'CANCELLED') AS cancelled_orders,
             COALESCE(AVG(CASE WHEN o.status <> 'CANCELLED' THEN o.total_amount END), 0) AS average_order_amount
      FROM orders o
-     WHERE o.created_at >= ? AND o.created_at < DATE_ADD(?, INTERVAL 1 DAY)`,
-    orderRange,
+     WHERE o.shop_id = ? AND o.created_at >= ? AND o.created_at < DATE_ADD(?, INTERVAL 1 DAY)`,
+    [getCurrentShopId(), ...orderRange],
   );
 
   const [revenueRows] = await pool.query(
     `SELECT COALESCE(SUM(p.amount), 0) AS actual_revenue
      FROM payments p
-     WHERE p.status = 'PAID'
+     WHERE p.shop_id = ? AND p.status = 'PAID'
        AND p.paid_at >= ? AND p.paid_at < DATE_ADD(?, INTERVAL 1 DAY)`,
-    paymentRange,
+    [getCurrentShopId(), ...paymentRange],
   );
 
   const [outstandingRows] = await pool.query(
     `SELECT COALESCE(SUM(GREATEST(o.total_amount - COALESCE(p.paid_amount, 0), 0)), 0) AS outstanding_amount
      FROM orders o
      LEFT JOIN (
-       SELECT order_id, SUM(amount) AS paid_amount
+       SELECT shop_id, order_id, SUM(amount) AS paid_amount
        FROM payments
-       WHERE status = 'PAID'
-       GROUP BY order_id
-     ) p ON p.order_id = o.id
-     WHERE o.status <> 'CANCELLED'
+       WHERE status = 'PAID' AND shop_id = ?
+       GROUP BY shop_id, order_id
+     ) p ON p.order_id = o.id AND p.shop_id = o.shop_id
+     WHERE o.shop_id = ? AND o.status <> 'CANCELLED'
        AND o.created_at >= ? AND o.created_at < DATE_ADD(?, INTERVAL 1 DAY)`,
-    orderRange,
+    [getCurrentShopId(), getCurrentShopId(), ...orderRange],
   );
 
   const [paymentMethodRows] = await pool.query(
     `SELECT p.payment_method, SUM(p.amount) AS payment_amount, COUNT(*) AS payment_count
      FROM payments p
-     WHERE p.status = 'PAID'
+     WHERE p.shop_id = ? AND p.status = 'PAID'
        AND p.paid_at >= ? AND p.paid_at < DATE_ADD(?, INTERVAL 1 DAY)
      GROUP BY p.payment_method
      ORDER BY p.payment_method ASC`,
-    paymentRange,
+    [getCurrentShopId(), ...paymentRange],
   );
 
   const [dailyRevenueRows] = await pool.query(
     `SELECT DATE(p.paid_at) AS date, COUNT(DISTINCT p.order_id) AS order_count, SUM(p.amount) AS payment_amount
      FROM payments p
-     WHERE p.status = 'PAID'
+     WHERE p.shop_id = ? AND p.status = 'PAID'
        AND p.paid_at >= ? AND p.paid_at < DATE_ADD(?, INTERVAL 1 DAY)
      GROUP BY DATE(p.paid_at)
      ORDER BY date ASC`,
-    paymentRange,
+    [getCurrentShopId(), ...paymentRange],
   );
 
   const [productRows] = await pool.query(
     `SELECT oi.product_id, oi.name, SUM(oi.quantity) AS quantity, SUM(oi.item_amount) AS amount
      FROM order_items oi
-     INNER JOIN orders o ON o.id = oi.order_id
-     WHERE oi.item_type = 'PRODUCT' AND o.status <> 'CANCELLED'
+     INNER JOIN orders o ON o.id = oi.order_id AND o.shop_id = oi.shop_id
+     WHERE oi.shop_id = ? AND oi.item_type = 'PRODUCT' AND o.status <> 'CANCELLED'
        AND o.created_at >= ? AND o.created_at < DATE_ADD(?, INTERVAL 1 DAY)
      GROUP BY oi.product_id, oi.name
      ORDER BY oi.name ASC`,
-    orderRange,
+    [getCurrentShopId(), ...orderRange],
   );
 
   const [serviceRows] = await pool.query(
     `SELECT oi.service_id, oi.name, SUM(oi.quantity) AS quantity, SUM(oi.item_amount) AS amount
      FROM order_items oi
-     INNER JOIN orders o ON o.id = oi.order_id
-     WHERE oi.item_type = 'SERVICE' AND o.status <> 'CANCELLED'
+     INNER JOIN orders o ON o.id = oi.order_id AND o.shop_id = oi.shop_id
+     WHERE oi.shop_id = ? AND oi.item_type = 'SERVICE' AND o.status <> 'CANCELLED'
        AND o.created_at >= ? AND o.created_at < DATE_ADD(?, INTERVAL 1 DAY)
      GROUP BY oi.service_id, oi.name
      ORDER BY oi.name ASC`,
-    orderRange,
+    [getCurrentShopId(), ...orderRange],
   );
 
   const [boardingUsageRows] = await pool.query(
     `SELECT COUNT(*) AS usage_count
      FROM boardings b
-     WHERE b.created_at >= ? AND b.created_at < DATE_ADD(?, INTERVAL 1 DAY)`,
-    orderRange,
+     WHERE b.shop_id = ? AND b.created_at >= ? AND b.created_at < DATE_ADD(?, INTERVAL 1 DAY)`,
+    [getCurrentShopId(), ...orderRange],
   );
 
   const [boardingAmountRows] = await pool.query(
     `SELECT COALESCE(SUM(oi.quantity), 0) AS quantity, COALESCE(SUM(oi.item_amount), 0) AS amount
      FROM order_items oi
-     INNER JOIN orders o ON o.id = oi.order_id
-     INNER JOIN services s ON s.id = oi.service_id
-     WHERE oi.item_type = 'SERVICE' AND s.type = 'BOARDING' AND o.status <> 'CANCELLED'
+     INNER JOIN orders o ON o.id = oi.order_id AND o.shop_id = oi.shop_id
+     INNER JOIN services s ON s.id = oi.service_id AND s.shop_id = oi.shop_id
+     WHERE oi.shop_id = ? AND oi.item_type = 'SERVICE' AND s.type = 'BOARDING' AND o.status <> 'CANCELLED'
        AND o.created_at >= ? AND o.created_at < DATE_ADD(?, INTERVAL 1 DAY)`,
-    orderRange,
+    [getCurrentShopId(), ...orderRange],
   );
 
   const summary = summaryRows[0] || {};

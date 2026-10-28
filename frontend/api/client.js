@@ -3,13 +3,18 @@ const { getUserFacingErrorMessage } = require('../utils/error-message');
 
 async function request(path, options = {}) {
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+  const selectedShopId = typeof window !== 'undefined'
+    ? window.localStorage.getItem('psop.currentShopId')
+    : '';
+  const headers = {
+    ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
+    ...(selectedShopId ? { 'X-Shop-Id': selectedShopId } : {}),
+    ...(options.headers || {}),
+  };
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    credentials: 'include',
-    headers: {
-      ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers || {}),
-    },
     ...options,
+    credentials: 'include',
+    headers,
   });
   const body = await response.json();
 
@@ -42,6 +47,19 @@ async function request(path, options = {}) {
   return body.data;
 }
 
+export function fetchWithShop(url, options = {}) {
+  const selectedShopId = typeof window !== 'undefined'
+    ? window.localStorage.getItem('psop.currentShopId')
+    : '';
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...(selectedShopId ? { 'X-Shop-Id': selectedShopId } : {}),
+    },
+  });
+}
+
 export async function getApplicationHealth() {
   return request('/api/health');
 }
@@ -51,9 +69,28 @@ export async function getDatabaseHealth() {
 }
 
 export async function login(username, password) {
-  return request('/api/auth/login', {
+  const result = await request('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
+  });
+  if (typeof window !== 'undefined' && result.staff?.shop_id) {
+    window.localStorage.setItem('psop.currentShopId', String(result.staff.shop_id));
+  }
+  return result;
+}
+
+export async function createShop(payload) {
+  return request('/api/shops', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function getShopStaff() {
+  return request('/api/shops/staff');
+}
+
+export async function updateShopStaffRoles(staffId, roles) {
+  return request(`/api/shops/staff/${staffId}/roles`, {
+    method: 'PATCH',
+    body: JSON.stringify({ roles }),
   });
 }
 
@@ -114,23 +151,28 @@ export async function createOnboarding() {
   return request('/api/onboardings', { method: 'POST', body: '{}' });
 }
 
-export async function createPublicOnboarding() {
-  return request('/api/public/onboardings', { method: 'POST', body: '{}' });
+function publicShopOptions(shopId) {
+  return shopId ? { headers: { 'X-Shop-Id': String(shopId) } } : {};
 }
 
-export async function confirmExistingBookingCustomer(phone, name) {
+export async function createPublicOnboarding(shopId) {
+  return request('/api/public/onboardings', { method: 'POST', body: '{}', ...publicShopOptions(shopId) });
+}
+
+export async function confirmExistingBookingCustomer(phone, name, shopId) {
   return request('/api/public/booking/customer-confirmation', {
     method: 'POST',
     body: JSON.stringify({ phone, name }),
+    ...publicShopOptions(shopId),
   });
 }
 
-export async function getPublicBookingPets() {
-  return request('/api/public/booking/pets');
+export async function getPublicBookingPets(shopId) {
+  return request('/api/public/booking/pets', publicShopOptions(shopId));
 }
 
-export async function getPublicBookingServices(petId) {
-  return request(`/api/public/booking/services?pet_id=${encodeURIComponent(petId)}`);
+export async function getPublicBookingServices(petId, shopId) {
+  return request(`/api/public/booking/services?pet_id=${encodeURIComponent(petId)}`, publicShopOptions(shopId));
 }
 
 function publicOnboardingPath(token, suffix = '') {
@@ -368,9 +410,10 @@ export async function deleteBookingScheduleOverride(overrideId) {
   });
 }
 
-export async function resetOperationalData() {
+export async function resetOperationalData(confirmation, expectedShopId) {
   return request('/api/shop-settings/reset-operational-data', {
     method: 'POST',
+    body: JSON.stringify({ confirmation, expected_shop_id: expectedShopId }),
   });
 }
 

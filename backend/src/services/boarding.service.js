@@ -1,4 +1,5 @@
 const { getPool } = require('../config/database');
+const { getCurrentShopId } = require('../utils/shop-context');
 const boardingRepository = require('../data/boarding.repository');
 
 function validationError(fields) {
@@ -58,13 +59,13 @@ async function validateIdentity(payload, connection) {
   if (!Number.isInteger(petId) || petId <= 0) throw validationError({ pet_id: 'Pet is required' });
   if (!Number.isInteger(serviceId) || serviceId <= 0) throw validationError({ service_id: 'Service is required' });
 
-  const [customers] = await connection.query('SELECT id FROM customers WHERE id = ? LIMIT 1', [customerId]);
+  const [customers] = await connection.query('SELECT id FROM customers WHERE id = ? AND shop_id = ? LIMIT 1', [customerId, getCurrentShopId()]);
   if (!customers.length) throw notFound('CUSTOMER_NOT_FOUND', 'Customer not found');
-  const [pets] = await connection.query('SELECT id FROM pets WHERE id = ? LIMIT 1', [petId]);
+  const [pets] = await connection.query('SELECT id FROM pets WHERE id = ? AND shop_id = ? LIMIT 1', [petId, getCurrentShopId()]);
   if (!pets.length) throw notFound('PET_NOT_FOUND', 'Pet not found');
-  const [relationship] = await connection.query('SELECT 1 FROM pet_customer_relationships WHERE pet_id = ? AND customer_id = ? LIMIT 1', [petId, customerId]);
+  const [relationship] = await connection.query('SELECT 1 FROM pet_customer_relationships WHERE pet_id = ? AND customer_id = ? AND shop_id = ? LIMIT 1', [petId, customerId, getCurrentShopId()]);
   if (!relationship.length) throw validationError({ pet_id: 'Pet does not belong to this customer' });
-  const [services] = await connection.query("SELECT id, type, status FROM services WHERE id = ? LIMIT 1", [serviceId]);
+  const [services] = await connection.query("SELECT id, type, status FROM services WHERE id = ? AND shop_id = ? LIMIT 1", [serviceId, getCurrentShopId()]);
   if (!services.length) throw notFound('SERVICE_NOT_FOUND', 'Service not found');
   if (services[0].status !== 'ACTIVE' || services[0].type !== 'BOARDING') throw validationError({ service_id: 'Active boarding service is required' });
   return { customerId, petId, serviceId };
@@ -77,18 +78,18 @@ async function validateAppointment(payload, identity, connection) {
   if (dailyOperationId !== null && appointmentId === null) throw validationError({ daily_operation_id: 'Daily operation requires an appointment' });
 
   if (appointmentId !== null) {
-    const [appointments] = await connection.query('SELECT id, customer_id, appointment_date, appointment_time, status FROM appointments WHERE id = ? LIMIT 1', [appointmentId]);
+    const [appointments] = await connection.query('SELECT id, customer_id, appointment_date, appointment_time, status FROM appointments WHERE id = ? AND shop_id = ? LIMIT 1', [appointmentId, getCurrentShopId()]);
     if (!appointments.length) throw notFound('APPOINTMENT_NOT_FOUND', 'Appointment not found');
     const appointment = appointments[0];
     if (Number(appointment.customer_id) !== identity.customerId) throw validationError({ appointment_id: 'Appointment does not belong to this customer' });
     const [petServices] = await connection.query(
-      `SELECT 1 FROM appointment_pets ap INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id
-       WHERE ap.appointment_id = ? AND ap.pet_id = ? AND aps.service_id = ? LIMIT 1`,
-      [appointmentId, identity.petId, identity.serviceId],
+       `SELECT 1 FROM appointment_pets ap INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id AND aps.shop_id = ap.shop_id
+       WHERE ap.appointment_id = ? AND ap.pet_id = ? AND aps.service_id = ? AND ap.shop_id = ? LIMIT 1`,
+      [appointmentId, identity.petId, identity.serviceId, getCurrentShopId()],
     );
     if (!petServices.length) throw validationError({ appointment_id: 'Appointment, pet, and service are not linked' });
     if (dailyOperationId !== null) {
-      const [operations] = await connection.query('SELECT id, appointment_id, status FROM daily_operations WHERE id = ? LIMIT 1', [dailyOperationId]);
+      const [operations] = await connection.query('SELECT id, appointment_id, status FROM daily_operations WHERE id = ? AND shop_id = ? LIMIT 1', [dailyOperationId, getCurrentShopId()]);
       if (!operations.length || Number(operations[0].appointment_id) !== appointmentId) throw validationError({ daily_operation_id: 'Daily operation does not match this appointment' });
     }
     return { appointmentId, dailyOperationId, appointment };
@@ -151,11 +152,11 @@ async function checkIn(id) {
     if (existing.status !== 'PENDING') throw validationError({ status: `Cannot check in from status ${existing.status}` });
     if (await boardingRepository.findActiveByPet(existing.pet_id, connection)) throw conflict('ACTIVE_BOARDING_EXISTS', 'Pet already has an active boarding');
     if (existing.daily_operation_id) {
-      const [operations] = await connection.query('SELECT id, status FROM daily_operations WHERE id = ? FOR UPDATE', [existing.daily_operation_id]);
+      const [operations] = await connection.query('SELECT id, status FROM daily_operations WHERE id = ? AND shop_id = ? FOR UPDATE', [existing.daily_operation_id, getCurrentShopId()]);
       if (!operations.length) throw notFound('DAILY_OPERATION_NOT_FOUND', 'Daily operation not found');
       if (!['SCHEDULED', 'CHECKED_IN', 'IN_PROGRESS'].includes(operations[0].status)) throw validationError({ status: `Cannot check in from daily operation status ${operations[0].status}` });
-      if (operations[0].status === 'SCHEDULED') await connection.query("UPDATE daily_operations SET status='CHECKED_IN', check_in_time=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?", [existing.daily_operation_id]);
-      if (operations[0].status !== 'IN_PROGRESS') await connection.query("UPDATE daily_operations SET status='IN_PROGRESS', started_time=COALESCE(started_time, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP WHERE id=?", [existing.daily_operation_id]);
+      if (operations[0].status === 'SCHEDULED') await connection.query("UPDATE daily_operations SET status='CHECKED_IN', check_in_time=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=? AND shop_id=?", [existing.daily_operation_id, getCurrentShopId()]);
+      if (operations[0].status !== 'IN_PROGRESS') await connection.query("UPDATE daily_operations SET status='IN_PROGRESS', started_time=COALESCE(started_time, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP WHERE id=? AND shop_id=?", [existing.daily_operation_id, getCurrentShopId()]);
     }
     await boardingRepository.updateLifecycle(id, 'IN_PROGRESS', new Date(), null, connection);
     return mapBoarding(await boardingRepository.findByIdWithRelations(id, connection));
@@ -167,10 +168,10 @@ async function checkOut(id) {
     if (!existing) throw notFound('BOARDING_NOT_FOUND', 'Boarding record not found');
     if (existing.status !== 'IN_PROGRESS') throw validationError({ status: `Cannot check out from status ${existing.status}` });
     if (existing.daily_operation_id) {
-      const [operations] = await connection.query('SELECT id, status FROM daily_operations WHERE id = ? FOR UPDATE', [existing.daily_operation_id]);
+      const [operations] = await connection.query('SELECT id, status FROM daily_operations WHERE id = ? AND shop_id = ? FOR UPDATE', [existing.daily_operation_id, getCurrentShopId()]);
       if (!operations.length) throw notFound('DAILY_OPERATION_NOT_FOUND', 'Daily operation not found');
       if (operations[0].status !== 'IN_PROGRESS') throw validationError({ status: `Cannot complete daily operation from status ${operations[0].status}` });
-      await connection.query("UPDATE daily_operations SET status='COMPLETED', completed_time=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?", [existing.daily_operation_id]);
+      await connection.query("UPDATE daily_operations SET status='COMPLETED', completed_time=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=? AND shop_id=?", [existing.daily_operation_id, getCurrentShopId()]);
     }
     await boardingRepository.updateLifecycle(id, 'COMPLETED', null, new Date(), connection);
     return mapBoarding(await boardingRepository.findByIdWithRelations(id, connection));
