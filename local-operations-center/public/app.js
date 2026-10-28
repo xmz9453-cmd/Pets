@@ -271,6 +271,15 @@ const promptDetails = {
     fields: [{ name: 'value', label: '完整版本識別碼' }], confirmText: '授權此推送',
     validate: (value) => value.value === prompt.expectedCommit ? '' : '版本識別碼不符；尚未送出確認。',
   }),
+  'unverified-recovery': (prompt) => ({
+    title: '封存未驗收部署並重新部署', eyebrow: '部署恢復確認',
+    paragraphs: [
+      { text: `Production 目前記錄的 commit ${prompt.expectedCommit} 已完成技術部署，但 Browser Acceptance 尚未通過。這一步不會把舊部署標記為成功；它會封存舊狀態，並在接下來明確授權的新部署中保留舊 commit 作為前一版紀錄。`, note: true },
+      { text: `確認舊版驗收未通過，並授權繼續部署新 commit，請輸入 RECOVER ${prompt.expectedCommit}。` },
+    ],
+    fields: [{ name: 'value', label: '恢復確認文字' }], confirmText: '封存舊狀態並繼續',
+    validate: (value) => value.value === `RECOVER ${prompt.expectedCommit}` ? '' : `請完整輸入 RECOVER ${prompt.expectedCommit}。`,
+  }),
   'deploy-freeze': (prompt) => ({
     title: '確認正式部署', eyebrow: '部署步驟 2',
     paragraphs: [{ text: '開始正式部署前，請確認期間不會更新 GitHub master，也沒有其他正式部署正在執行。' }, { text: `請輸入：DEPLOY ${prompt.expectedCommit} FREEZE`, note: true }],

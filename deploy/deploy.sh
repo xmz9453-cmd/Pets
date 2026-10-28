@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 1 ] || [[ ! "${1:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
-  echo "Usage: $0 <40-character-target-commit-sha>" >&2
+RECOVER_UNVERIFIED=0
+RECOVERY_EXPECTED_SHA=""
+if [ "$#" -eq 3 ] && [ "${2:-}" = "--recover-unverified" ] && [[ "${3:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  RECOVER_UNVERIFIED=1
+  RECOVERY_EXPECTED_SHA="${3,,}"
+elif [ "$#" -ne 1 ]; then
+  echo "Usage: $0 <40-character-target-commit-sha> [--recover-unverified <prior-commit-sha>]" >&2
+  exit 2
+fi
+if [[ ! "${1:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "Usage: $0 <40-character-target-commit-sha> [--recover-unverified <prior-commit-sha>]" >&2
   exit 2
 fi
 
@@ -14,7 +23,7 @@ TARGET_SHA="${1,,}"
 # ==============================================================================
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${DEPLOY_DIR}/.." && pwd)"
+PROJECT_ROOT="${PETS_DEPLOY_ROOT:-$(cd "${DEPLOY_DIR}/.." && pwd)}"
 source "${DEPLOY_DIR}/lib/state.sh"
 source "${DEPLOY_DIR}/lib/install-paths.sh"
 BACKUP_DIR="${BACKUP_DIR:-/home/zhe/pets-backups}"
@@ -54,9 +63,18 @@ if ! command -v flock >/dev/null 2>&1; then
   echo "[deploy.sh ERROR] flock is required for safe deployment locking." >&2
   exit 1
 fi
-if ! flock -n 200; then
-  echo "[deploy.sh ERROR] Another deployment process is currently running or holds the lock." >&2
-  exit 1
+if [ "${PETS_DEPLOY_LOCK_HELD:-0}" = "1" ]; then
+  LOCK_FD_TARGET="$(readlink -f "/proc/$$/fd/9" 2>/dev/null || true)"
+  EXPECTED_LOCK_TARGET="$(readlink -f "${LOCK_FILE}" 2>/dev/null || true)"
+  if [ -z "${LOCK_FD_TARGET}" ] || [ "${LOCK_FD_TARGET}" != "${EXPECTED_LOCK_TARGET}" ]; then
+    echo "[deploy.sh ERROR] Inherited deployment lock is missing or does not match the configured lock file." >&2
+    exit 1
+  fi
+else
+  if ! flock -n 200; then
+    echo "[deploy.sh ERROR] Another deployment process is currently running or holds the lock." >&2
+    exit 1
+  fi
 fi
 
 # Secret-masked logging setup (Decision 45: do not dump .env, mask known secrets)
@@ -93,6 +111,7 @@ EOF
 # 2. Read and Validate Existing Deployment State
 PREV_COMMIT="NONE"
 PREV_BACKUP="NONE"
+RECOVERED_STATE_ARCHIVE=""
 
 if [ -f "${STATE_FILE}" ]; then
   if ! read_deployment_state "${STATE_FILE}"; then
@@ -100,6 +119,14 @@ if [ -f "${STATE_FILE}" ]; then
     exit 1
   fi
   EXISTING_STATUS="${DEPLOY_STATE[status]}"
+
+  if [ "${RECOVER_UNVERIFIED}" -eq 1 ] &&
+      { [ "${EXISTING_STATUS}" != "DEPLOYED" ] ||
+        [ "${DEPLOY_STATE[verification]}" != "pending" ] ||
+        [ "${DEPLOY_STATE[commit],,}" != "${RECOVERY_EXPECTED_SHA}" ]; }; then
+    echo "[deploy.sh ERROR] Recovery authorization does not match the current DEPLOYED verification-pending commit." >&2
+    exit 1
+  fi
 
   if [ "${EXISTING_STATUS}" = "RUNNING" ]; then
     echo "[deploy.sh ERROR] Deployment State is RUNNING. Previous deployment did not exit cleanly." >&2
@@ -110,16 +137,46 @@ if [ -f "${STATE_FILE}" ]; then
     echo "Run deploy/clear-state.sh after manual recovery before starting a new deployment." >&2
     exit 1
   elif [ "${EXISTING_STATUS}" = "DEPLOYED" ]; then
-    echo "[deploy.sh ERROR] Deployment State is DEPLOYED (verification pending)." >&2
-    echo "Run deploy/confirm.sh to certify the existing deployment before starting a new one." >&2
-    exit 1
+    if [ "${RECOVER_UNVERIFIED}" -ne 1 ]; then
+      echo "[deploy.sh ERROR] Deployment State is DEPLOYED (verification pending)." >&2
+      echo "A new deployment requires explicit recovery authorization after the previous browser verification was not passed." >&2
+      exit 1
+    fi
+    HISTORY_DIR="${STATE_DIR}/history"
+    ensure_private_owned_directory "${HISTORY_DIR}"
+    OLD_LOG_BASENAME="${DEPLOY_STATE[log_file]##*/}"
+    RECOVERED_STATE_ARCHIVE="${HISTORY_DIR}/deployment-state-${OLD_LOG_BASENAME%.log}-${DEPLOY_STATE[commit]}.state"
+    if [ -L "${RECOVERED_STATE_ARCHIVE}" ]; then
+      echo "[deploy.sh ERROR] Recovery archive is a symbolic link; refusing to use it." >&2
+      exit 1
+    elif [ -e "${RECOVERED_STATE_ARCHIVE}" ]; then
+      if ! cmp -s -- "${STATE_FILE}" "${RECOVERED_STATE_ARCHIVE}"; then
+        echo "[deploy.sh ERROR] Recovery archive exists with different contents; refusing to overwrite deployment history." >&2
+        exit 1
+      fi
+    else
+      cp -- "${STATE_FILE}" "${RECOVERED_STATE_ARCHIVE}"
+      chmod 600 "${RECOVERED_STATE_ARCHIVE}"
+    fi
+    PREV_COMMIT="${DEPLOY_STATE[previous_commit]}"
+    PREV_BACKUP="${DEPLOY_STATE[backup]}"
   fi
-  if [ "${EXISTING_STATUS}" != "SUCCESS" ]; then
+  if [ "${EXISTING_STATUS}" != "SUCCESS" ] &&
+      ! { [ "${EXISTING_STATUS}" = "DEPLOYED" ] && [ "${RECOVER_UNVERIFIED}" -eq 1 ]; }; then
     echo "[deploy.sh ERROR] Existing deployment state is not a completed SUCCESS state; refusing to continue." >&2
     exit 1
   fi
-  PREV_COMMIT="${DEPLOY_STATE[commit]}"
-  PREV_BACKUP="${DEPLOY_STATE[backup]}"
+  if [ "${EXISTING_STATUS}" = "SUCCESS" ]; then
+    PREV_COMMIT="${DEPLOY_STATE[commit]}"
+    PREV_BACKUP="${DEPLOY_STATE[backup]}"
+  fi
+elif [ "${RECOVER_UNVERIFIED}" -eq 1 ]; then
+  echo "[deploy.sh ERROR] Recovery mode requires the previously authorized DEPLOYED state to still exist." >&2
+  exit 1
+fi
+
+if [ -n "${RECOVERED_STATE_ARCHIVE}" ]; then
+  echo "Recovery: prior unverified deployment state archived at ${RECOVERED_STATE_ARCHIVE}"
 fi
 
 # 3. Transition State to RUNNING

@@ -723,7 +723,7 @@ class OperationsManager {
   }
 
   async waitForPrompt(operation, child, prompt) {
-    if (!prompt || !['push-authorization', 'deploy-freeze', 'browser-acceptance', 'remote-confirmation'].includes(prompt.type)) {
+    if (!prompt || !['push-authorization', 'unverified-recovery', 'deploy-freeze', 'browser-acceptance', 'remote-confirmation'].includes(prompt.type)) {
       throw new Error('部署入口回報未知的確認步驟。');
     }
     operation.status = 'waiting-confirmation';
@@ -737,6 +737,7 @@ class OperationsManager {
     });
     const expected = {
       'push-authorization': prompt.expectedCommit,
+      'unverified-recovery': `RECOVER ${prompt.expectedCommit}`,
       'deploy-freeze': `DEPLOY ${prompt.expectedCommit} FREEZE`,
       'browser-acceptance': 'PASS',
       'remote-confirmation': 'CONFIRM',
@@ -752,6 +753,7 @@ class OperationsManager {
       ? '已取消目前確認；正在結束部署流程'
       : ({
         'push-authorization': '已授權推送；正在推送並核對 GitHub master',
+        'unverified-recovery': '已授權封存未驗收部署紀錄；正在準備重新部署',
         'deploy-freeze': '已確認部署凍結；正在啟動 Production 部署',
         'browser-acceptance': '正在確認人工驗收結果',
         'remote-confirmation': '正在提交 Production 驗收確認',
@@ -859,6 +861,7 @@ class OperationsManager {
     const prompt = operation.confirmation;
     const expected = {
       'push-authorization': prompt.expectedCommit,
+      'unverified-recovery': `RECOVER ${prompt.expectedCommit}`,
       'deploy-freeze': `DEPLOY ${prompt.expectedCommit} FREEZE`,
       'browser-acceptance': 'PASS',
       'remote-confirmation': 'CONFIRM',

@@ -23,7 +23,8 @@ function Read-DeploymentAuthorization {
     param(
         [Parameter(Mandatory = $true)][string]$Kind,
         [Parameter(Mandatory = $true)][string]$Message,
-        [Parameter(Mandatory = $true)][string]$ExpectedValue
+        [Parameter(Mandatory = $true)][string]$ExpectedValue,
+        [string]$PromptCommit = $ExpectedCommit
     )
 
     if (-not $WebControl) {
@@ -33,7 +34,7 @@ function Read-DeploymentAuthorization {
     $event = [pscustomobject]@{
         type = $Kind
         message = $Message
-        expectedCommit = $ExpectedCommit.ToLowerInvariant()
+        expectedCommit = $PromptCommit.ToLowerInvariant()
     } | ConvertTo-Json -Compress
     [Console]::Out.WriteLine("OPS_PROMPT:$event")
     [Console]::Out.Flush()
@@ -230,8 +231,11 @@ function Test-ProductionDeploymentTarget {
     }
 }
 function Get-ProductionState {
-    $remoteCommand = "cat -- $script:StateFile"
+    $remoteCommand = "if [ -L '$script:StateFile' ]; then echo 'Production deployment state is a symbolic link.' >&2; exit 45; elif [ -f '$script:StateFile' ]; then cat -- '$script:StateFile'; elif [ ! -e '$script:StateFile' ]; then printf '%s\n' PETS_DEPLOY_STATE_NONE; else echo 'Production deployment state is not a regular file.' >&2; exit 46; fi"
     $lines = Invoke-ReadOnlySsh -RemoteCommand $remoteCommand
+    if ($lines.Count -eq 1 -and $lines[0] -ceq 'PETS_DEPLOY_STATE_NONE') {
+        return $null
+    }
     $state = @{}
     $allowedFields = @('status', 'commit', 'previous_commit', 'timestamp', 'backup', 'verification', 'log_file', 'verified_at')
 
@@ -402,6 +406,23 @@ try {
     Test-ProductionDeploymentTarget -ExpectedSha $ExpectedCommit
     Write-Host 'Production deployment target is ready.'
 
+    $existingState = Get-ProductionState
+    $recoverUnverified = $false
+    if ($null -ne $existingState) {
+        if ($existingState['status'] -ceq 'DEPLOYED' -and $existingState['verification'] -ceq 'pending') {
+            $recoveryAuthorization = Read-DeploymentAuthorization -Kind 'unverified-recovery' `
+                -Message "Production records commit $($existingState['commit']) as DEPLOYED with verification pending. Confirm the previous Browser Acceptance was not passed and authorize archiving that state before deploying $ExpectedCommit. Type RECOVER $($existingState['commit']) to continue." `
+                -ExpectedValue "RECOVER $($existingState['commit'])" `
+                -PromptCommit $existingState['commit']
+            if ($recoveryAuthorization -cne "RECOVER $($existingState['commit'])") {
+                throw 'Recovery of an unverified Production deployment was not explicitly authorized.'
+            }
+            $recoverUnverified = $true
+        } elseif ($existingState['status'] -cne 'SUCCESS' -or $existingState['verification'] -cne 'PASS') {
+            throw "Production state is $($existingState['status'])/$($existingState['verification']); manual investigation is required before deployment."
+        }
+    }
+
     Write-Warning 'This confirmation does not technically lock GitHub master. Do not allow master updates or another deployment to this Production environment until deployment reaches DEPLOYED.'
     $deployAuthorization = Read-DeploymentAuthorization -Kind 'deploy-freeze' `
         -Message "Confirm all three conditions: no GitHub master updates, no concurrent Production deployment, and GitHub master equals $ExpectedCommit. Type DEPLOY $ExpectedCommit FREEZE" `
@@ -410,8 +431,44 @@ try {
         throw 'Production deployment was not explicitly authorized.'
     }
 
-    $quotedExpectedSha = "'" + $ExpectedCommit + "'"
-    $deployCommand = "cd '$($script:ProductionRoot)' && exec bash '$($script:ProductionRoot)/deploy/deploy.sh' $quotedExpectedSha"
+    $recoveryArgument = if ($recoverUnverified) { " --recover-unverified $($existingState['commit'])" } else { '' }
+    $bootstrapScript = @'
+set -euo pipefail
+cd '__PRODUCTION_ROOT__'
+remote_url=$(git remote get-url origin)
+if [ "$remote_url" != '__EXPECTED_REMOTE_URL__' ]; then
+  echo 'Production origin URL mismatch; refusing deployment.' >&2
+  exit 41
+fi
+git fetch --no-tags origin refs/heads/master
+fetched_master_sha=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+if [ "$fetched_master_sha" != '__EXPECTED_SHA__' ]; then
+  echo 'GitHub master changed or does not match the authorized deployment commit; refusing deployment.' >&2
+  exit 42
+fi
+tmp_dir=$(mktemp -d /tmp/pets-deploy-bootstrap.XXXXXX)
+trap 'rm -rf -- "$tmp_dir"' EXIT
+git archive '__EXPECTED_SHA__' deploy | tar -x -C "$tmp_dir"
+exec 9>'/home/zhe/pets-deploy-state/deployment.lock'
+if ! flock -n 9; then
+  echo 'Another Production deployment process holds the lock.' >&2
+  exit 43
+fi
+export PETS_DEPLOY_ROOT='__PRODUCTION_ROOT__'
+export PETS_DEPLOY_LOCK_HELD=1
+if bash "$tmp_dir/deploy/deploy.sh" '__EXPECTED_SHA__'__RECOVERY_ARGUMENT__; then
+  deploy_exit_code=0
+else
+  deploy_exit_code=$?
+fi
+exit "$deploy_exit_code"
+'@
+    $bootstrapScript = $bootstrapScript.Replace('__PRODUCTION_ROOT__', $script:ProductionRoot)
+    $bootstrapScript = $bootstrapScript.Replace('__EXPECTED_REMOTE_URL__', $script:ExpectedRemoteUrl)
+    $bootstrapScript = $bootstrapScript.Replace('__EXPECTED_SHA__', $ExpectedCommit)
+    $bootstrapScript = $bootstrapScript.Replace('__RECOVERY_ARGUMENT__', $recoveryArgument)
+    $bootstrapBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bootstrapScript))
+    $deployCommand = "printf '%s' '$bootstrapBase64' | base64 -d | bash -s"
 
     Write-Host "Starting Production deployment for $ExpectedCommit."
     $script:DeploymentPhase = 'production-deploy'
