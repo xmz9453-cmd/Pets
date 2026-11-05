@@ -1,243 +1,563 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { confirmExistingBookingCustomer, createPublicOnboarding, getPublicBookingPets, getPublicBookingServices } from '../api/client';
-
-const BOOKING_MESSAGES = {
-  new: '新客預約流程尚未開放。',
-  confirmationFailure: '手機號碼或姓名不正確，請確認後再試。',
-  petLoadFailure: '無法載入寵物資料，請重新確認身分。',
-};
+import {
+  createCustomerBookingRequest,
+  getCustomerBookingAvailability,
+  getCustomerBookingOnboardingToken,
+  getCustomerBookingPets,
+  getCustomerBookingProducts,
+  getCustomerBookingRequests,
+  getCustomerBookingServices,
+  getCustomerMember,
+  getCustomerMemberAuthUrl,
+  getCustomerMemberProviders,
+  logoutCustomerMember,
+} from '../api/client';
 
 const SPECIES_LABELS = { DOG: '狗', CAT: '貓' };
+const STATUS_LABELS = {
+  PENDING: '待店家確認',
+  AWAITING_CUSTOMER: '待補資料／簽約',
+  SCHEDULED: '已排程',
+  CONFIRMED: '正式確認',
+  CANCELLED: '已取消',
+};
+const CURRENCY_FORMATTER = new Intl.NumberFormat('zh-TW', {
+  style: 'currency',
+  currency: 'TWD',
+  maximumFractionDigits: 0,
+});
+
+function getToday() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function getMemberErrorMessage(code) {
+  const messages = {
+    login_cancelled: '已取消登入。',
+    CUSTOMER_AUTH_IDENTITY_IN_USE: '此登入方式已連結至其他會員，無法自動合併。',
+    CUSTOMER_AUTH_INVALID_ID_TOKEN: '登入驗證未成功，請重新嘗試。',
+    CUSTOMER_AUTH_PROVIDER_NOT_CONFIGURED: '此登入方式尚未完成設定，請改用其他已開放的登入方式。',
+    CUSTOMER_AUTH_REAUTH_REQUIRED: '請重新登入後，再連結其他登入方式。',
+    CUSTOMER_AUTH_STATE_INVALID: '登入要求已失效，請重新開始。',
+    CUSTOMER_SESSION_INVALID: '登入工作階段已失效，請重新登入。',
+  };
+  return messages[code] || '登入未成功，請稍後再試或聯絡店家。';
+}
 
 export default function BookingPage() {
   const router = useRouter();
-  const publicShopId = router.isReady ? String(router.query.shop_id || '') : '';
-  const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [showReturningForm, setShowReturningForm] = useState(false);
-  const [phone, setPhone] = useState('');
-  const [name, setName] = useState('');
-  const [confirming, setConfirming] = useState(false);
+  const shopId = router.isReady ? String(router.query.shop_id || '1') : '1';
+  const [providers, setProviders] = useState({ LINE: false, GOOGLE: false });
+  const [member, setMember] = useState(null);
+  const [customer, setCustomer] = useState(null);
   const [pets, setPets] = useState([]);
-  const [selectedPetId, setSelectedPetId] = useState(null);
-  const [loadingPets, setLoadingPets] = useState(false);
-  const [petsLoaded, setPetsLoaded] = useState(false);
+  const [requests, setRequests] = useState([]);
   const [services, setServices] = useState([]);
-  const [selectedServiceId, setSelectedServiceId] = useState(null);
-  const [loadingServices, setLoadingServices] = useState(false);
-  const [servicesLoaded, setServicesLoaded] = useState(false);
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [petId, setPetId] = useState('');
+  const [petName, setPetName] = useState('');
+  const [species, setSpecies] = useState('');
+  const [weight, setWeight] = useState('');
+  const [serviceId, setServiceId] = useState('');
+  const [bookingType, setBookingType] = useState('');
+  const [appointmentDate, setAppointmentDate] = useState('');
+  const [checkOutDate, setCheckOutDate] = useState('');
+  const [checkOutTime, setCheckOutTime] = useState('');
+  const [slots, setSlots] = useState([]);
+  const [selectedTime, setSelectedTime] = useState('');
+  const [addOns, setAddOns] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [loadingSlots, setLoadingSlots] = useState(false);
+  const [submittedRequest, setSubmittedRequest] = useState(null);
 
-  async function handleNewBooking() {
-    setCreating(true);
-    setError('');
-    setMessage('');
-    try {
-      const result = await createPublicOnboarding(publicShopId);
-      await router.push(`/onboarding/${encodeURIComponent(result.token)}`);
-    } catch (createError) {
-      setError(createError.code === 'CONTRACT_VERSION_NOT_AVAILABLE'
-        ? '目前店家尚未設定可用的電子契約。請至「店家設定」的「電子契約版本」上傳 PDF、發布版本並設為目前使用版本後，再試一次。'
-        : createError.message || '目前無法開始預約，請稍後再試。');
-    } finally {
-      setCreating(false);
+  const selectedPet = pets.find((pet) => String(pet.id) === petId);
+  const selectedSpecies = selectedPet?.species || species;
+  const selectedService = services.find((service) => String(service.id) === serviceId);
+  const visibleServices = services.filter((service) => service.type === bookingType);
+
+  useEffect(() => {
+    if (!router.isReady) return;
+    let active = true;
+    const loginError = router.query.member_error;
+    if (loginError) setError(getMemberErrorMessage(String(loginError)));
+    if (router.query.member_linked === '1') setMessage('已完成登入方式連結。');
+    if (router.query.member_login === '1') setMessage('會員登入成功。');
+
+    async function loadPage() {
+      try {
+        const providerResult = await getCustomerMemberProviders();
+        if (active) setProviders(providerResult.providers || {});
+      } catch (loadError) {
+        if (active) setError(loadError.message || '目前無法載入登入方式，請稍後再試。');
+      }
+      try {
+        const result = await getCustomerMember(shopId);
+        if (!active) return;
+        setMember(result.member);
+        setCustomer(result.customer);
+        setName(result.customer?.name || result.member?.display_name || '');
+        setPhone(result.customer?.phone || '');
+        const [petResult, requestResult] = await Promise.all([
+          getCustomerBookingPets(shopId),
+          getCustomerBookingRequests(shopId),
+        ]);
+        if (!active) return;
+        setPets(petResult.pets || []);
+        setRequests(requestResult.requests || []);
+      } catch (loadError) {
+        if (active && loadError.statusCode !== 401) {
+          setError(loadError.message || '目前無法載入會員資料，請稍後再試。');
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
     }
-  }
 
-  async function handleExistingCustomerConfirmation(event) {
-    event.preventDefault();
-    setConfirming(true);
-    setLoadingPets(false);
-    setPets([]);
-    setSelectedPetId(null);
-    setSelectedServiceId(null);
-    setServices([]);
-    setServicesLoaded(false);
-    setPetsLoaded(false);
-    setError('');
-    setMessage('');
-    try {
-      await confirmExistingBookingCustomer(phone, name, publicShopId);
-    } catch {
-      setError(BOOKING_MESSAGES.confirmationFailure);
-      setConfirming(false);
+    loadPage();
+    return () => { active = false; };
+  }, [router.isReady, router.query.member_error, router.query.member_linked, router.query.member_login, shopId]);
+
+  useEffect(() => {
+    if (!member || !selectedSpecies) {
+      setServices([]);
+      setProducts([]);
       return;
     }
+    let active = true;
+    Promise.all([
+      getCustomerBookingServices(
+        selectedPet ? { pet_id: String(selectedPet.id) } : { species: selectedSpecies },
+        shopId,
+      ),
+      getCustomerBookingProducts(selectedSpecies, shopId),
+    ]).then(([serviceResult, productResult]) => {
+      if (!active) return;
+      setServices(serviceResult.services || []);
+      setProducts(productResult.products || []);
+    }).catch((loadError) => {
+      if (active) setError(loadError.message || '目前無法載入服務與商品，請稍後再試。');
+    });
+    return () => { active = false; };
+  }, [member, selectedSpecies, selectedPet, shopId]);
 
-    setLoadingPets(true);
+  const visibleProducts = useMemo(
+    () => products.filter((product) => product.species === 'BOTH' || product.species === selectedSpecies),
+    [products, selectedSpecies],
+  );
+
+  async function handleLoadSlots(event) {
+    event.preventDefault();
+    if (!serviceId || !appointmentDate || !selectedSpecies) return;
+    setLoadingSlots(true);
+    setSlots([]);
+    setSelectedTime('');
+    setError('');
+    setMessage('');
     try {
-      const result = await getPublicBookingPets(publicShopId);
-      setPets(result.pets || []);
-      setPetsLoaded(true);
-    } catch {
-      setError(BOOKING_MESSAGES.petLoadFailure);
+      const filters = {
+        service_id: serviceId,
+        date: appointmentDate,
+        ...(selectedPet ? { pet_id: String(selectedPet.id) } : { species: selectedSpecies }),
+      };
+      if (selectedService?.type === 'BOARDING') {
+        filters.check_out_date = checkOutDate;
+        filters.check_out_time = checkOutTime;
+      }
+      const result = await getCustomerBookingAvailability(filters, shopId);
+      setSlots(result.slots || []);
+      if (!result.slots?.length) setMessage('這個日期目前沒有可申請的時段，請改選其他日期。');
+    } catch (availabilityError) {
+      setError(availabilityError.message || '目前無法查詢時段，請稍後再試。');
     } finally {
-      setLoadingPets(false);
-      setConfirming(false);
+      setLoadingSlots(false);
     }
   }
 
-  async function handlePetSelection(petId) {
-    setSelectedPetId(petId);
-    setSelectedServiceId(null);
-    setServices([]);
-    setServicesLoaded(false);
-    setLoadingServices(true);
+  async function handleSubmitRequest() {
+    setBusy(true);
     setError('');
-
+    setMessage('');
     try {
-      const result = await getPublicBookingServices(petId, publicShopId);
-      setServices(result.services || []);
-      setServicesLoaded(true);
-    } catch (serviceError) {
-      const status = serviceError?.statusCode;
-      if (status === 401) {
-        setError(BOOKING_MESSAGES.petLoadFailure);
-      } else {
-        setError(serviceError?.message || '無法載入可預約服務，請稍後再試。');
-      }
+      const result = await createCustomerBookingRequest({
+        customer: { name, phone },
+        pet: selectedPet
+          ? { pet_id: Number(selectedPet.id) }
+          : { name: petName, species, weight },
+        service_id: Number(serviceId),
+        appointment_date: appointmentDate,
+        appointment_time: selectedTime,
+        ...(selectedService?.type === 'BOARDING'
+          ? { check_out_date: checkOutDate, check_out_time: checkOutTime }
+          : {}),
+        add_ons: Object.entries(addOns)
+          .filter(([, quantity]) => Number(quantity) > 0)
+          .map(([productId, quantity]) => ({ product_id: Number(productId), quantity: Number(quantity) })),
+      }, shopId);
+      setSubmittedRequest(result.request);
+      setRequests((current) => [result.request, ...current]);
+      setSlots([]);
+      setSelectedTime('');
+      setMessage(`預約申請已送出（申請編號 ${result.request.appointment_id}）。時段尚未保留，需店家確認；商品也需店家確認庫存，到店付款。`);
+    } catch (submitError) {
+      setError(submitError.message || '預約申請未能送出，請重新查詢時段後再試。');
     } finally {
-      setLoadingServices(false);
+      setBusy(false);
+    }
+  }
+
+  async function openOnboarding(appointmentId) {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await getCustomerBookingOnboardingToken(appointmentId, shopId);
+      await router.push(`/onboarding/${encodeURIComponent(result.token)}?shop_id=${encodeURIComponent(shopId)}`);
+    } catch (onboardingError) {
+      setError(onboardingError.message || '目前無法開啟補件資料，請稍後再試。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await logoutCustomerMember(shopId);
+      setMember(null);
+      setCustomer(null);
+      setPets([]);
+      setRequests([]);
+    } catch (logoutError) {
+      setError(logoutError.message || '登出失敗，請稍後再試。');
     }
   }
 
   return (
     <main className="container py-5">
       <div className="row justify-content-center">
-        <div className="col-12 col-md-8 col-lg-6">
-          <h1 className="text-center mb-4">我要預約</h1>
-          <div className="d-grid gap-3">
-            <button
-              type="button"
-              className="btn btn-outline-primary text-start p-4"
-              onClick={handleNewBooking}
-              disabled={creating}
-            >
-              <span className="d-block fs-4 fw-semibold mb-1">{creating ? '正在準備預約...' : '新客預約'}</span>
-              <span className="d-block">第一次來店，還沒有資料</span>
-            </button>
-            <button
-              type="button"
-              className="btn btn-outline-primary text-start p-4"
-              onClick={() => {
-                setShowReturningForm(true);
-                setError('');
-                setMessage('');
-              }}
-            >
-              <span className="d-block fs-4 fw-semibold mb-1">舊客預約</span>
-              <span className="d-block">之前已經來過店裡</span>
-            </button>
+        <div className="col-12 col-lg-9">
+          <h1 className="text-center mb-4">會員預約</h1>
+          <div className="alert alert-info" role="note">
+            送出的是預約申請，時段尚未保留，需店家確認。加購商品也需店家確認庫存，請於到店時付款。取消或改期請聯絡店家。
           </div>
-          {showReturningForm ? (
-            <form className="mt-4" onSubmit={handleExistingCustomerConfirmation}>
-              <div className="mb-3">
-                <label htmlFor="booking-phone" className="form-label">手機號碼</label>
-                <input
-                  id="booking-phone"
-                  className="form-control"
-                  type="tel"
-                  autoComplete="tel"
-                  value={phone}
-                  onChange={(event) => setPhone(event.target.value)}
-                  required
-                  disabled={confirming}
-                />
-              </div>
-              <div className="mb-3">
-                <label htmlFor="booking-name" className="form-label">姓名</label>
-                <input
-                  id="booking-name"
-                  className="form-control"
-                  type="text"
-                  autoComplete="name"
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  required
-                  disabled={confirming}
-                />
-              </div>
-              <button type="submit" className="btn btn-primary" disabled={confirming}>
-                {confirming ? '確認中...' : '確認'}
-              </button>
-            </form>
-          ) : null}
-          {error ? (
-            <div className="alert alert-danger mt-4 mb-0" role="alert">
-              {error}
-            </div>
-          ) : null}
-          {message ? (
-            <div className="alert alert-info mt-4 mb-0" role="status" aria-live="polite">
-              {message}
-            </div>
-          ) : null}
-          {loadingPets ? (
-            <p className="mt-4" role="status">正在載入寵物資料...</p>
-          ) : pets.length > 0 ? (
-            <section className="mt-4" aria-labelledby="booking-pet-heading">
-              <h2 id="booking-pet-heading" className="h5">請選擇要預約的寵物</h2>
-              <div className="d-grid gap-2">
-                {pets.map((pet) => (
-                  <label key={pet.id} className="card p-3">
-                    <span className="d-flex align-items-start gap-2">
-                      <input
-                        type="radio"
-                        name="booking-pet"
-                        value={pet.id}
-                        checked={selectedPetId === pet.id}
-                        onChange={() => handlePetSelection(pet.id)}
-                      />
-                      <span>
-                        <span className="d-block fw-semibold">{pet.name}</span>
-                        <span className="d-block text-muted">
-                          {SPECIES_LABELS[pet.species] || pet.species}
-                          {pet.breed ? `・${pet.breed}` : ''}
-                        </span>
-                      </span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          {!loadingPets && petsLoaded && pets.length === 0 ? (
-            <p className="mt-4 text-muted" role="status">目前沒有可預約的寵物。</p>
-          ) : null}
-          {selectedPetId ? (
-            <section className="mt-4" aria-labelledby="booking-service-heading">
-              <h2 id="booking-service-heading" className="h5">請選擇要預約的服務</h2>
-              {loadingServices ? (
-                <p className="mt-3" role="status">正在載入可預約服務...</p>
-              ) : services.length > 0 ? (
+          {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
+          {message ? <div className="alert alert-info" role="status" aria-live="polite">{message}</div> : null}
+          {loading ? <p role="status">正在載入會員資料...</p> : null}
+
+          {!loading && !member ? (
+            <section className="card shadow-sm">
+              <div className="card-body">
+                <h2 className="h5">請選擇登入方式</h2>
+                <p className="text-muted">登入後即可選擇服務、寵物與預約時段。</p>
                 <div className="d-grid gap-2">
-                  {services.map((service) => (
-                    <label key={service.id} className="card p-3">
-                      <span className="d-flex align-items-start gap-2">
-                        <input
-                          type="radio"
-                          name="booking-service"
-                          value={service.id}
-                          checked={selectedServiceId === service.id}
-                          onChange={() => setSelectedServiceId(service.id)}
-                        />
-                        <span>
-                          <span className="d-block fw-semibold">{service.name}</span>
-                          <span className="d-block text-muted">{service.type === 'GROOMING' ? '美容' : '住宿'}</span>
-                          <span className="d-block text-muted">
-                            {new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(service.price)}／{service.unit}
-                          </span>
-                        </span>
-                      </span>
-                    </label>
+                  {['LINE', 'GOOGLE'].map((provider) => (
+                    providers[provider] ? (
+                      <a
+                        key={provider}
+                        className={`btn ${provider === 'LINE' ? 'btn-success' : 'btn-outline-dark'}`}
+                        href={getCustomerMemberAuthUrl(provider, shopId)}
+                      >
+                        使用 {provider === 'LINE' ? 'LINE' : 'Google'} 登入
+                      </a>
+                    ) : (
+                      <button key={provider} type="button" className="btn btn-outline-secondary" disabled>
+                        {provider === 'LINE' ? 'LINE' : 'Google'} 尚未設定，請聯絡店家
+                      </button>
+                    )
                   ))}
                 </div>
-              ) : null}
-              {!loadingServices && servicesLoaded && services.length === 0 ? (
-                <p className="mt-3 text-muted" role="status">目前沒有可預約的服務。</p>
-              ) : null}
+              </div>
             </section>
+          ) : null}
+
+          {member ? (
+            <>
+              <section className="card shadow-sm mb-4">
+                <div className="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+                  <div>
+                    <h2 className="h5 mb-1">您好，{member.display_name || name || '會員'}</h2>
+                    <p className="small text-muted mb-1">會員編號：{member.id}</p>
+                    <p className="small text-muted mb-2">
+                      已連結：{member.linked_providers?.map((provider) => (provider === 'LINE' ? 'LINE' : 'Google')).join('、') || '無'}
+                    </p>
+                    {member.can_link_provider ? (
+                      <div className="d-flex flex-wrap gap-2">
+                        {['LINE', 'GOOGLE'].filter((provider) => providers[provider] && !member.linked_providers?.includes(provider)).map((provider) => (
+                          <a
+                            key={provider}
+                            className="btn btn-sm btn-outline-primary"
+                            href={getCustomerMemberAuthUrl(provider, shopId, 'LINK')}
+                          >
+                            連結{provider === 'LINE' ? ' LINE' : ' Google'} 帳號
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <button type="button" className="btn btn-outline-secondary" onClick={handleLogout}>登出會員</button>
+                </div>
+              </section>
+
+              <section className="card shadow-sm mb-4" aria-labelledby="booking-type-title">
+                <div className="card-body">
+                  <h2 className="h5 mb-3" id="booking-type-title">選擇預約項目</h2>
+                  <div className="d-flex flex-wrap gap-3" role="group" aria-label="預約類型">
+                    {[
+                      { type: 'GROOMING', label: '預約美容' },
+                      { type: 'BOARDING', label: '預約住宿' },
+                    ].map(({ type, label }) => (
+                      <button
+                        key={type}
+                        type="button"
+                        className={`btn btn-lg ${bookingType === type ? 'btn-primary' : 'btn-outline-primary'}`}
+                        aria-pressed={bookingType === type}
+                        onClick={() => {
+                          setBookingType(type);
+                          setServiceId('');
+                          setAppointmentDate('');
+                          setCheckOutDate('');
+                          setCheckOutTime('');
+                          setSlots([]);
+                          setSelectedTime('');
+                          setAddOns({});
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              {submittedRequest ? (
+                <div className="alert alert-success" role="status">
+                  申請編號：{submittedRequest.appointment_id}；目前狀態：待店家確認。所選時段尚未保留。
+                </div>
+              ) : null}
+
+              {bookingType ? (
+                <>
+              <section className="card shadow-sm mb-4">
+                <div className="card-body">
+                  <h2 className="h5 mb-3">聯絡資料</h2>
+                  <div className="row g-3">
+                    <div className="col-md-6">
+                      <label className="form-label" htmlFor="booking-name">姓名</label>
+                      <input id="booking-name" className="form-control" value={name} onChange={(event) => setName(event.target.value)} required maxLength={100} />
+                    </div>
+                    <div className="col-md-6">
+                      <label className="form-label" htmlFor="booking-phone">聯絡電話</label>
+                      <input id="booking-phone" className="form-control" type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} required maxLength={30} />
+                    </div>
+                  </div>
+                  <small className="text-muted">聯絡電話必填，不會以簡訊驗證。</small>
+                </div>
+              </section>
+
+              <section className="card shadow-sm mb-4">
+                <div className="card-body">
+                  <h2 className="h5 mb-3">寵物與服務</h2>
+                  <label className="form-label" htmlFor="booking-pet">選擇寵物</label>
+                  <select
+                    id="booking-pet"
+                    className="form-select mb-3"
+                    value={petId}
+                    onChange={(event) => {
+                      setPetId(event.target.value);
+                      setServiceId('');
+                      setSlots([]);
+                      setSelectedTime('');
+                    }}
+                  >
+                    <option value="">新增寵物資料</option>
+                    {pets.map((pet) => (
+                      <option key={pet.id} value={pet.id}>{pet.name}（{SPECIES_LABELS[pet.species] || pet.species}）</option>
+                    ))}
+                  </select>
+
+                  {!selectedPet ? (
+                    <div className="row g-3 mb-3">
+                      <div className="col-md-6">
+                        <label className="form-label" htmlFor="booking-pet-name">寵物名字</label>
+                        <input id="booking-pet-name" className="form-control" value={petName} onChange={(event) => setPetName(event.target.value)} required maxLength={100} />
+                      </div>
+                      <div className="col-md-6">
+                        <label className="form-label" htmlFor="booking-species">寵物種類</label>
+                        <select
+                          id="booking-species"
+                          className="form-select"
+                          value={species}
+                          onChange={(event) => {
+                            setSpecies(event.target.value);
+                            setServiceId('');
+                            setSlots([]);
+                            setSelectedTime('');
+                          }}
+                          required
+                        >
+                          <option value="">請選擇</option>
+                          <option value="DOG">狗</option>
+                          <option value="CAT">貓</option>
+                        </select>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {selectedSpecies ? (
+                    <div className="mb-3">
+                      <label className="form-label" htmlFor="booking-service">預約服務</label>
+                      <select id="booking-service" className="form-select" value={serviceId} onChange={(event) => { setServiceId(event.target.value); setSlots([]); setSelectedTime(''); }}>
+                        <option value="">請選擇{bookingType === 'GROOMING' ? '美容' : '住宿'}服務</option>
+                        {visibleServices.map((service) => (
+                          <option key={service.id} value={service.id}>
+                            {service.type === 'GROOMING' ? '美容' : '住宿'}｜{service.name}｜{CURRENCY_FORMATTER.format(service.price)}／{service.unit}
+                          </option>
+                        ))}
+                      </select>
+                      {!visibleServices.length ? <p className="small text-muted mt-2 mb-0">目前沒有開放的{bookingType === 'GROOMING' ? '美容' : '住宿'}服務，請聯絡店家。</p> : null}
+                    </div>
+                  ) : null}
+
+                  {!selectedPet && selectedService?.type === 'GROOMING' ? (
+                    <div className="mb-3">
+                      <label className="form-label" htmlFor="booking-weight">寵物體重（公斤）</label>
+                      <input id="booking-weight" className="form-control" type="number" min="0.1" max="300" step="0.1" value={weight} onChange={(event) => setWeight(event.target.value)} required />
+                    </div>
+                  ) : null}
+
+                  {selectedService?.type === 'GROOMING' && selectedPet && !selectedPet.weight ? (
+                    <p className="alert alert-warning">此美容服務需要寵物體重；請先聯絡店家補登資料後再申請。</p>
+                  ) : null}
+                </div>
+              </section>
+
+              {selectedService ? (
+                <section className="card shadow-sm mb-4">
+                  <div className="card-body">
+                    <h2 className="h5 mb-3">{selectedService.type === 'BOARDING' ? '入住與退房時間' : '預約日期與時段'}</h2>
+                    <form onSubmit={handleLoadSlots}>
+                      <div className="row g-3">
+                        <div className="col-md-6">
+                          <label className="form-label" htmlFor="booking-date">{selectedService.type === 'BOARDING' ? '入住日期' : '預約日期'}</label>
+                          <input id="booking-date" className="form-control" type="date" min={getToday()} value={appointmentDate} onChange={(event) => { setAppointmentDate(event.target.value); setSlots([]); setSelectedTime(''); }} required />
+                        </div>
+                        {selectedService.type === 'BOARDING' ? (
+                          <>
+                            <div className="col-md-6">
+                              <label className="form-label" htmlFor="booking-checkout-date">退房日期</label>
+                              <input id="booking-checkout-date" className="form-control" type="date" min={appointmentDate || getToday()} value={checkOutDate} onChange={(event) => { setCheckOutDate(event.target.value); setSlots([]); setSelectedTime(''); }} required />
+                            </div>
+                            <div className="col-md-6">
+                              <label className="form-label" htmlFor="booking-checkout-time">退房時間</label>
+                              <input id="booking-checkout-time" className="form-control" type="time" value={checkOutTime} onChange={(event) => { setCheckOutTime(event.target.value); setSlots([]); setSelectedTime(''); }} required />
+                            </div>
+                          </>
+                        ) : null}
+                      </div>
+                      <button type="submit" className="btn btn-outline-primary mt-3" disabled={loadingSlots || !appointmentDate || (selectedService.type === 'BOARDING' && (!checkOutDate || !checkOutTime))}>
+                        {loadingSlots ? '正在查詢時段...' : '查詢可申請時段'}
+                      </button>
+                    </form>
+                    {slots.length ? (
+                      <div className="mt-3">
+                        <h3 className="h6">可申請時段</h3>
+                        <div className="d-flex flex-wrap gap-2">
+                          {slots.map((slot) => (
+                            <label key={slot.time} className={`btn ${selectedTime === slot.time ? 'btn-primary' : 'btn-outline-primary'}`}>
+                              <input className="visually-hidden" type="radio" name="booking-time" value={slot.time} checked={selectedTime === slot.time} onChange={() => setSelectedTime(slot.time)} />
+                              {slot.time}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+              ) : null}
+
+              {selectedService && visibleProducts.length ? (
+                <section className="card shadow-sm mb-4">
+                  <div className="card-body">
+                    <h2 className="h5">加購商品</h2>
+                    <p className="small text-muted">商品需店家確認庫存，預約確認後保留；到店付款。</p>
+                    <div className="d-grid gap-2">
+                      {visibleProducts.map((product) => (
+                        <div key={product.id} className="d-flex flex-wrap align-items-center gap-2 border rounded p-2">
+                          <label className="form-check-label flex-grow-1" htmlFor={`addon-${product.id}`}>
+                            <input
+                              id={`addon-${product.id}`}
+                              className="form-check-input me-2"
+                              type="checkbox"
+                              checked={Number(addOns[product.id] || 0) > 0}
+                              onChange={(event) => setAddOns((current) => ({
+                                ...current,
+                                [product.id]: event.target.checked ? 1 : 0,
+                              }))}
+                            />
+                            {product.name}｜{CURRENCY_FORMATTER.format(product.price)}／{product.unit}｜可供申請 {product.stock_quantity} 件
+                          </label>
+                          {Number(addOns[product.id] || 0) > 0 ? (
+                            <input
+                              className="form-control"
+                              style={{ maxWidth: '100px' }}
+                              type="number"
+                              min="1"
+                              max={product.stock_quantity}
+                              aria-label={`${product.name}加購數量`}
+                              value={addOns[product.id]}
+                              onChange={(event) => setAddOns((current) => ({ ...current, [product.id]: event.target.value }))}
+                            />
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+              ) : null}
+
+              {selectedTime ? (
+                <div className="d-grid mb-4">
+                  <button type="button" className="btn btn-primary btn-lg" onClick={handleSubmitRequest} disabled={busy || !name.trim() || !phone.trim() || (!selectedPet && (!petName.trim() || !species))}>
+                    {busy ? '正在送出申請...' : '送出預約申請'}
+                  </button>
+                  <small className="text-muted mt-2">送出後仍需店家確認；時段不會先行保留。</small>
+                </div>
+              ) : null}
+                </>
+              ) : null}
+
+              <section className="card shadow-sm">
+                <div className="card-body">
+                  <h2 className="h5">我的預約申請</h2>
+                  {!requests.length ? <p className="text-muted mb-0">目前沒有預約申請。</p> : (
+                    <div className="list-group list-group-flush">
+                      {requests.map((request) => (
+                        <div key={request.appointment_id} className="list-group-item px-0">
+                          <div className="d-flex flex-wrap justify-content-between gap-2">
+                            <span>申請編號 {request.appointment_id}｜{request.appointment_date} {String(request.appointment_time).slice(0, 5)}</span>
+                            <strong>{STATUS_LABELS[request.status] || '處理中'}</strong>
+                          </div>
+                          {request.status === 'PENDING' ? <small className="text-muted">時段尚未保留，需店家確認。</small> : null}
+                          {request.status === 'AWAITING_CUSTOMER' ? (
+                            <button type="button" className="btn btn-sm btn-primary mt-2" onClick={() => openOnboarding(request.appointment_id)} disabled={busy}>
+                              補齊資料與簽署契約
+                            </button>
+                          ) : null}
+                          {['CANCELLED', 'SCHEDULED', 'CONFIRMED'].includes(request.status) ? (
+                            <small className="d-block text-muted">取消或改期請聯絡店家。</small>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+            </>
           ) : null}
         </div>
       </div>

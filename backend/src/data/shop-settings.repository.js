@@ -14,6 +14,8 @@ function normalizeShop(row) {
     phone: row.phone || null,
     address: row.address || null,
     email: row.email || null,
+    logo_url: row.logo_storage_key ? `/api/public/shop-logos/${row.logo_storage_key}` : null,
+    announcement: row.portal_announcement || '',
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -43,10 +45,34 @@ async function getShopSettings(connection = getPool()) {
   return normalizeShop(rows[0] || null);
 }
 
+async function getShopSettingsForUpdate(connection = getPool()) {
+  const [rows] = await connection.query(
+    'SELECT * FROM shop_settings WHERE shop_id = ? ORDER BY id DESC LIMIT 1 FOR UPDATE',
+    [getCurrentShopId()],
+  );
+  return normalizeShop(rows[0] || null);
+}
+
+async function getShopLogoStorageKey(shopSettingsId, connection = getPool()) {
+  const [rows] = await connection.query(
+    'SELECT logo_storage_key FROM shop_settings WHERE id = ? AND shop_id = ? LIMIT 1',
+    [shopSettingsId, getCurrentShopId()],
+  );
+  return rows[0]?.logo_storage_key || null;
+}
+
 async function createShopSettings(shop, connection = getPool()) {
   const [result] = await connection.query(
-    'INSERT INTO shop_settings (shop_id, name, phone, address, email) VALUES (?, ?, ?, ?, ?)',
-    [getCurrentShopId(), shop.name, shop.phone || null, shop.address || null, shop.email || null],
+    `INSERT INTO shop_settings (shop_id, name, phone, address, email, portal_announcement)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      getCurrentShopId(),
+      shop.name,
+      shop.phone || null,
+      shop.address || null,
+      shop.email || null,
+      shop.announcement || null,
+    ],
   );
 
   const [rows] = await connection.query('SELECT * FROM shop_settings WHERE id = ? AND shop_id = ? LIMIT 1', [result.insertId, getCurrentShopId()]);
@@ -55,11 +81,33 @@ async function createShopSettings(shop, connection = getPool()) {
 
 async function updateShopSettings(shopId, shop, connection = getPool()) {
   await connection.query(
-    'UPDATE shop_settings SET name = ?, phone = ?, address = ?, email = ? WHERE id = ? AND shop_id = ?',
-    [shop.name, shop.phone || null, shop.address || null, shop.email || null, shopId, getCurrentShopId()],
+    `UPDATE shop_settings
+     SET name = ?, phone = ?, address = ?, email = ?, portal_announcement = ?
+     WHERE id = ? AND shop_id = ?`,
+    [
+      shop.name,
+      shop.phone || null,
+      shop.address || null,
+      shop.email || null,
+      shop.announcement || null,
+      shopId,
+      getCurrentShopId(),
+    ],
   );
 
   const [rows] = await connection.query('SELECT * FROM shop_settings WHERE id = ? AND shop_id = ? LIMIT 1', [shopId, getCurrentShopId()]);
+  return normalizeShop(rows[0] || null);
+}
+
+async function updateShopLogo(shopSettingsId, storageKey, connection = getPool()) {
+  await connection.query(
+    'UPDATE shop_settings SET logo_storage_key = ? WHERE id = ? AND shop_id = ?',
+    [storageKey, shopSettingsId, getCurrentShopId()],
+  );
+  const [rows] = await connection.query(
+    'SELECT * FROM shop_settings WHERE id = ? AND shop_id = ? LIMIT 1',
+    [shopSettingsId, getCurrentShopId()],
+  );
   return normalizeShop(rows[0] || null);
 }
 
@@ -152,8 +200,11 @@ module.exports = {
   createShopSettings,
   ensureBusinessHoursComplete,
   getShopSettings,
+  getShopLogoStorageKey,
+  getShopSettingsForUpdate,
   getShopSettingsWithHours,
   listBusinessHours,
   updateShopSettings,
+  updateShopLogo,
   upsertBusinessHours,
 };

@@ -14,6 +14,17 @@ async function list(req, res, next) {
   }
 }
 
+async function listPublic(req, res, next) {
+  try {
+    res.json({
+      success: true,
+      data: { shops: await shopsService.listPublicShops() },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function create(req, res, next) {
   try {
     res.status(201).json({
@@ -35,11 +46,11 @@ async function listStaff(req, res, next) {
 
 async function updateStaffRoles(req, res, next) {
   try {
-    const staff = await authService.updateStaffRoles(req.params.id, req.body?.roles, req.auth.staff.shop_id);
+    const staff = await authService.updateStaffRoles(req.auth.staff, req.params.id, req.body?.roles, req.auth.staff.shop_id);
     res.json({ success: true, data: { staff } });
   } catch (error) {
     next(error);
   }
 }
 
-module.exports = { create, list, listStaff, updateStaffRoles };
+module.exports = { create, list, listPublic, listStaff, updateStaffRoles };

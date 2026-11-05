@@ -32,7 +32,7 @@ const { setup } = require('../../database/scripts/setup');
 const { getPool, closePool } = require('../../backend/src/config/database');
 const { getFoundationOwner, getFrontDeskStaff } = require('../../database/seeds/staff-authentication-seed');
 const contractPdfStorage = require('../../backend/src/utils/contract-pdf-storage');
-const dailyOperationsRepository = require('../../backend/src/data/daily-operations.repository');
+const appointmentRepository = require('../../backend/src/data/appointment.repository');
 const { hashPassword } = require('../../backend/src/utils/password');
 
 const owner = getFoundationOwner();
@@ -64,6 +64,8 @@ async function createStaffWithRole(roleCode) {
   );
   const [roleRows] = await getPool().query('SELECT id FROM roles WHERE code = ? LIMIT 1', [roleCode]);
   await getPool().query('INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)', [staffResult.insertId, roleRows[0].id]);
+  await getPool().query('INSERT INTO staff_shop_memberships (staff_id, shop_id) VALUES (?, 1)', [staffResult.insertId]);
+  await getPool().query('INSERT INTO staff_shop_roles (staff_id, shop_id, role_id) VALUES (?, 1, ?)', [staffResult.insertId, roleRows[0].id]);
   createdStaffIds.push(staffResult.insertId);
   return { username, password: 'onboarding-test-password' };
 }
@@ -74,8 +76,8 @@ async function createCurrentContract() {
   await contractPdfStorage.moveTemporaryFile(tempPath, storageKey);
   const [result] = await getPool().query(
     `INSERT INTO contract_versions
-     (version_label, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
-     VALUES (?, 'PUBLISHED', TRUE, 'onboarding-contract.pdf', 'application/pdf', ?, ?, ?)`,
+     (shop_id, version_label, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
+     VALUES (1, ?, 'PUBLISHED', TRUE, 'onboarding-contract.pdf', 'application/pdf', ?, ?, ?)`,
     [
       `Onboarding-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
       pdfBytes.length,
@@ -156,6 +158,16 @@ describe('Electronic Contract Onboarding API', () => {
   beforeEach(async () => {
     jest.restoreAllMocks();
     await clearData();
+    await getPool().query(
+      `INSERT INTO shop_business_hours (shop_id, weekday, is_closed, open_time, close_time)
+       VALUES (1, 'THURSDAY', FALSE, '09:00:00', '18:00:00')
+       ON DUPLICATE KEY UPDATE is_closed = FALSE, open_time = '09:00:00', close_time = '18:00:00'`,
+    );
+    await getPool().query(
+      `INSERT INTO booking_schedule_rules (shop_id, species, start_time, capacity, is_closed, status)
+       VALUES (1, 'DOG', '10:30:00', 20, FALSE, 'ACTIVE')
+       ON DUPLICATE KEY UPDATE capacity = 20, is_closed = FALSE, status = 'ACTIVE'`,
+    );
     await createCurrentContract();
   });
 
@@ -343,15 +355,15 @@ describe('Electronic Contract Onboarding API', () => {
     const agent = await loginAsOwner();
     const { token, onboarding_id: onboardingId } = await createOnboarding(agent);
     const [inserted] = await getPool().query(
-      'INSERT INTO customers (name, phone) VALUES (?, ?)',
+      'INSERT INTO customers (shop_id, name, phone) VALUES (1, ?, ?)',
       ['Candidate Customer', `09${crypto.randomInt(100000000, 999999999)}`],
     );
     const [petInsert] = await getPool().query(
-      'INSERT INTO pets (name, species, gender, personality, medical_history, other_history) VALUES (?, \'DOG\', \'FEMALE\', ?, ?, ?)',
+      'INSERT INTO pets (shop_id, name, species, gender, personality, medical_history, other_history) VALUES (1, ?, \'DOG\', \'FEMALE\', ?, ?, ?)',
       ['Candidate Pet', JSON.stringify(['原有個性']), JSON.stringify(['原有病史']), '原有補充'],
     );
     await getPool().query(
-      'INSERT INTO pet_customer_relationships (pet_id, customer_id, is_primary) VALUES (?, ?, TRUE)',
+      'INSERT INTO pet_customer_relationships (shop_id, pet_id, customer_id, is_primary) VALUES (1, ?, ?, TRUE)',
       [petInsert.insertId, inserted.insertId],
     );
     const search = await agent.get(`/api/public/onboardings/${token}/customers?q=Candidate`).expect(200);
@@ -436,8 +448,37 @@ describe('Electronic Contract Onboarding API', () => {
               (SELECT COUNT(*) FROM appointments) AS appointments,
               (SELECT COUNT(*) FROM daily_operations) AS operations`,
     );
-    expect(counts).toMatchObject({ customers: 1, pets: 1, appointments: 1, operations: 1 });
+    expect(counts).toMatchObject({ customers: 1, pets: 1, appointments: 1, operations: 0 });
+    const [[appointment]] = await getPool().query('SELECT status FROM appointments LIMIT 1');
+    expect(appointment.status).toBe('PENDING');
     await agent.post(`/api/public/onboardings/${token}/submit`).send({ signature_png: signaturePng }).expect(410);
+  });
+
+  test('rejects onboarding submission if its selected booking time is no longer available', async () => {
+    const agent = await loginAsOwner();
+    const { token, onboarding_id: id } = await createOnboarding(agent);
+    await agent.put(`/api/public/onboardings/${token}`)
+      .send(onboardingPayload(`09${crypto.randomInt(100000000, 999999999)}`, await getServiceId()))
+      .expect(200);
+    await resolveNew(agent, token);
+    await getPool().query(
+      `UPDATE booking_schedule_rules
+       SET status = 'INACTIVE'
+       WHERE shop_id = 1 AND species = 'DOG' AND start_time = '10:30:00'`,
+    );
+
+    const response = await agent.post(`/api/public/onboardings/${token}/submit`)
+      .send({ signature_png: signaturePng })
+      .expect(409);
+    expect(response.body.error.code).toBe('BOOKING_SLOT_UNAVAILABLE');
+    const [[counts]] = await getPool().query(
+      `SELECT (SELECT COUNT(*) FROM customers) AS customers,
+              (SELECT COUNT(*) FROM pets) AS pets,
+              (SELECT COUNT(*) FROM appointments) AS appointments`,
+    );
+    expect(counts).toMatchObject({ customers: 0, pets: 0, appointments: 0 });
+    const [[onboarding]] = await getPool().query('SELECT status FROM onboardings WHERE id = ?', [id]);
+    expect(onboarding.status).toBe('IN_PROGRESS');
   });
 
   test('rolls back all formal domain writes when a submit step fails', async () => {
@@ -446,7 +487,8 @@ describe('Electronic Contract Onboarding API', () => {
     const payload = onboardingPayload(`09${crypto.randomInt(100000000, 999999999)}`, await getServiceId());
     await agent.put(`/api/public/onboardings/${token}`).send(payload).expect(200);
     await resolveNew(agent, token);
-    jest.spyOn(dailyOperationsRepository, 'create').mockRejectedValueOnce(new Error('injected daily operation failure'));
+    jest.spyOn(appointmentRepository, 'createAppointmentPetService')
+      .mockRejectedValueOnce(new Error('injected appointment service failure'));
     await agent.post(`/api/public/onboardings/${token}/submit`).send({ signature_png: signaturePng }).expect(500);
 
     const [[counts]] = await getPool().query(

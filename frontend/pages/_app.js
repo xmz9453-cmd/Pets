@@ -44,7 +44,7 @@ function AppShell({ Component, pageProps }) {
   const [shopName, setShopName] = useState('店家');
   const [error, setError] = useState('');
 
-  const shouldShowNav = !['/login', '/register', '/forgot-password', '/onboarding/[token]', '/booking'].includes(router.pathname);
+  const shouldShowNav = !['/', '/login', '/forgot-password', '/onboarding/[token]', '/booking'].includes(router.pathname);
   const visibleNavItems = NAV_ITEMS.filter((item) =>
     staff && Array.isArray(staff.roles)
       ? item.allowedRoles.some((role) => staff.roles.includes(role))
@@ -138,13 +138,7 @@ function AppShell({ Component, pageProps }) {
                 </a>
               ) : null}
               {staff?.is_platform_shop_manager ? (
-                <a href="/shops" className={`app-nav-link${router.pathname === '/shops' ? ' active' : ''}`} aria-current={router.pathname === '/shops' ? 'page' : undefined}>
-                  <AppIcon name="settings" />
-                  多店管理
-                </a>
-              ) : null}
-              {staff?.is_platform_shop_manager ? (
-                <a href="/system-maintenance" className={`app-nav-link${router.pathname === '/system-maintenance' ? ' active' : ''}`} aria-current={router.pathname === '/system-maintenance' ? 'page' : undefined}>
+                <a href="/shops" className={`app-nav-link${router.pathname === '/shops' || router.pathname === '/system-maintenance' ? ' active' : ''}`} aria-current={router.pathname === '/shops' || router.pathname === '/system-maintenance' ? 'page' : undefined}>
                   <AppIcon name="settings" />
                   系統管理
                 </a>

@@ -68,6 +68,42 @@ export async function getDatabaseHealth() {
   return request('/api/health/database');
 }
 
+export async function getPublicShops() {
+  return request('/api/public/shops');
+}
+
+export async function getPublicPortalBackground() {
+  return request('/api/public/portal-background');
+}
+
+export async function getPortalBackgrounds() {
+  return request('/api/portal-backgrounds');
+}
+
+export async function uploadPortalBackground(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request('/api/portal-backgrounds', { method: 'POST', body: formData });
+}
+
+export async function activatePortalBackground(id) {
+  return request(`/api/portal-backgrounds/${id}/active`, { method: 'PUT' });
+}
+
+export async function deletePortalBackground(id) {
+  return request(`/api/portal-backgrounds/${id}`, { method: 'DELETE' });
+}
+
+export async function uploadShopLogo(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request('/api/shop-settings/logo', { method: 'POST', body: formData });
+}
+
+export async function deleteShopLogo() {
+  return request('/api/shop-settings/logo', { method: 'DELETE' });
+}
+
 export async function login(username, password) {
   const result = await request('/api/auth/login', {
     method: 'POST',
@@ -87,17 +123,17 @@ export async function getShopStaff() {
   return request('/api/shops/staff');
 }
 
+export async function createStaffAccount(payload) {
+  return request('/api/auth/staff', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function updateShopStaffRoles(staffId, roles) {
   return request(`/api/shops/staff/${staffId}/roles`, {
     method: 'PATCH',
     body: JSON.stringify({ roles }),
-  });
-}
-
-export async function register(username, password, displayName) {
-  return request('/api/auth/register', {
-    method: 'POST',
-    body: JSON.stringify({ username, password, display_name: displayName }),
   });
 }
 
@@ -110,6 +146,10 @@ export async function updateStaffRoles(staffId, roles) {
     method: 'PATCH',
     body: JSON.stringify({ roles }),
   });
+}
+
+export async function removeStaffMembership(staffId) {
+  return request(`/api/auth/staff/${staffId}/membership`, { method: 'DELETE' });
 }
 
 export async function updateStaffStatus(staffId, status) {
@@ -159,10 +199,18 @@ export async function createPublicOnboarding(shopId) {
   return request('/api/public/onboardings', { method: 'POST', body: '{}', ...publicShopOptions(shopId) });
 }
 
-export async function confirmExistingBookingCustomer(phone, name, shopId) {
-  return request('/api/public/booking/customer-confirmation', {
+export async function requestPublicBookingOtp(phone, shopId) {
+  return request('/api/public/booking/otp', {
     method: 'POST',
-    body: JSON.stringify({ phone, name }),
+    body: JSON.stringify({ phone }),
+    ...publicShopOptions(shopId),
+  });
+}
+
+export async function verifyPublicBookingOtp(phone, code, shopId) {
+  return request('/api/public/booking/otp/verify', {
+    method: 'POST',
+    body: JSON.stringify({ phone, code }),
     ...publicShopOptions(shopId),
   });
 }
@@ -175,12 +223,87 @@ export async function getPublicBookingServices(petId, shopId) {
   return request(`/api/public/booking/services?pet_id=${encodeURIComponent(petId)}`, publicShopOptions(shopId));
 }
 
+export async function getPublicBookingAvailability(filters, shopId) {
+  const query = new URLSearchParams(filters).toString();
+  return request(`/api/public/booking/availability?${query}`, publicShopOptions(shopId));
+}
+
+export async function createPublicBookingRequest(payload, shopId) {
+  return request('/api/public/booking/requests', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    ...publicShopOptions(shopId),
+  });
+}
+
+export async function getCustomerMemberProviders() {
+  return request('/api/public/member/providers');
+}
+
+export async function getCustomerMember(shopId) {
+  return request('/api/public/member/me', publicShopOptions(shopId));
+}
+
+export async function logoutCustomerMember(shopId) {
+  return request('/api/public/member/logout', {
+    method: 'POST',
+    body: '{}',
+    ...publicShopOptions(shopId),
+  });
+}
+
+export function getCustomerMemberAuthUrl(provider, shopId, intent = 'LOGIN') {
+  const action = intent === 'LINK' ? `/${encodeURIComponent(provider)}/link` : `/${encodeURIComponent(provider)}`;
+  const query = new URLSearchParams({ shop_id: String(shopId || 1) });
+  return `${API_BASE_URL}/api/public/member/auth${action}?${query}`;
+}
+
+export async function getCustomerBookingPets(shopId) {
+  return request('/api/public/member/pets', publicShopOptions(shopId));
+}
+
+export async function getCustomerBookingServices(filters, shopId) {
+  const query = new URLSearchParams(filters).toString();
+  return request(`/api/public/member/services?${query}`, publicShopOptions(shopId));
+}
+
+export async function getCustomerBookingProducts(species, shopId) {
+  const query = new URLSearchParams({ species }).toString();
+  return request(`/api/public/member/products?${query}`, publicShopOptions(shopId));
+}
+
+export async function getCustomerBookingAvailability(filters, shopId) {
+  const query = new URLSearchParams(filters).toString();
+  return request(`/api/public/member/availability?${query}`, publicShopOptions(shopId));
+}
+
+export async function createCustomerBookingRequest(payload, shopId) {
+  return request('/api/public/member/requests', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    ...publicShopOptions(shopId),
+  });
+}
+
+export async function getCustomerBookingRequests(shopId) {
+  return request('/api/public/member/requests', publicShopOptions(shopId));
+}
+
+export async function getCustomerBookingOnboardingToken(appointmentId, shopId) {
+  return request(`/api/public/member/requests/${encodeURIComponent(appointmentId)}/onboarding`, publicShopOptions(shopId));
+}
+
 function publicOnboardingPath(token, suffix = '') {
   return `/api/public/onboardings/${encodeURIComponent(token)}${suffix}`;
 }
 
 export async function getPublicOnboarding(token) {
   return request(publicOnboardingPath(token));
+}
+
+export async function getPublicOnboardingAvailability(token, filters) {
+  const query = new URLSearchParams(filters).toString();
+  return request(`${publicOnboardingPath(token, '/availability')}?${query}`);
 }
 
 export async function savePublicOnboarding(token, payload) {
@@ -303,12 +426,26 @@ export async function updateAppointment(appointmentId, payload) {
   });
 }
 
+export async function acceptBookingRequest(appointmentId) {
+  return request(`/api/appointments/${encodeURIComponent(appointmentId)}/accept`, {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
 export async function deleteAppointment(appointmentId) {
   return request(`/api/appointments/${appointmentId}`, { method: 'DELETE' });
 }
 
 export async function getCustomer(customerId) {
   return request(`/api/customers/${customerId}`);
+}
+
+export async function linkCustomerToMember(customerId, customerMemberId) {
+  return request(`/api/customers/${customerId}/member-link`, {
+    method: 'POST',
+    body: JSON.stringify({ customer_member_id: customerMemberId }),
+  });
 }
 
 export function getCustomerContractPdfUrl(customerId, historyId) {
@@ -368,6 +505,50 @@ export async function updateShopSettings(payload) {
 
 export async function getBookingSchedule() {
   return request('/api/shop-settings/booking-schedule');
+}
+
+export async function getBookingResources() {
+  return request('/api/shop-settings/booking-resources');
+}
+
+export async function createBookingResource(payload) {
+  return request('/api/shop-settings/booking-resources', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createBookingResourceBlock(resourceId, payload) {
+  return request(`/api/shop-settings/booking-resources/${encodeURIComponent(resourceId)}/blocks`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateBookingResource(resourceId, payload) {
+  return request(`/api/shop-settings/booking-resources/${encodeURIComponent(resourceId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteBookingResource(resourceId) {
+  return request(`/api/shop-settings/booking-resources/${encodeURIComponent(resourceId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function deleteBookingResourceBlock(resourceId, blockId) {
+  return request(`/api/shop-settings/booking-resources/${encodeURIComponent(resourceId)}/blocks/${encodeURIComponent(blockId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function updateBookingResourceHours(resourceId, hours) {
+  return request(`/api/shop-settings/booking-resources/${encodeURIComponent(resourceId)}/hours`, {
+    method: 'PUT',
+    body: JSON.stringify({ hours }),
+  });
 }
 
 export async function createBookingScheduleRule(payload) {
@@ -432,6 +613,12 @@ export async function updateContractVersion(versionId, payload) {
   return request(`/api/contract-versions/${versionId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteContractVersion(versionId) {
+  return request(`/api/contract-versions/${versionId}`, {
+    method: 'DELETE',
   });
 }
 

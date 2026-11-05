@@ -8,6 +8,7 @@ const router = express.Router();
 router.get('/appointments', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']), appointmentController.listAppointments);
 router.get('/appointments/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']), appointmentController.getAppointment);
 router.post('/appointments', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), appointmentController.createAppointment);
+router.post('/appointments/:id/accept', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), appointmentController.acceptBookingRequest);
 router.patch('/appointments/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), appointmentController.updateAppointment);
 router.delete('/appointments/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), appointmentController.deleteAppointment);
 

@@ -210,6 +210,8 @@ describe('Customer API', () => {
     );
     const [roleRows] = await getPool().query('SELECT id FROM roles WHERE code = \'GROOMER\'');
     await getPool().query('INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)', [staffResult.insertId, roleRows[0].id]);
+    await getPool().query('INSERT INTO staff_shop_memberships (staff_id, shop_id) VALUES (?, 1)', [staffResult.insertId]);
+    await getPool().query('INSERT INTO staff_shop_roles (staff_id, shop_id, role_id) VALUES (?, 1, ?)', [staffResult.insertId, roleRows[0].id]);
     const groomerAgent = request.agent(app);
     await groomerAgent.post('/api/auth/login').send({ username, password: 'groomer-pass-123' });
     expect((await groomerAgent.delete(`/api/customers/${customerId}`)).status).toBe(403);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import {
+  acceptBookingRequest,
   createAppointment,
   deleteAppointment,
   getAppointment,
@@ -23,8 +24,9 @@ const EMPTY_FORM = {
 
 const APPOINTMENT_STATUS_LABELS = {
   SCHEDULED: '已排程',
-  PENDING: '待處理',
-  CONFIRMED: '已確認',
+  PENDING: '待店家確認',
+  AWAITING_CUSTOMER: '待補資料／簽約',
+  CONFIRMED: '正式確認',
   CANCELLED: '已取消',
 };
 
@@ -266,6 +268,37 @@ export default function AppointmentsPage() {
     }
   }
 
+  async function handleAcceptRequest(appointment) {
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await acceptBookingRequest(appointment.id);
+      setSuccess('已接受預約申請，時段與商品庫存已保留，請會員補齊資料並簽署契約。');
+      await refreshAppointments();
+    } catch (acceptError) {
+      setError(acceptError.message || '無法接受此預約申請，請重新確認時段、資源與商品庫存。');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleCancelRequest(appointment) {
+    if (!window.confirm(`確定要取消申請編號 ${appointment.id} 嗎？已保留的資源與商品庫存會一併釋出。`)) return;
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await updateAppointment(appointment.id, { status: 'CANCELLED' });
+      setSuccess('預約申請已取消，已保留的資源與商品庫存已釋出。');
+      await refreshAppointments();
+    } catch (cancelError) {
+      setError(cancelError.message || '無法取消此預約申請。');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading) {
     return (
       <main className="container py-4">
@@ -279,7 +312,7 @@ export default function AppointmentsPage() {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <div>
           <h1 className="mb-1">預約管理</h1>
-          <p className="text-muted mb-0">建立與維護客戶預約。</p>
+          <p className="text-muted mb-0">建立、維護預約，並確認客戶的線上預約申請。</p>
         </div>
       </div>
       {error ? <div className="alert alert-danger">{error}</div> : null}
@@ -451,18 +484,41 @@ export default function AppointmentsPage() {
                     <tbody>
                       {appointments.map((appointment) => (
                         <tr key={appointment.id}>
-                          <td>{appointment.appointment_date}</td>
+                          <td>
+                            {appointment.appointment_date}
+                            {appointment.service_type ? (
+                              <small className="d-block text-muted">
+                                客戶申請・{appointment.service_type === 'BOARDING' ? '住宿' : '美容'}
+                                {appointment.requested_check_out ? `・退房 ${appointment.requested_check_out.slice(0, 16)}` : ''}
+                                {appointment.requested_products ? `・加購：${appointment.requested_products}` : ''}
+                              </small>
+                            ) : null}
+                          </td>
                           <td>{appointment.appointment_time}</td>
                           <td>{appointment.customer_name || appointment.customer_id}</td>
                           <td><span className="badge bg-secondary">{APPOINTMENT_STATUS_LABELS[appointment.status] || appointment.status}</span></td>
                           <td>{appointment.pet_count || 0}</td>
                           <td className="text-end">
-                            <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => handleEdit(appointment.id)}>
-                              編輯
-                            </button>
-                            <button type="button" className="btn btn-sm btn-outline-danger ms-1" onClick={() => handleDelete(appointment)} disabled={saving}>
-                              刪除
-                            </button>
+                            {appointment.service_type && appointment.status === 'PENDING' ? (
+                              <button type="button" className="btn btn-sm btn-primary" onClick={() => handleAcceptRequest(appointment)} disabled={saving}>
+                                接受申請
+                              </button>
+                            ) : null}
+                            {appointment.service_type && appointment.status !== 'CANCELLED' ? (
+                              <button type="button" className="btn btn-sm btn-outline-danger ms-1" onClick={() => handleCancelRequest(appointment)} disabled={saving}>
+                                取消申請
+                              </button>
+                            ) : null}
+                            {!appointment.service_type ? (
+                              <>
+                                <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => handleEdit(appointment.id)}>
+                                  編輯
+                                </button>
+                                <button type="button" className="btn btn-sm btn-outline-danger ms-1" onClick={() => handleDelete(appointment)} disabled={saving}>
+                                  刪除
+                                </button>
+                              </>
+                            ) : null}
                           </td>
                         </tr>
                       ))}

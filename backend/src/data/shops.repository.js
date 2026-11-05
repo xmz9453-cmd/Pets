@@ -16,6 +16,31 @@ async function listAllShops() {
   return rows.map(normalizeShop);
 }
 
+async function listPublicShops() {
+  const [rows] = await getPool().query(
+    `SELECT s.id, s.name,
+            (SELECT ss.logo_storage_key
+             FROM shop_settings ss
+             WHERE ss.shop_id = s.id
+             ORDER BY ss.id DESC
+             LIMIT 1) AS logo_storage_key,
+            (SELECT ss.portal_announcement
+             FROM shop_settings ss
+             WHERE ss.shop_id = s.id
+             ORDER BY ss.id DESC
+             LIMIT 1) AS announcement
+     FROM shops s
+     WHERE s.status = 'ACTIVE'
+     ORDER BY s.id ASC`,
+  );
+  return rows.map((row) => ({
+    id: Number(row.id),
+    name: row.name,
+    logo_url: row.logo_storage_key ? `/api/public/shop-logos/${row.logo_storage_key}` : null,
+    announcement: row.announcement || '',
+  }));
+}
+
 async function listShopsForStaff(staffId) {
   const [rows] = await getPool().query(
     `SELECT s.id, s.name, s.slug, s.status
@@ -95,13 +120,17 @@ async function listStaffWithRolesAtShop(shopId, connection = getPool()) {
   return Array.from(staffById.values());
 }
 
-async function listAllStaffWithRolesAtShop(shopId) {
-  const [rows] = await getPool().query(
-    `SELECT st.id, st.username, st.display_name, st.status, m.staff_id IS NOT NULL AS is_member, r.code AS role_code
+async function listAllStaffWithRolesAtShop(shopId, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT st.id, st.username, st.display_name, st.status,
+            m.staff_id IS NOT NULL AS is_member,
+            pm.staff_id IS NOT NULL AS is_platform_shop_manager,
+            r.code AS role_code
      FROM staff st
      LEFT JOIN staff_shop_memberships m ON m.staff_id = st.id AND m.shop_id = ?
      LEFT JOIN staff_shop_roles sr ON sr.staff_id = m.staff_id AND sr.shop_id = m.shop_id
      LEFT JOIN roles r ON r.id = sr.role_id
+     LEFT JOIN platform_shop_managers pm ON pm.staff_id = st.id
      ORDER BY st.id ASC, r.code ASC`,
     [shopId],
   );
@@ -113,6 +142,7 @@ async function listAllStaffWithRolesAtShop(shopId) {
       display_name: row.display_name,
       status: row.status,
       is_member: Boolean(row.is_member),
+      is_platform_shop_manager: Boolean(row.is_platform_shop_manager),
       roles: [],
     });
     if (row.role_code) byId.get(row.id).roles.push(row.role_code);
@@ -142,14 +172,61 @@ async function addMembership(staffId, shopId, roleCodes, connection = getPool())
   }
 }
 
+async function lockShop(shopId, connection = getPool()) {
+  const [rows] = await connection.query('SELECT id FROM shops WHERE id = ? FOR UPDATE', [shopId]);
+  return rows.length > 0;
+}
+
+async function hasMembership(staffId, shopId, connection = getPool()) {
+  const [rows] = await connection.query(
+    'SELECT staff_id FROM staff_shop_memberships WHERE staff_id = ? AND shop_id = ? LIMIT 1',
+    [staffId, shopId],
+  );
+  return rows.length > 0;
+}
+
+async function countMembershipsForStaff(staffId, connection = getPool()) {
+  const [rows] = await connection.query(
+    'SELECT COUNT(*) AS count FROM staff_shop_memberships WHERE staff_id = ?',
+    [staffId],
+  );
+  return Number(rows[0].count);
+}
+
+async function removeMembership(staffId, shopId, connection = getPool()) {
+  await connection.query(
+    'DELETE FROM staff_shop_memberships WHERE staff_id = ? AND shop_id = ?',
+    [staffId, shopId],
+  );
+}
+
+async function countActiveOwnersAtShop(shopId, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT COUNT(DISTINCT m.staff_id) AS count
+     FROM staff_shop_memberships m
+     INNER JOIN staff_shop_roles sr ON sr.staff_id = m.staff_id AND sr.shop_id = m.shop_id
+     INNER JOIN roles r ON r.id = sr.role_id
+     INNER JOIN staff st ON st.id = m.staff_id
+     WHERE m.shop_id = ? AND st.status = 'ACTIVE' AND r.code = 'OWNER'`,
+    [shopId],
+  );
+  return Number(rows[0].count);
+}
+
 module.exports = {
   addMembership,
+  countActiveOwnersAtShop,
+  countMembershipsForStaff,
   createShop,
   getShopById,
+  hasMembership,
   isPlatformShopManager,
   listAllShops,
+  listPublicShops,
   listAllStaffWithRolesAtShop,
   listRolesForStaffAtShop,
   listStaffWithRolesAtShop,
   listShopsForStaff,
+  lockShop,
+  removeMembership,
 };

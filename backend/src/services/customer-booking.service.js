@@ -1,0 +1,415 @@
+const crypto = require('crypto');
+const { getPool } = require('../config/database');
+const customerRepository = require('../data/customer.repository');
+const petRepository = require('../data/pet.repository');
+const serviceRepository = require('../data/service.repository');
+const productRepository = require('../data/product.repository');
+const publicBookingService = require('./public-booking.service');
+const {
+  getCurrentCustomerMemberId,
+  getCurrentShopId,
+} = require('../utils/shop-context');
+
+function createError(message, statusCode, code, fields) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  if (fields) error.fields = fields;
+  return error;
+}
+
+function validation(fields) {
+  return createError('資料格式不正確。', 400, 'VALIDATION_ERROR', fields);
+}
+
+function normalizePhone(value) {
+  const phone = String(value ?? '').replace(/[()\s-]/g, '');
+  if (!/^\+?\d{8,15}$/.test(phone)) throw validation({ phone: '請輸入有效的聯絡電話。' });
+  return phone;
+}
+
+function normalizeDate(value, field) {
+  const date = String(value ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw validation({ [field]: '請選擇有效日期。' });
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw validation({ [field]: '請選擇有效日期。' });
+  }
+  return date;
+}
+
+function normalizeTime(value, field) {
+  const time = String(value ?? '').trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(time)) {
+    throw validation({ [field]: '請選擇有效時間。' });
+  }
+  return time.length === 5 ? `${time}:00` : time;
+}
+
+async function getMemberCustomer(memberId, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT c.id, c.name, c.phone
+     FROM customer_member_profiles cmp
+     INNER JOIN customers c ON c.id = cmp.customer_id AND c.shop_id = cmp.shop_id
+     WHERE cmp.shop_id = ? AND cmp.customer_member_id = ? AND c.status = 'ACTIVE'
+     LIMIT 1`,
+    [getCurrentShopId(), memberId],
+  );
+  return rows[0] || null;
+}
+
+async function memberCanAccessPet(memberId, petId, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT 1
+     FROM pet_customer_relationships pcr
+     INNER JOIN customer_member_customers cmc
+       ON cmc.shop_id = pcr.shop_id AND cmc.customer_id = pcr.customer_id
+     WHERE pcr.shop_id = ? AND pcr.pet_id = ? AND cmc.customer_member_id = ?
+     LIMIT 1`,
+    [getCurrentShopId(), petId, memberId],
+  );
+  return rows.length > 0;
+}
+
+async function listPets() {
+  const memberId = getCurrentCustomerMemberId();
+  const [rows] = await getPool().query(
+    `SELECT DISTINCT p.id, p.name, p.species, p.breed, p.weight
+     FROM customer_member_customers cmc
+     INNER JOIN pet_customer_relationships pcr
+       ON pcr.customer_id = cmc.customer_id AND pcr.shop_id = cmc.shop_id
+     INNER JOIN pets p ON p.id = pcr.pet_id AND p.shop_id = pcr.shop_id
+     WHERE cmc.shop_id = ? AND cmc.customer_member_id = ? AND p.status = 'ACTIVE'
+     ORDER BY p.name ASC, p.id ASC`,
+    [getCurrentShopId(), memberId],
+  );
+  return {
+    pets: rows.map((row) => ({
+      ...row,
+      id: Number(row.id),
+      weight: row.weight === null ? null : Number(row.weight),
+    })),
+  };
+}
+
+async function listServices(petIdValue, speciesValue) {
+  const species = String(speciesValue || '');
+  if (species) {
+    if (!['DOG', 'CAT'].includes(species)) throw validation({ species: '請選擇寵物種類。' });
+    return { services: await serviceRepository.listActiveServicesBySpecies(species) };
+  }
+  const memberId = getCurrentCustomerMemberId();
+  const petId = Number(petIdValue);
+  if (!Number.isInteger(petId) || petId <= 0) throw validation({ pet_id: '請選擇寵物。' });
+  const pet = await petRepository.getPetById(petId);
+  if (!pet || !await memberCanAccessPet(memberId, petId)) {
+    throw createError('找不到可使用的寵物資料。', 404, 'PET_NOT_FOUND');
+  }
+  return { services: await serviceRepository.listActiveServicesBySpecies(pet.species) };
+}
+
+async function listProducts(speciesValue) {
+  const species = String(speciesValue || '');
+  if (!['DOG', 'CAT'].includes(species)) throw validation({ species: '請選擇寵物種類。' });
+  const [rows] = await getPool().query(
+    `SELECT id, name, description, price, unit, species, stock_quantity
+     FROM products
+     WHERE shop_id = ? AND status = 'ACTIVE' AND stock_quantity > 0
+       AND (species = 'BOTH' OR species = ?)
+     ORDER BY name ASC`,
+    [getCurrentShopId(), species],
+  );
+  return {
+    products: rows.map((row) => ({
+      ...row,
+      id: Number(row.id),
+      price: Number(row.price),
+      stock_quantity: Number(row.stock_quantity),
+    })),
+  };
+}
+
+async function listAvailability(query = {}) {
+  const serviceId = Number(query.service_id);
+  let pet;
+  if (query.pet_id) {
+    const petId = Number(query.pet_id);
+    const memberId = getCurrentCustomerMemberId();
+    pet = Number.isInteger(petId) ? await petRepository.getPetById(petId) : null;
+    if (!pet || !await memberCanAccessPet(memberId, petId)) {
+      throw createError('找不到可使用的寵物資料。', 404, 'PET_NOT_FOUND');
+    }
+  } else {
+    const species = String(query.species || '');
+    if (!['DOG', 'CAT'].includes(species)) throw validation({ species: '請選擇寵物種類。' });
+    pet = { species };
+  }
+  const service = await serviceRepository.getServiceById(serviceId);
+  if (!service || service.status !== 'ACTIVE') throw createError('此服務目前無法預約。', 404, 'SERVICE_NOT_FOUND');
+  if (service.species !== 'BOTH' && service.species !== pet.species) {
+    throw validation({ service_id: '此服務不適用於所選寵物。' });
+  }
+  return publicBookingService.listAvailabilityForService(pet, service, query);
+}
+
+function validateAddOns(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 20) throw validation({ add_ons: '加購商品資料不正確。' });
+  const seen = new Set();
+  return value.map((item, index) => {
+    const productId = Number(item?.product_id);
+    const quantity = Number(item?.quantity);
+    if (!Number.isInteger(productId) || productId <= 0
+      || !Number.isInteger(quantity) || quantity <= 0 || quantity > 99
+      || seen.has(productId)) {
+      throw validation({ [`add_ons[${index}]`]: '請確認商品與數量。' });
+    }
+    seen.add(productId);
+    return { product_id: productId, quantity };
+  });
+}
+
+async function resolveCustomer(memberId, profile, connection) {
+  const name = String(profile?.name ?? '').trim();
+  if (!name || name.length > 100) throw validation({ name: '請填寫姓名。' });
+  const phone = normalizePhone(profile.phone);
+  const existing = await getMemberCustomer(memberId, connection);
+  if (existing) {
+    await connection.query(
+      'UPDATE customers SET name = ?, phone = ? WHERE id = ? AND shop_id = ?',
+      [name, phone, existing.id, getCurrentShopId()],
+    );
+    return Number(existing.id);
+  }
+
+  const customerId = Number(await customerRepository.createCustomer({ name, phone }, connection));
+  await connection.query(
+    `INSERT INTO customer_member_customers (shop_id, customer_member_id, customer_id)
+     VALUES (?, ?, ?)`,
+    [getCurrentShopId(), memberId, customerId],
+  );
+  await connection.query(
+    `INSERT INTO customer_member_profiles (shop_id, customer_member_id, customer_id)
+     VALUES (?, ?, ?)`,
+    [getCurrentShopId(), memberId, customerId],
+  );
+  return customerId;
+}
+
+async function resolvePet(memberId, customerId, petInput, service, connection) {
+  const petId = Number(petInput?.pet_id);
+  if (petId) {
+    if (!Number.isInteger(petId) || petId <= 0) throw validation({ pet_id: '請重新選擇寵物。' });
+    const pet = await petRepository.getPetById(petId, connection);
+    const [linkedRows] = await connection.query(
+      `SELECT pcr.customer_id
+       FROM pet_customer_relationships pcr
+       INNER JOIN customer_member_customers cmc
+         ON cmc.shop_id = pcr.shop_id AND cmc.customer_id = pcr.customer_id
+       WHERE pcr.shop_id = ? AND pcr.pet_id = ? AND cmc.customer_member_id = ?
+       LIMIT 1`,
+      [getCurrentShopId(), petId, memberId],
+    );
+    if (!pet || pet.status !== 'ACTIVE' || !linkedRows.length) {
+      throw createError('找不到可使用的寵物資料。', 404, 'PET_NOT_FOUND');
+    }
+    if (service.species !== 'BOTH' && service.species !== pet.species) {
+      throw validation({ pet_id: '所選寵物不適用於此服務。' });
+    }
+    if (service.type === 'GROOMING' && !pet.weight) {
+      throw validation({ weight: '此美容服務需要先填寫寵物體重。' });
+    }
+    if (!await petRepository.findRelationshipByPetAndCustomer(petId, customerId, connection)) {
+      await petRepository.createPetRelationship({ petId, customerId, isPrimary: false }, connection);
+    }
+    return pet;
+  }
+
+  const name = String(petInput?.name ?? '').trim();
+  const species = String(petInput?.species ?? '');
+  const weight = petInput?.weight === '' || petInput?.weight === undefined || petInput?.weight === null
+    ? null
+    : Number(petInput.weight);
+  if (!name || name.length > 100) throw validation({ pet_name: '請填寫寵物名字。' });
+  if (!['DOG', 'CAT'].includes(species)) throw validation({ species: '請選擇寵物種類。' });
+  if (service.species !== 'BOTH' && service.species !== species) {
+    throw validation({ species: '此服務不適用於所選寵物。' });
+  }
+  if (service.type === 'GROOMING' && (!Number.isFinite(weight) || weight <= 0 || weight > 300)) {
+    throw validation({ weight: '美容服務需要有效的寵物體重。' });
+  }
+  if (weight !== null && (!Number.isFinite(weight) || weight <= 0 || weight > 300)) {
+    throw validation({ weight: '體重需大於 0 且不超過 300 公斤。' });
+  }
+
+  const id = Number(await petRepository.createPet({
+    name,
+    species,
+    gender: 'UNKNOWN',
+    weight,
+    weight_unit: weight === null ? null : 'KG',
+  }, connection));
+  await petRepository.createPetRelationship({ petId: id, customerId, isPrimary: true }, connection);
+  return { id, name, species, weight };
+}
+
+async function createBookingRequest(payload = {}) {
+  const memberId = getCurrentCustomerMemberId();
+  const serviceId = Number(payload.service_id);
+  if (!Number.isInteger(serviceId) || serviceId <= 0) throw validation({ service_id: '請選擇服務。' });
+  const service = await serviceRepository.getServiceById(serviceId);
+  if (!service || service.status !== 'ACTIVE') throw createError('此服務目前無法預約。', 404, 'SERVICE_NOT_FOUND');
+  const date = normalizeDate(payload.appointment_date, 'appointment_date');
+  const time = normalizeTime(payload.appointment_time, 'appointment_time');
+  const checkOut = service.type === 'BOARDING'
+    ? {
+      date: normalizeDate(payload.check_out_date, 'check_out_date'),
+      time: normalizeTime(payload.check_out_time, 'check_out_time'),
+    }
+    : null;
+  if (checkOut && `${checkOut.date} ${checkOut.time}` <= `${date} ${time}`) {
+    throw validation({ check_out_date: '退房時間必須晚於入住時間。' });
+  }
+
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const customerId = await resolveCustomer(memberId, payload.customer, connection);
+    const pet = await resolvePet(memberId, customerId, payload.pet, service, connection);
+    const availability = await publicBookingService.listAvailabilityForService(pet, service, {
+      date,
+      ...(checkOut ? { check_out_date: checkOut.date, check_out_time: checkOut.time.slice(0, 5) } : {}),
+    });
+    if (!availability.slots.some((slot) => slot.time === time.slice(0, 5))) {
+      throw createError('所選時段已不可申請，請重新查詢。', 409, 'BOOKING_SLOT_UNAVAILABLE');
+    }
+
+    const addOns = validateAddOns(payload.add_ons);
+    const productRows = [];
+    for (const addOn of addOns) {
+      const product = await productRepository.getProductById(addOn.product_id, connection);
+      if (!product || product.status !== 'ACTIVE'
+        || (product.species !== 'BOTH' && product.species !== pet.species)
+        || product.stock_quantity < addOn.quantity) {
+        throw createError('部分加購商品目前庫存不足，請重新確認。', 409, 'BOOKING_PRODUCT_UNAVAILABLE');
+      }
+      productRows.push({ ...product, ...addOn });
+    }
+
+    const [appointmentResult] = await connection.query(
+      `INSERT INTO appointments
+         (shop_id, customer_id, appointment_date, appointment_time, status, note)
+       VALUES (?, ?, ?, ?, 'PENDING', ?)`,
+      [getCurrentShopId(), customerId, date, time, '客戶線上預約申請，請店家確認。'],
+    );
+    const appointmentId = Number(appointmentResult.insertId);
+    const [appointmentPet] = await connection.query(
+      'INSERT INTO appointment_pets (shop_id, appointment_id, pet_id) VALUES (?, ?, ?)',
+      [getCurrentShopId(), appointmentId, pet.id],
+    );
+    await connection.query(
+      `INSERT INTO appointment_pet_services
+         (shop_id, appointment_pet_id, service_id, duration_minutes)
+       VALUES (?, ?, ?, ?)`,
+      [getCurrentShopId(), appointmentPet.insertId, service.id, service.duration_minutes],
+    );
+    await connection.query(
+      `INSERT INTO booking_request_details
+         (shop_id, appointment_id, service_type, customer_member_id, requested_check_out)
+       VALUES (?, ?, ?, ?, ?)`,
+      [getCurrentShopId(), appointmentId, service.type, memberId, checkOut ? `${checkOut.date} ${checkOut.time}` : null],
+    );
+    for (const product of productRows) {
+      await connection.query(
+        `INSERT INTO booking_request_products
+           (shop_id, appointment_id, product_id, product_name, unit_price, quantity)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          getCurrentShopId(),
+          appointmentId,
+          product.id,
+          product.name,
+          product.price,
+          product.quantity,
+        ],
+      );
+    }
+    await connection.commit();
+    return {
+      request: {
+        appointment_id: appointmentId,
+        status: 'PENDING',
+        service_type: service.type,
+        appointment_date: date,
+        appointment_time: time.slice(0, 5),
+        requested_check_out: checkOut ? `${checkOut.date} ${checkOut.time}` : null,
+        add_ons: productRows.map((product) => ({
+          name: product.name,
+          quantity: product.quantity,
+          unit_price: Number(product.price),
+        })),
+        message: '預約申請已送出，時段尚未保留，需店家確認。',
+      },
+    };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+async function listRequests() {
+  const memberId = getCurrentCustomerMemberId();
+  const [rows] = await getPool().query(
+    `SELECT a.id AS appointment_id, a.appointment_date, a.appointment_time, a.status,
+            brd.service_type, brd.requested_check_out
+     FROM booking_request_details brd
+     INNER JOIN appointments a ON a.id = brd.appointment_id AND a.shop_id = brd.shop_id
+     WHERE brd.shop_id = ? AND brd.customer_member_id = ?
+     ORDER BY a.created_at DESC`,
+    [getCurrentShopId(), memberId],
+  );
+  return { requests: rows.map((row) => ({ ...row, appointment_id: Number(row.appointment_id) })) };
+}
+
+async function getOnboardingToken(appointmentIdValue) {
+  const appointmentId = Number(appointmentIdValue);
+  if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
+    throw createError('找不到指定的預約申請。', 404, 'APPOINTMENT_NOT_FOUND');
+  }
+  const memberId = getCurrentCustomerMemberId();
+  const [rows] = await getPool().query(
+    `SELECT o.id
+     FROM appointments a
+     INNER JOIN booking_request_details brd
+       ON brd.appointment_id = a.id AND brd.shop_id = a.shop_id
+     INNER JOIN onboardings o
+       ON o.appointment_id = a.id AND o.shop_id = a.shop_id
+     WHERE a.id = ? AND a.shop_id = ? AND brd.customer_member_id = ?
+       AND a.status = 'AWAITING_CUSTOMER'
+       AND o.customer_member_id = ?
+       AND o.status IN ('NOT_STARTED', 'IN_PROGRESS')
+       AND o.expires_at > UTC_TIMESTAMP()
+     LIMIT 1`,
+    [appointmentId, getCurrentShopId(), memberId, memberId],
+  );
+  if (!rows[0]) throw createError('此預約目前沒有待補資料項目。', 404, 'CUSTOMER_ONBOARDING_NOT_FOUND');
+  const token = crypto.randomBytes(32).toString('base64url');
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  await getPool().query(
+    'UPDATE onboardings SET public_token_hash = ? WHERE id = ? AND shop_id = ?',
+    [hash, rows[0].id, getCurrentShopId()],
+  );
+  return { token };
+}
+
+module.exports = {
+  createBookingRequest,
+  getOnboardingToken,
+  listAvailability,
+  listPets,
+  listProducts,
+  listRequests,
+  listServices,
+};

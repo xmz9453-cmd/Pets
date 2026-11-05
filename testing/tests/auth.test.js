@@ -24,12 +24,12 @@ const app = require('../../backend/src/app');
 const { getPool, closePool } = require('../../backend/src/config/database');
 const { setup } = require('../../database/scripts/setup');
 const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
-const { seedStaffAuthentication } = require('../../database/seeds/staff-authentication-seed');
 const { hashSessionToken, createSessionToken } = require('../../backend/src/utils/session-token');
 const { hashPassword } = require('../../backend/src/utils/password');
 
 const owner = getFoundationOwner();
 const createdStaffIds = [];
+const createdShopIds = [];
 
 async function setOwnerStatus(status) {
   await getPool().query('UPDATE staff SET status = ? WHERE username = ?', [status, owner.username]);
@@ -52,18 +52,10 @@ async function createRoleStaff(roleCode) {
   );
   const [roleRows] = await getPool().query('SELECT id FROM roles WHERE code = ?', [roleCode]);
   await getPool().query('INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)', [staffResult.insertId, roleRows[0].id]);
+  await getPool().query('INSERT INTO staff_shop_memberships (staff_id, shop_id) VALUES (?, 1)', [staffResult.insertId]);
+  await getPool().query('INSERT INTO staff_shop_roles (staff_id, shop_id, role_id) VALUES (?, 1, ?)', [staffResult.insertId, roleRows[0].id]);
   createdStaffIds.push(staffResult.insertId);
   return { id: staffResult.insertId, username, password: 'status-pass-123' };
-}
-
-async function clearStaffForRegistrationTest() {
-  await getPool().query('DELETE FROM auth_sessions');
-  await getPool().query('DELETE FROM staff_roles');
-  await getPool().query('DELETE FROM staff');
-}
-
-async function restoreFoundationStaff() {
-  await seedStaffAuthentication();
 }
 
 describe('Staff authentication API', () => {
@@ -79,6 +71,10 @@ describe('Staff authentication API', () => {
       await getPool().query('DELETE FROM staff_roles WHERE staff_id IN (?)', [createdStaffIds]);
       await getPool().query('DELETE FROM staff WHERE id IN (?)', [createdStaffIds]);
       createdStaffIds.length = 0;
+    }
+    if (createdShopIds.length) {
+      await getPool().query('DELETE FROM shops WHERE id IN (?)', [createdShopIds]);
+      createdShopIds.length = 0;
     }
     await setOwnerStatus('ACTIVE');
   });
@@ -98,6 +94,7 @@ describe('Staff authentication API', () => {
       display_name: owner.displayName,
       status: 'ACTIVE',
       roles: ['OWNER'],
+      is_platform_shop_manager: true,
     });
     expect(response.body.data.staff.password).toBeUndefined();
     expect(response.body.data.staff.password_hash).toBeUndefined();
@@ -106,120 +103,135 @@ describe('Staff authentication API', () => {
     expect(rows).toHaveLength(1);
   });
 
-  test('first registration creates exactly one OWNER', async () => {
-    await clearStaffForRegistrationTest();
-    try {
-      const response = await request(app).post('/api/auth/register').send({
-        username: 'registration-first-owner',
-        password: 'registration-pass-123',
-        display_name: 'Registration First Owner',
-      });
+  test('public staff registration is unavailable', async () => {
+    const response = await request(app).post('/api/auth/register').send({
+      username: 'public-registration-blocked',
+      password: 'registration-pass-123',
+      display_name: 'Public Registration',
+    });
 
-      expect(response.status).toBe(201);
-      const [[staffCount]] = await getPool().query('SELECT COUNT(*) AS count FROM staff');
-      const [[ownerCount]] = await getPool().query(
-        `SELECT COUNT(*) AS count
-         FROM staff_roles sr
-         INNER JOIN roles r ON r.id = sr.role_id
-         WHERE r.code = 'OWNER'`,
-      );
-      expect(Number(staffCount.count)).toBe(1);
-      expect(Number(ownerCount.count)).toBe(1);
-      expect(response.body.data.staff.roles).toEqual(['OWNER']);
-    } finally {
-      await restoreFoundationStaff();
-    }
+    expect(response.status).toBe(404);
+    const [rows] = await getPool().query('SELECT id FROM staff WHERE username = ?', ['public-registration-blocked']);
+    expect(rows).toHaveLength(0);
   });
 
-  test('first registration rolls back when OWNER role definition is missing', async () => {
-    await clearStaffForRegistrationTest();
-    const [[ownerRole]] = await getPool().query('SELECT code, name FROM roles WHERE code = \'OWNER\' LIMIT 1');
-    await getPool().query('DELETE FROM roles WHERE code = \'OWNER\'');
+  test('GET /api/public/shops lists active stores without staff authentication', async () => {
+    const activeSlug = `portal-active-${Date.now()}`;
+    const inactiveSlug = `portal-inactive-${Date.now()}`;
+    const [activeResult] = await getPool().query(
+      "INSERT INTO shops (name, slug, status) VALUES ('Portal Active Shop', ?, 'ACTIVE')",
+      [activeSlug],
+    );
+    const [inactiveResult] = await getPool().query(
+      "INSERT INTO shops (name, slug, status) VALUES ('Portal Inactive Shop', ?, 'INACTIVE')",
+      [inactiveSlug],
+    );
+    createdShopIds.push(activeResult.insertId, inactiveResult.insertId);
 
-    try {
-      const response = await request(app).post('/api/auth/register').send({
-        username: 'registration-missing-owner-role',
-        password: 'registration-pass-123',
-        display_name: 'Missing Owner Role',
-      });
+    const response = await request(app).get('/api/public/shops');
 
-      expect(response.status).not.toBe(201);
-      expect(response.body.success).not.toBe(true);
-      expect(JSON.stringify(response.body)).not.toContain('"OWNER"');
-
-      const [[staffCount]] = await getPool().query(
-        'SELECT COUNT(*) AS count FROM staff WHERE username = \'registration-missing-owner-role\'',
-      );
-      const [[totalStaffCount]] = await getPool().query('SELECT COUNT(*) AS count FROM staff');
-      const [[staffRoleCount]] = await getPool().query('SELECT COUNT(*) AS count FROM staff_roles');
-      expect(Number(staffCount.count)).toBe(0);
-      expect(Number(totalStaffCount.count)).toBe(0);
-      expect(Number(staffRoleCount.count)).toBe(0);
-    } finally {
-      if (ownerRole) {
-        await getPool().query(
-          `INSERT INTO roles (code, name)
-           VALUES (?, ?)
-           ON DUPLICATE KEY UPDATE name = VALUES(name)`,
-          [ownerRole.code, ownerRole.name],
-        );
-      }
-      await restoreFoundationStaff();
-    }
-  });
-  test('concurrent first registrations cannot create two OWNER accounts', async () => {
-    await clearStaffForRegistrationTest();
-    try {
-      const requests = ['registration-concurrent-a', 'registration-concurrent-b'].map((username) => request(app)
-        .post('/api/auth/register')
-        .send({ username, password: 'registration-pass-123', display_name: username }));
-      const responses = await Promise.all(requests);
-
-      expect(responses.every((response) => response.status === 201)).toBe(true);
-      const [[staffCount]] = await getPool().query('SELECT COUNT(*) AS count FROM staff');
-      const [[ownerCount]] = await getPool().query(
-        `SELECT COUNT(*) AS count
-         FROM staff_roles sr
-         INNER JOIN roles r ON r.id = sr.role_id
-         WHERE r.code = 'OWNER'`,
-      );
-      expect(Number(staffCount.count)).toBe(2);
-      expect(Number(ownerCount.count)).toBe(1);
-      expect(responses.filter((response) => response.body.data.staff.roles.includes('OWNER'))).toHaveLength(1);
-      expect(responses.filter((response) => response.body.data.staff.roles.length === 0)).toHaveLength(1);
-    } finally {
-      await restoreFoundationStaff();
-    }
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.shops).toContainEqual(expect.objectContaining({
+      id: activeResult.insertId,
+      name: 'Portal Active Shop',
+    }));
+    expect(response.body.data.shops).not.toContainEqual(expect.objectContaining({
+      id: inactiveResult.insertId,
+    }));
+    expect(response.body.data.shops.every((shop) =>
+      Object.keys(shop).sort().join(',') === 'announcement,id,logo_url,name')).toBe(true);
   });
 
-  test('registration after an OWNER exists does not create another OWNER', async () => {
-    await clearStaffForRegistrationTest();
-    try {
-      const first = await request(app).post('/api/auth/register').send({
-        username: 'registration-existing-owner',
-        password: 'registration-pass-123',
-        display_name: 'Existing Owner',
-      });
-      const second = await request(app).post('/api/auth/register').send({
-        username: 'registration-second-user',
-        password: 'registration-pass-123',
-        display_name: 'Second User',
-      });
+  test('system administrator creates accounts and store OWNER manages only store membership and roles', async () => {
+    const { agent: managerAgent } = await loginAgent();
+    const shopSlug = `auth-test-${Date.now()}`;
+    const [shopResult] = await getPool().query(
+      "INSERT INTO shops (name, slug, status) VALUES ('Authentication Test Shop', ?, 'ACTIVE')",
+      [shopSlug],
+    );
+    const secondShopId = shopResult.insertId;
+    createdShopIds.push(secondShopId);
 
-      expect(first.status).toBe(201);
-      expect(second.status).toBe(201);
-      expect(first.body.data.staff.roles).toEqual(['OWNER']);
-      expect(second.body.data.staff.roles).toEqual([]);
-      const [[ownerCount]] = await getPool().query(
-        `SELECT COUNT(*) AS count
-         FROM staff_roles sr
-         INNER JOIN roles r ON r.id = sr.role_id
-         WHERE r.code = 'OWNER'`,
-      );
-      expect(Number(ownerCount.count)).toBe(1);
-    } finally {
-      await restoreFoundationStaff();
-    }
+    const ownerUsername = `created-owner-${Date.now()}`;
+    const createdOwner = await managerAgent.post('/api/auth/staff').send({
+      username: ownerUsername,
+      display_name: 'Created Store Owner',
+      password: 'created-owner-pass',
+      roles: ['OWNER'],
+    });
+    expect(createdOwner.status).toBe(201);
+    expect(createdOwner.body.data.staff).toMatchObject({
+      username: ownerUsername,
+      roles: ['OWNER'],
+      is_member: true,
+      is_platform_shop_manager: false,
+    });
+    const storeOwnerId = createdOwner.body.data.staff.id;
+    createdStaffIds.push(storeOwnerId);
+
+    const groomerUsername = `created-groomer-${Date.now()}`;
+    const createdGroomer = await managerAgent
+      .post('/api/auth/staff')
+      .set('X-Shop-Id', String(secondShopId))
+      .send({
+        username: groomerUsername,
+        display_name: 'Cross Store Groomer',
+        password: 'created-groomer-pass',
+        roles: ['GROOMER'],
+      });
+    expect(createdGroomer.status).toBe(201);
+    const groomerId = createdGroomer.body.data.staff.id;
+    createdStaffIds.push(groomerId);
+    const groomerAgent = request.agent(app);
+    expect((await groomerAgent.post('/api/auth/login')
+      .set('X-Shop-Id', String(secondShopId))
+      .send({ username: groomerUsername, password: 'created-groomer-pass' })).status).toBe(200);
+
+    const storeOwnerAgent = request.agent(app);
+    expect((await storeOwnerAgent.post('/api/auth/login').send({
+      username: ownerUsername,
+      password: 'created-owner-pass',
+    })).status).toBe(200);
+    expect((await storeOwnerAgent.post('/api/auth/staff').send({
+      username: 'owner-cannot-create',
+      display_name: 'Not Allowed',
+      password: 'not-allowed-123',
+      roles: ['GROOMER'],
+    })).status).toBe(403);
+    expect((await storeOwnerAgent.patch(`/api/auth/staff/${groomerId}/status`).send({ status: 'inactive' })).status).toBe(403);
+
+    const assigned = await storeOwnerAgent.patch(`/api/auth/staff/${groomerId}/roles`).send({ roles: ['GROOMER'] });
+    expect(assigned.status).toBe(200);
+    expect(assigned.body.data.staff).toMatchObject({ is_member: true, roles: ['GROOMER'] });
+    expect((await storeOwnerAgent.patch(`/api/auth/staff/${groomerId}/roles`).send({ roles: ['OWNER'] })).status).toBe(403);
+
+    const removed = await storeOwnerAgent.delete(`/api/auth/staff/${groomerId}/membership`);
+    expect(removed.status).toBe(200);
+    expect(removed.body.data.staff).toMatchObject({ is_member: false, roles: [] });
+    const [secondShopMembership] = await getPool().query(
+      'SELECT staff_id FROM staff_shop_memberships WHERE staff_id = ? AND shop_id = ?',
+      [groomerId, secondShopId],
+    );
+    expect(secondShopMembership).toHaveLength(1);
+    expect((await groomerAgent.get('/api/auth/me').set('X-Shop-Id', String(secondShopId))).status).toBe(200);
+
+    const [ownerRows] = await getPool().query('SELECT id FROM staff WHERE username = ?', [owner.username]);
+    const protectedManager = await storeOwnerAgent.delete(`/api/auth/staff/${ownerRows[0].id}/membership`);
+    expect(protectedManager.status).toBe(403);
+
+    const removedEverywhere = await managerAgent
+      .patch(`/api/shops/staff/${groomerId}/roles`)
+      .set('X-Shop-Id', String(secondShopId))
+      .send({ roles: [] });
+    expect(removedEverywhere.status).toBe(200);
+    expect((await groomerAgent.get('/api/auth/me').set('X-Shop-Id', String(secondShopId))).status).toBe(401);
+    const failedLogin = await request(app).post('/api/auth/login')
+      .set('X-Shop-Id', String(secondShopId))
+      .send({ username: groomerUsername, password: 'created-groomer-pass' });
+    expect(failedLogin.status).toBe(401);
+    const [remainingSessions] = await getPool().query('SELECT id FROM auth_sessions WHERE staff_id = ?', [groomerId]);
+    expect(remainingSessions).toHaveLength(0);
   });
 
   test('POST /api/auth/login rejects wrong password with a uniform message', async () => {
@@ -323,7 +335,7 @@ describe('Staff authentication API', () => {
     expect(meResponse.status).toBe(401);
   });
 
-  test('OWNER can deactivate and reactivate another staff account', async () => {
+  test('system administrator can deactivate and reactivate another staff account', async () => {
     const target = await createRoleStaff('GROOMER');
     const { agent } = await loginAgent();
 
@@ -401,7 +413,7 @@ describe('Staff authentication API', () => {
     expect((await request(app).post('/api/auth/login').send({ username: target.username, password: 'new-pass-123' })).status).toBe(200);
   });
 
-  test('OWNER can reset another inactive account, but other roles cannot', async () => {
+  test('system administrator can reset another inactive account, but other roles cannot', async () => {
     const target = await createRoleStaff('GROOMER');
     const frontDesk = await createRoleStaff('FRONT_DESK');
     const { agent: ownerAgent } = await loginAgent();

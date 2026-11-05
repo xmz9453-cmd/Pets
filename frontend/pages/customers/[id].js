@@ -5,6 +5,7 @@ import {
   getCustomer,
   getCustomerContractPdfUrl,
   getCustomerContractSignatureUrl,
+  linkCustomerToMember,
 } from '../../api/client';
 
 const statusLabels = { ACTIVE: '啟用', INACTIVE: '停用' };
@@ -15,6 +16,9 @@ export default function CustomerDetailPage() {
   const [customer, setCustomer] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [memberId, setMemberId] = useState('');
+  const [linkingMember, setLinkingMember] = useState(false);
+  const [success, setSuccess] = useState('');
 
   async function load() {
     if (!id) {
@@ -30,6 +34,22 @@ export default function CustomerDetailPage() {
       setError(loadError.message || '客戶資料載入失敗');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleLinkMember(event) {
+    event.preventDefault();
+    setLinkingMember(true);
+    setError('');
+    setSuccess('');
+    try {
+      await linkCustomerToMember(id, memberId);
+      setSuccess('已完成會員與客戶資料連結。');
+      setMemberId('');
+    } catch (linkError) {
+      setError(linkError.message || '會員連結失敗，請確認資料後再試。');
+    } finally {
+      setLinkingMember(false);
     }
   }
 
@@ -72,6 +92,9 @@ export default function CustomerDetailPage() {
 
       {error ? (
         <div className="alert alert-danger" role="alert">{error}</div>
+      ) : null}
+      {success ? (
+        <div className="alert alert-success" role="status">{success}</div>
       ) : null}
 
       <div className="row g-4">
@@ -142,6 +165,28 @@ export default function CustomerDetailPage() {
             ) : (
               <p className="text-muted mb-0">目前尚無關聯寵物</p>
             )}
+          </div>
+          <div className="foundation-panel mt-4">
+            <h2 className="h5 mb-3">會員資料連結</h2>
+            <p className="small text-muted">
+              請先核對會員本人提供的會員編號。請勿依姓名、電子郵件或電話自動連結。
+            </p>
+            <form onSubmit={handleLinkMember}>
+              <label className="form-label" htmlFor="customer-member-id">會員編號</label>
+              <input
+                id="customer-member-id"
+                className="form-control mb-3"
+                type="number"
+                min="1"
+                step="1"
+                required
+                value={memberId}
+                onChange={(event) => setMemberId(event.target.value)}
+              />
+              <button type="submit" className="btn btn-outline-dark" disabled={linkingMember}>
+                {linkingMember ? '連結中…' : '完成連結'}
+              </button>
+            </form>
           </div>
         </div>
 

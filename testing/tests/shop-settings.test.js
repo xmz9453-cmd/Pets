@@ -1,5 +1,6 @@
 const request = require('supertest');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 function loadLocalEnvForTestDatabase() {
@@ -19,6 +20,8 @@ function loadLocalEnvForTestDatabase() {
 }
 
 loadLocalEnvForTestDatabase();
+const shopLogoStorageRoot = path.join(os.tmpdir(), `psop-shop-logo-test-${process.pid}`);
+process.env.SHOP_LOGO_STORAGE_ROOT = shopLogoStorageRoot;
 
 const app = require('../../backend/src/app');
 const { setup } = require('../../database/scripts/setup');
@@ -49,6 +52,8 @@ async function createStaffUser({ username, password, displayName, roleCode }) {
   const [roleRow] = await getPool().query('SELECT id FROM roles WHERE code = ?', [roleCode]);
   if (roleRow.length) {
     await getPool().query('INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)', [staffRow.insertId, roleRow[0].id]);
+    await getPool().query('INSERT INTO staff_shop_memberships (staff_id, shop_id) VALUES (?, 1)', [staffRow.insertId]);
+    await getPool().query('INSERT INTO staff_shop_roles (staff_id, shop_id, role_id) VALUES (?, 1, ?)', [staffRow.insertId, roleRow[0].id]);
   }
 
   return staffRow.insertId;
@@ -76,6 +81,7 @@ describe('Shop Settings API', () => {
 
   afterAll(async () => {
     await closePool();
+    await fs.promises.rm(shopLogoStorageRoot, { recursive: true, force: true });
   });
 
   test('GET /api/shop-settings initializes default settings and seven business-hours rows', async () => {
@@ -87,6 +93,8 @@ describe('Shop Settings API', () => {
     expect(response.body.success).toBe(true);
     expect(response.body.data.shop).toMatchObject({
       name: 'My Shop',
+      logo_url: null,
+      announcement: '',
     });
     expect(response.body.data.business_hours).toHaveLength(7);
     expect(response.body.data.business_hours.map((entry) => entry.weekday)).toEqual([
@@ -105,6 +113,7 @@ describe('Shop Settings API', () => {
       phone: '02-1234-5678',
       address: '123 Main Street',
       email: 'hello@sunsetpet.com',
+      announcement: '本週六店休，造成不便敬請見諒。',
       business_hours: [
         { weekday: 'MONDAY', is_closed: false, open_time: '09:00', close_time: '18:00' },
         { weekday: 'TUESDAY', is_closed: false, open_time: '09:00', close_time: '18:00' },
@@ -119,11 +128,69 @@ describe('Shop Settings API', () => {
     expect(putResponse.status).toBe(200);
     expect(putResponse.body.success).toBe(true);
     expect(putResponse.body.data.shop.name).toBe('Sunset Pet Grooming');
+    expect(putResponse.body.data.shop.announcement).toBe('本週六店休，造成不便敬請見諒。');
     expect(putResponse.body.data.business_hours).toHaveLength(7);
 
     await agent.get('/api/shop-settings');
     const persisted = await getShopSettingsRow();
     expect(persisted.name).toBe('Sunset Pet Grooming');
+    expect(persisted.portal_announcement).toBe('本週六店休，造成不便敬請見諒。');
+
+    const publicShops = await request(app).get('/api/public/shops');
+    expect(publicShops.status).toBe(200);
+    expect(publicShops.body.data.shops).toContainEqual(expect.objectContaining({
+      name: 'Sunset Pet Grooming',
+      announcement: '本週六店休，造成不便敬請見諒。',
+      logo_url: null,
+    }));
+  });
+
+  test('shop owners can upload and remove a validated public shop logo', async () => {
+    const { agent } = await loginAsOwner();
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pHsAAAAASUVORK5CYII=',
+      'base64',
+    );
+
+    const upload = await agent
+      .post('/api/shop-settings/logo')
+      .attach('file', png, { filename: 'shop-logo.png', contentType: 'image/png' });
+
+    expect(upload.status).toBe(200);
+    expect(upload.body.data.shop.logo_url).toMatch(/^\/api\/public\/shop-logos\/[a-f0-9]{32}\.png$/);
+
+    const publicLogo = await request(app).get(upload.body.data.shop.logo_url);
+    expect(publicLogo.status).toBe(200);
+    expect(publicLogo.headers['content-type']).toMatch(/^image\/png/);
+    expect(publicLogo.body).toEqual(png);
+
+    const publicShops = await request(app).get('/api/public/shops');
+    expect(publicShops.body.data.shops).toContainEqual(expect.objectContaining({
+      name: 'Sunset Pet Grooming',
+      logo_url: upload.body.data.shop.logo_url,
+    }));
+
+    const replacement = await agent
+      .post('/api/shop-settings/logo')
+      .attach('file', png, { filename: 'replacement.png', contentType: 'image/png' });
+    expect(replacement.status).toBe(200);
+    expect(replacement.body.data.shop.logo_url).not.toBe(upload.body.data.shop.logo_url);
+    expect((await request(app).get(upload.body.data.shop.logo_url)).status).toBe(404);
+
+    const removal = await agent.delete('/api/shop-settings/logo');
+    expect(removal.status).toBe(200);
+    expect(removal.body.data.shop.logo_url).toBeNull();
+    expect((await request(app).get(replacement.body.data.shop.logo_url)).status).toBe(404);
+  });
+
+  test('shop logo upload rejects content that is not a supported image', async () => {
+    const { agent } = await loginAsOwner();
+    const response = await agent
+      .post('/api/shop-settings/logo')
+      .attach('file', Buffer.from('not an image'), { filename: 'fake.png', contentType: 'image/png' });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('INVALID_SHOP_LOGO');
   });
 
   test('PUT /api/shop-settings rejects invalid input and keeps prior values unchanged', async () => {

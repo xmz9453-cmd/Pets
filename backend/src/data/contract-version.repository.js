@@ -14,14 +14,20 @@ function normalizeContractVersion(row) {
     ...row,
     id: Number(row.id),
     is_current: Boolean(row.is_current),
+    is_referenced: Boolean(row.is_referenced),
     file_size: row.file_size === null ? null : Number(row.file_size),
   };
 }
 
 async function listContractVersions(connection = getPool()) {
   const [rows] = await connection.query(
-    `SELECT id, version_label, status, is_current, file_name, mime_type,
-            file_size, storage_path, file_hash, created_at, updated_at
+    `SELECT id, version_label, service_type, status, is_current, file_name, mime_type,
+            file_size, storage_path, file_hash, created_at, updated_at,
+            (EXISTS (
+               SELECT 1 FROM onboardings o WHERE o.contract_version_id = contract_versions.id
+             ) OR EXISTS (
+               SELECT 1 FROM contract_history h WHERE h.contract_version_id = contract_versions.id
+             )) AS is_referenced
      FROM contract_versions
      WHERE shop_id = ?
      ORDER BY created_at DESC, id DESC`,
@@ -33,8 +39,13 @@ async function listContractVersions(connection = getPool()) {
 
 async function getContractVersionById(versionId, connection = getPool(), forUpdate = false) {
   const [rows] = await connection.query(
-    `SELECT id, version_label, status, is_current, file_name, mime_type,
-            file_size, storage_path, file_hash, created_at, updated_at
+    `SELECT id, version_label, service_type, status, is_current, file_name, mime_type,
+            file_size, storage_path, file_hash, created_at, updated_at,
+            (EXISTS (
+               SELECT 1 FROM onboardings o WHERE o.contract_version_id = contract_versions.id
+             ) OR EXISTS (
+               SELECT 1 FROM contract_history h WHERE h.contract_version_id = contract_versions.id
+             )) AS is_referenced
      FROM contract_versions
      WHERE id = ? AND shop_id = ?
      LIMIT 1${forUpdate ? ' FOR UPDATE' : ''}`,
@@ -44,14 +55,33 @@ async function getContractVersionById(versionId, connection = getPool(), forUpda
   return normalizeContractVersion(rows[0] || null);
 }
 
+async function countContractVersionReferences(versionId, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT
+       (SELECT COUNT(*) FROM onboardings WHERE contract_version_id = ?) +
+       (SELECT COUNT(*) FROM contract_history WHERE contract_version_id = ?) AS reference_count`,
+    [versionId, versionId],
+  );
+  return Number(rows[0].reference_count);
+}
+
+async function deleteContractVersion(versionId, connection = getPool()) {
+  const [result] = await connection.query(
+    'DELETE FROM contract_versions WHERE id = ? AND shop_id = ?',
+    [versionId, getCurrentShopId()],
+  );
+  return result.affectedRows === 1;
+}
+
 async function createDraft(payload, connection = getPool()) {
   const [result] = await connection.query(
     `INSERT INTO contract_versions
-       (shop_id, version_label, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
-     VALUES (?, ?, 'DRAFT', FALSE, ?, ?, ?, ?, ?)`,
+       (shop_id, version_label, service_type, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
+     VALUES (?, ?, ?, 'DRAFT', FALSE, ?, ?, ?, ?, ?)`,
     [
       getCurrentShopId(),
       payload.version_label,
+      payload.service_type,
       payload.file_name ?? null,
       payload.mime_type ?? null,
       payload.file_size ?? null,
@@ -118,10 +148,10 @@ async function publishDraft(versionId, connection) {
   return result.affectedRows === 1;
 }
 
-async function clearCurrent(connection) {
+async function clearCurrent(connection, serviceType) {
   await connection.query(
-    'UPDATE contract_versions SET is_current = FALSE WHERE is_current = TRUE AND shop_id = ?',
-    [getCurrentShopId()],
+    'UPDATE contract_versions SET is_current = FALSE WHERE is_current = TRUE AND shop_id = ? AND service_type = ?',
+    [getCurrentShopId(), serviceType],
   );
 }
 
@@ -139,6 +169,8 @@ async function markCurrent(versionId, connection) {
 module.exports = {
   clearCurrent,
   createDraft,
+  countContractVersionReferences,
+  deleteContractVersion,
   getContractVersionById,
   listContractVersions,
   markCurrent,

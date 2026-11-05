@@ -14,6 +14,8 @@ This document provides standard operating procedures (SOP) for **Pets 2.0 Produc
 - **Git Repository**: `https://github.com/xmz9453-cmd/Pets.git` (`master` branch)
 - **Database Target**: `psop_one` (MySQL)
 - **Contract PDF Storage**: private filesystem directory configured by `CONTRACT_STORAGE_ROOT`; not part of the Git checkout or Nginx document root.
+- **Shop Logo Storage**: private filesystem directory configured by `SHOP_LOGO_STORAGE_ROOT`; only validated PNG/JPG/WebP files are served through the public logo endpoint.
+- **Portal Background Storage**: private filesystem directory configured by `PORTAL_BACKGROUND_STORAGE_ROOT`; only the selected, validated PNG/JPG/WebP image is publicly served.
 - **Application Services**:
   - Backend: `pets-backend.service` (`http://127.0.0.1:3001`)
   - Frontend: `pets-frontend.service` (`http://127.0.0.1:3000`)
@@ -34,6 +36,10 @@ This document provides standard operating procedures (SOP) for **Pets 2.0 Produc
 ### Contract PDF Backup and Restore
 
 Contract PDFs and their database metadata form one recoverable contract history. Configure `CONTRACT_STORAGE_ROOT` in the Backend environment and in the repository `.env` used by the maintenance scripts. The root must already exist and be private; backup and restore refuse an unset or missing root.
+
+Shop Logo files are stored separately from MySQL in `SHOP_LOGO_STORAGE_ROOT` (by default, alongside the contract storage root). They must be backed up and restored with the database so logo references remain valid. The current `deploy/backup.sh` bundle includes the database and Contract PDFs, but not Shop Logo files; include the logo directory separately until that backup bundle is extended.
+
+Portal background images are stored separately from MySQL in `PORTAL_BACKGROUND_STORAGE_ROOT` (by default, alongside the contract storage root). Back up and restore this directory together with the database so the administrator's image library and selected background remain available. The current `deploy/backup.sh` bundle does not include shop logos or portal backgrounds; include both media directories separately.
 
 `deploy/backup.sh` creates a timestamped `pets_backup_YYYYMMDD_HHMMSS.tar.gz` bundle containing the compressed MySQL dump, contract PDF archive, PDF manifest, and checksums. Completed bundles are verified and stored with mode `600`; bundles older than 30 days are removed. Keep the bundle as one unit.
 

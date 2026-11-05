@@ -12,6 +12,7 @@ router.get('/contract-versions', ...requireOwner, contractVersionController.list
 router.get('/contract-versions/:id', ...requireOwner, contractVersionController.getContractVersion);
 router.post('/contract-versions', ...requireOwner, contractVersionController.createDraft);
 router.patch('/contract-versions/:id', ...requireOwner, contractVersionController.updateDraft);
+router.delete('/contract-versions/:id', ...requireOwner, contractVersionController.deleteContractVersion);
 router.post('/contract-versions/:id/pdf', ...requireOwner, uploadContractPdf, contractVersionController.uploadDraftPdf);
 router.post('/contract-versions/:id/publish', ...requireOwner, contractVersionController.publishDraft);
 router.post('/contract-versions/:id/current', ...requireOwner, contractVersionController.setCurrent);

@@ -29,6 +29,14 @@ async function getPublic(req, res, next) {
   }
 }
 
+async function listAvailability(req, res, next) {
+  try {
+    sendSuccess(res, await onboardingService.listAvailability(req.params.token, req.query));
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function autosave(req, res, next) {
   try {
     sendSuccess(res, await onboardingService.autosave(req.params.token, req.body || {}));
@@ -95,6 +103,7 @@ module.exports = {
   createPublic,
   getContractPdf,
   getPublic,
+  listAvailability,
   resolveCustomer,
   resolvePet,
   searchCustomers,

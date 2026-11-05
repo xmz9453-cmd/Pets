@@ -21,11 +21,25 @@ function readNumberEnv(name, fallback) {
   return numberValue;
 }
 
+const contractStorageRoot = readEnv('CONTRACT_STORAGE_ROOT', '');
+
 const config = {
   nodeEnv: readEnv('NODE_ENV', 'development'),
   backendPort: readNumberEnv('BACKEND_PORT', 3001),
   frontendApiBaseUrl: readEnv('FRONTEND_API_BASE_URL', 'http://localhost:3001'),
-  contractStorageRoot: readEnv('CONTRACT_STORAGE_ROOT', ''),
+  contractStorageRoot,
+  shopLogoStorageRoot: readEnv(
+    'SHOP_LOGO_STORAGE_ROOT',
+    contractStorageRoot
+      ? path.resolve(contractStorageRoot, '..', 'shop-logos')
+      : path.resolve(__dirname, '..', '..', 'storage', 'shop-logos'),
+  ),
+  portalBackgroundStorageRoot: readEnv(
+    'PORTAL_BACKGROUND_STORAGE_ROOT',
+    contractStorageRoot
+      ? path.resolve(contractStorageRoot, '..', 'portal-backgrounds')
+      : path.resolve(__dirname, '..', '..', 'storage', 'portal-backgrounds'),
+  ),
   database: {
     host: readEnv('DB_HOST', 'localhost'),
     port: readNumberEnv('DB_PORT', 3306),
@@ -34,6 +48,8 @@ const config = {
     password: readEnv('DB_PASSWORD', ''),
   },
   testDatabaseName: readEnv('TEST_DB_NAME', 'psop_test'),
+  customerAuthCallbackUrl: readEnv('CUSTOMER_AUTH_CALLBACK_URL', ''),
+  customerAuthReturnUrl: readEnv('CUSTOMER_AUTH_RETURN_URL', 'http://localhost:3000/booking'),
 };
 
 module.exports = {

@@ -28,10 +28,10 @@ async function login(req, res, next) {
   }
 }
 
-async function register(req, res, next) {
+async function createStaff(req, res, next) {
   try {
-    const result = await authService.register(req.body || {});
-    res.status(201).json({ success: true, data: result });
+    const staff = await authService.createStaff(req.body || {}, req.auth.staff.shop_id);
+    res.status(201).json({ success: true, data: { staff } });
   } catch (error) {
     next(error);
   }
@@ -47,7 +47,16 @@ async function listStaff(req, res, next) {
 
 async function updateStaffRoles(req, res, next) {
   try {
-    const staff = await authService.updateStaffRoles(req.params.id, req.body?.roles, req.auth.staff.shop_id);
+    const staff = await authService.updateStaffRoles(req.auth.staff, req.params.id, req.body?.roles, req.auth.staff.shop_id);
+    res.json({ success: true, data: { staff } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function removeStaffMembership(req, res, next) {
+  try {
+    const staff = await authService.removeStaffMembership(req.auth.staff, req.params.id, req.auth.staff.shop_id);
     res.json({ success: true, data: { staff } });
   } catch (error) {
     next(error);
@@ -109,10 +118,11 @@ function getCurrentStaff(req, res) {
 module.exports = {
   getCurrentStaff,
   changeOwnPassword,
+  createStaff,
   login,
   listStaff,
   logout,
-  register,
+  removeStaffMembership,
   resetOtherPassword,
   updateStaffRoles,
   updateStaffStatus,

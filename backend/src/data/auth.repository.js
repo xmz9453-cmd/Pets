@@ -1,33 +1,5 @@
 const { getPool } = require('../config/database');
 
-const REGISTRATION_LOCK_NAME = 'psop:first-owner-registration';
-const REGISTRATION_LOCK_TIMEOUT_SECONDS = 10;
-
-async function acquireRegistrationLock(connection) {
-  const [rows] = await connection.query('SELECT GET_LOCK(?, ?) AS acquired', [REGISTRATION_LOCK_NAME, REGISTRATION_LOCK_TIMEOUT_SECONDS]);
-  if (Number(rows[0]?.acquired) !== 1) {
-    const error = new Error('Registration is busy, please try again');
-    error.statusCode = 503;
-    error.code = 'REGISTRATION_BUSY';
-    throw error;
-  }
-}
-
-async function releaseRegistrationLock(connection) {
-  const [rows] = await connection.query('SELECT RELEASE_LOCK(?) AS released', [REGISTRATION_LOCK_NAME]);
-  if (Number(rows[0]?.released) !== 1) {
-    const error = new Error('Registration lock release failed');
-    error.statusCode = 503;
-    error.code = 'REGISTRATION_LOCK_RELEASE_FAILED';
-    throw error;
-  }
-}
-
-async function countStaff(connection = getPool()) {
-  const [rows] = await connection.query('SELECT COUNT(*) AS count FROM staff');
-  return Number(rows[0].count);
-}
-
 async function createStaff({ username, passwordHash, displayName }, connection = getPool()) {
   const [result] = await connection.query(
     'INSERT INTO staff (username, password_hash, display_name, status) VALUES (?, ?, ?, \'ACTIVE\')',
@@ -134,16 +106,16 @@ async function replaceRolesForStaff(staffId, roleCodes, connection = getPool()) 
   }
 }
 
-async function listActiveOwnerIds(connection = getPool()) {
+async function listActiveOwnerShopIds(staffId, connection = getPool()) {
   const [rows] = await connection.query(
-    `SELECT st.id
-     FROM staff st
-     INNER JOIN staff_roles sr ON sr.staff_id = st.id
+    `SELECT DISTINCT sr.shop_id
+     FROM staff_shop_roles sr
      INNER JOIN roles r ON r.id = sr.role_id
-     WHERE st.status = 'ACTIVE' AND r.code = 'OWNER'
-     FOR UPDATE`,
+     INNER JOIN staff st ON st.id = sr.staff_id
+     WHERE st.id = ? AND st.status = 'ACTIVE' AND r.code = 'OWNER'`,
+    [staffId],
   );
-  return rows.map((row) => row.id);
+  return rows.map((row) => Number(row.shop_id));
 }
 
 async function updateStaffStatus(staffId, status, connection = getPool()) {
@@ -184,23 +156,25 @@ async function deleteSessionByTokenHash(tokenHash) {
   await getPool().query('DELETE FROM auth_sessions WHERE token_hash = ?', [tokenHash]);
 }
 
+async function deleteSessionsForStaff(staffId, connection = getPool()) {
+  await connection.query('DELETE FROM auth_sessions WHERE staff_id = ?', [staffId]);
+}
+
 module.exports = {
-  acquireRegistrationLock,
-  countStaff,
   createStaff,
   createSession,
   deleteSessionByTokenHash,
+  deleteSessionsForStaff,
   findSessionByTokenHash,
   findStaffById,
   findStaffByIdForUpdate,
   findStaffWithPasswordById,
   findStaffByUsername,
   getPool,
-  listActiveOwnerIds,
+  listActiveOwnerShopIds,
   listStaffWithRoles,
   listRolesForStaff,
   replaceRolesForStaff,
-  releaseRegistrationLock,
   updateStaffStatus,
   updateStaffPassword,
 };

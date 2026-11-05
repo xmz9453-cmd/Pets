@@ -6,8 +6,7 @@ const router = express.Router();
 
 router.use(publicShopContext);
 
-router.post('/public/booking/customer-confirmation', publicBookingController.confirmExistingCustomer);
-router.get('/public/booking/pets', publicBookingController.listPets);
-router.get('/public/booking/services', publicBookingController.listServices);
+router.post('/public/booking/otp', publicBookingController.rejectOtp);
+router.post('/public/booking/otp/verify', publicBookingController.rejectOtp);
 
 module.exports = router;

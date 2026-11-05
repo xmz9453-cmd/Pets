@@ -34,7 +34,7 @@ async function listServices(filters = {}) {
 
 async function listActiveServicesBySpecies(species, connection = getPool()) {
   const [rows] = await connection.query(
-    `SELECT id, name, type, price, unit
+    `SELECT id, name, type, price, unit, duration_minutes
      FROM services
      WHERE shop_id = ? AND status = 'ACTIVE'
        AND (species = 'BOTH' OR species = ?)
@@ -48,6 +48,7 @@ async function listActiveServicesBySpecies(species, connection = getPool()) {
     type: row.type,
     price: Number(row.price),
     unit: row.unit,
+    duration_minutes: Number(row.duration_minutes),
   }));
 }
 

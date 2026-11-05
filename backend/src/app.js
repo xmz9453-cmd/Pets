@@ -17,7 +17,9 @@ const reportRoutes = require('./routes/report.routes');
 const contractVersionRoutes = require('./routes/contract-version.routes');
 const onboardingRoutes = require('./routes/onboarding.routes');
 const publicBookingRoutes = require('./routes/public-booking.routes');
+const customerMemberRoutes = require('./routes/customer-member.routes');
 const shopsRoutes = require('./routes/shops.routes');
+const portalBackgroundsRoutes = require('./routes/portal-backgrounds.routes');
 const { errorHandler } = require('./middleware/error-handler');
 const { requestContext } = require('./utils/shop-context');
 
@@ -34,6 +36,7 @@ app.use(express.json());
 app.use('/api', healthRoutes);
 app.use('/api', authRoutes);
 app.use('/api', shopsRoutes);
+app.use('/api', portalBackgroundsRoutes);
 app.use('/api', petRoutes);
 app.use('/api', customerRoutes);
 app.use('/api', appointmentRoutes);
@@ -49,6 +52,7 @@ app.use('/api', reportRoutes);
 app.use('/api', contractVersionRoutes);
 app.use('/api', onboardingRoutes);
 app.use('/api', publicBookingRoutes);
+app.use('/api', customerMemberRoutes);
 
 app.use((req, res) => {
   res.status(404).json({

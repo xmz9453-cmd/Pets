@@ -15,37 +15,41 @@ function loadLocalEnvForTestDatabase() {
 }
 
 loadLocalEnvForTestDatabase();
+process.env.BOOKING_OTP_SECRET = 'test-only-booking-otp-secret';
+
+jest.mock('../../backend/src/services/sms-provider', () => ({
+  sendBookingOtp: jest.fn(async () => {}),
+}));
 
 const crypto = require('crypto');
 const app = require('../../backend/src/app');
 const { setup } = require('../../database/scripts/setup');
 const { getPool, closePool } = require('../../backend/src/config/database');
+const { sendBookingOtp } = require('../../backend/src/services/sms-provider');
+const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
 
-const CUSTOMER_CONFIRMATION_FAILURE = {
-  success: false,
-  error: {
-    code: 'CUSTOMER_CONFIRMATION_FAILED',
-    message: '手機號碼或姓名不正確，請確認後再試。',
-  },
-};
-
-describe('Public booking customer confirmation', () => {
+describe('Public booking phone verification', () => {
   let customerId;
   let otherCustomerId;
   let phone;
   let name;
   let petIds;
+  let appointmentIds;
+  let resourceIds;
 
   beforeAll(async () => {
     await setup();
   });
 
   beforeEach(async () => {
+    sendBookingOtp.mockClear();
     phone = `09${crypto.randomInt(100000000, 999999999)}`;
     name = `Booking Customer ${Date.now()}`;
+    appointmentIds = [];
+    resourceIds = [];
     const [result] = await getPool().query(
-      `INSERT INTO customers (name, phone, status)
-       VALUES (?, ?, 'ACTIVE')`,
+      `INSERT INTO customers (shop_id, name, phone, status)
+       VALUES (1, ?, ?, 'ACTIVE')`,
       [name, phone],
     );
     customerId = result.insertId;
@@ -53,10 +57,20 @@ describe('Public booking customer confirmation', () => {
   });
 
   afterEach(async () => {
+    if (appointmentIds.length) {
+      await getPool().query('DELETE FROM appointment_resource_assignments WHERE appointment_id IN (?)', [appointmentIds]);
+      await getPool().query('DELETE FROM booking_request_details WHERE appointment_id IN (?)', [appointmentIds]);
+      await getPool().query('DELETE FROM daily_operations WHERE appointment_id IN (?)', [appointmentIds]);
+      await getPool().query('DELETE FROM appointments WHERE id IN (?)', [appointmentIds]);
+    }
+    if (resourceIds.length) {
+      await getPool().query('DELETE FROM booking_resources WHERE id IN (?)', [resourceIds]);
+    }
     if (petIds.length) {
       await getPool().query('DELETE FROM pet_customer_relationships WHERE pet_id IN (?)', [petIds]);
       await getPool().query('DELETE FROM pets WHERE id IN (?)', [petIds]);
     }
+    await getPool().query('DELETE FROM booking_otp_challenges WHERE shop_id = 1 AND phone = ?', [phone]);
     await getPool().query('DELETE FROM booking_sessions WHERE customer_id = ?', [customerId]);
     if (otherCustomerId) {
       await getPool().query('DELETE FROM booking_sessions WHERE customer_id = ?', [otherCustomerId]);
@@ -70,20 +84,22 @@ describe('Public booking customer confirmation', () => {
     await closePool();
   });
 
-  test('exact active customer match creates a hashed session and scoped HttpOnly cookie', async () => {
-    const response = await request(app)
-      .post('/api/public/booking/customer-confirmation')
-      .send({ phone: ` ${phone} `, name: ` ${name} `, customer_id: 999999 })
+  test('sends a branded OTP and creates a hashed session after successful verification', async () => {
+    const sent = await request(app)
+      .post('/api/public/booking/otp')
+      .send({ phone: ` ${phone} ` })
       .expect(200);
+    expect(sent.body.data.message).toContain('店家名稱開頭');
+    expect(sendBookingOtp).toHaveBeenCalledTimes(1);
+    expect(sendBookingOtp.mock.calls[0][0].message).toContain('預約手機驗證');
+    expect(sendBookingOtp.mock.calls[0][0].message).toContain('驗證碼');
 
-    expect(response.body).toEqual({
-      success: true,
-      data: { message: '身分確認成功。' },
-    });
+    const response = await request(app)
+      .post('/api/public/booking/otp/verify')
+      .send({ phone, code: sendBookingOtp.mock.calls[0][0].code })
+      .expect(200);
+    expect(response.body.data).toEqual({ message: '手機驗證成功。' });
     expect(JSON.stringify(response.body)).not.toContain(String(customerId));
-    expect(response.body.data).not.toHaveProperty('token');
-    expect(response.body.data).not.toHaveProperty('customer_id');
-    expect(response.body.data).not.toHaveProperty('customer');
 
     const [cookie] = response.headers['set-cookie'];
     expect(cookie).toMatch(/^booking_session=[a-f0-9]{64};/);
@@ -115,26 +131,16 @@ describe('Public booking customer confirmation', () => {
     expect(plaintextRows).toHaveLength(0);
   });
 
-  test.each([
-    ['phone mismatch', { phone: '0900000000' }],
-    ['name mismatch', { name: 'Different Name' }],
-    ['unknown customer', { phone: '0999999999', name: 'No Such Customer' }],
-    ['inactive customer', { status: 'INACTIVE' }],
-    ['missing phone', { phone: '' }],
-    ['missing name', { name: '' }],
-  ])('returns the same failure for %s', async (_scenario, override) => {
-    if (override.status) {
-      await getPool().query('UPDATE customers SET status = ? WHERE id = ?', [override.status, customerId]);
+  test('rejects invalid OTPs and locks a challenge after the maximum attempts', async () => {
+    await request(app).post('/api/public/booking/otp').send({ phone }).expect(200);
+    const wrongCode = String((Number(sendBookingOtp.mock.calls[0][0].code) + 1) % 1000000).padStart(6, '0');
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await request(app)
+        .post('/api/public/booking/otp/verify')
+        .send({ phone, code: wrongCode })
+        .expect(400);
+      expect(response.body.error.code).toBe(attempt === 4 ? 'OTP_ATTEMPTS_EXCEEDED' : 'OTP_INVALID');
     }
-    const response = await request(app)
-      .post('/api/public/booking/customer-confirmation')
-      .send({
-        phone: override.phone === undefined ? phone : override.phone,
-        name: override.name === undefined ? name : override.name,
-      })
-      .expect(400);
-
-    expect(response.body).toEqual(CUSTOMER_CONFIRMATION_FAILURE);
     const [sessions] = await getPool().query(
       'SELECT id FROM booking_sessions WHERE customer_id = ?',
       [customerId],
@@ -143,28 +149,25 @@ describe('Public booking customer confirmation', () => {
   });
 
   test('booking session token hash has a unique database constraint', async () => {
-    const response = await request(app)
-      .post('/api/public/booking/customer-confirmation')
-      .send({ phone, name })
-      .expect(200);
-    const token = response.headers['set-cookie'][0].match(/^booking_session=([a-f0-9]{64});/)[1];
+    const cookie = await createBookingSession();
+    const token = cookie.slice('booking_session='.length);
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
     await expect(getPool().query(
-      `INSERT INTO booking_sessions (token_hash, customer_id, status, expires_at)
-       VALUES (?, ?, 'ACTIVE', DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 2 HOUR))`,
+      `INSERT INTO booking_sessions (shop_id, token_hash, customer_id, status, expires_at)
+       VALUES (1, ?, ?, 'ACTIVE', DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 2 HOUR))`,
       [tokenHash, customerId],
     )).rejects.toMatchObject({ code: 'ER_DUP_ENTRY' });
   });
 
   async function createPetForCustomer(ownerId, petName, status = 'ACTIVE', species = 'CAT') {
     const [pet] = await getPool().query(
-      'INSERT INTO pets (name, species, breed, gender, status) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO pets (shop_id, name, species, breed, gender, status) VALUES (1, ?, ?, ?, ?, ?)',
       [petName, species, '米克斯', 'UNKNOWN', status],
     );
     petIds.push(pet.insertId);
     await getPool().query(
-      'INSERT INTO pet_customer_relationships (pet_id, customer_id, is_primary) VALUES (?, ?, TRUE)',
+      'INSERT INTO pet_customer_relationships (shop_id, pet_id, customer_id, is_primary) VALUES (1, ?, ?, TRUE)',
       [pet.insertId, ownerId],
     );
     return pet.insertId;
@@ -173,16 +176,35 @@ describe('Public booking customer confirmation', () => {
   async function createServiceFixture({ name, type = 'GROOMING', species = 'DOG', price = 500, unit = '次', status = 'ACTIVE' } = {}) {
     const uniqueName = `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const [result] = await getPool().query(
-      'INSERT INTO services (name, type, description, price, unit, species, duration_minutes, sort_order, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO services (shop_id, name, type, description, price, unit, species, duration_minutes, sort_order, status) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [uniqueName, type, null, price, unit, species, 30, 0, status],
     );
     return { id: result.insertId, name: uniqueName };
   }
 
+  async function configureAvailableSlot(capacity = 1) {
+    await getPool().query(
+      `INSERT INTO shop_business_hours (shop_id, weekday, is_closed, open_time, close_time)
+       VALUES (1, 'THURSDAY', FALSE, '09:00:00', '18:00:00')
+       ON DUPLICATE KEY UPDATE is_closed = FALSE, open_time = '09:00:00', close_time = '18:00:00'`,
+    );
+    await getPool().query(
+      `INSERT INTO booking_schedule_rules (shop_id, species, start_time, capacity, is_closed, status)
+       VALUES (1, 'DOG', '10:30:00', ?, FALSE, 'ACTIVE')
+       ON DUPLICATE KEY UPDATE capacity = VALUES(capacity), is_closed = FALSE, status = 'ACTIVE'`,
+      [capacity],
+    );
+  }
+
   async function createBookingSession() {
+    await getPool().query('DELETE FROM booking_otp_challenges WHERE shop_id = 1 AND phone = ?', [phone]);
+    await request(app)
+      .post('/api/public/booking/otp')
+      .send({ phone })
+      .expect(200);
     const response = await request(app)
-      .post('/api/public/booking/customer-confirmation')
-      .send({ phone, name })
+      .post('/api/public/booking/otp/verify')
+      .send({ phone, code: sendBookingOtp.mock.calls[sendBookingOtp.mock.calls.length - 1][0].code })
       .expect(200);
     return response.headers['set-cookie'][0].split(';')[0];
   }
@@ -191,7 +213,7 @@ describe('Public booking customer confirmation', () => {
     const ownPetId = await createPetForCustomer(customerId, '阿貓');
     await createPetForCustomer(customerId, '停用寵物', 'INACTIVE');
     const [otherCustomer] = await getPool().query(
-      `INSERT INTO customers (name, phone, status) VALUES (?, ?, 'ACTIVE')`,
+      `INSERT INTO customers (shop_id, name, phone, status) VALUES (1, ?, ?, 'ACTIVE')`,
       ['Other Booking Customer', `09${crypto.randomInt(100000000, 999999999)}`],
     );
     otherCustomerId = otherCustomer.insertId;
@@ -268,9 +290,8 @@ describe('Public booking customer confirmation', () => {
 
     expect(response.body.success).toBe(true);
     expect(response.body.data.services.map((service) => service.id)).toEqual(expect.arrayContaining([dogService.id, bothService.id]));
-    expect(response.body.data.services.every((service) => ['id', 'name', 'type', 'price', 'unit'].every((key) => Object.prototype.hasOwnProperty.call(service, key)))).toBe(true);
+    expect(response.body.data.services.every((service) => ['id', 'name', 'type', 'price', 'unit', 'duration_minutes'].every((key) => Object.prototype.hasOwnProperty.call(service, key)))).toBe(true);
     expect(response.body.data.services[0]).not.toHaveProperty('description');
-    expect(response.body.data.services[0]).not.toHaveProperty('duration_minutes');
     expect(response.body.data.services[0]).not.toHaveProperty('customer_id');
     expect(response.body.data.services.every((service) => service.id !== inactiveService.id)).toBe(true);
     expect(response.body.data.services.every((service) => service.id !== catService.id)).toBe(true);
@@ -293,7 +314,7 @@ describe('Public booking customer confirmation', () => {
 
   test('rejects unowned, missing, and inactive pets for service lookup and ignores customer_id in the request', async () => {
     const ownPetId = await createPetForCustomer(customerId, '自己的狗', 'ACTIVE', 'DOG');
-    const otherCustomerId = (await getPool().query('INSERT INTO customers (name, phone, status) VALUES (?, ?, ?)', ['Other Service Customer', `09${crypto.randomInt(100000000, 999999999)}`, 'ACTIVE']))[0].insertId;
+    const otherCustomerId = (await getPool().query('INSERT INTO customers (shop_id, name, phone, status) VALUES (1, ?, ?, ?)', ['Other Service Customer', `09${crypto.randomInt(100000000, 999999999)}`, 'ACTIVE']))[0].insertId;
     const otherCustomerPetId = await createPetForCustomer(otherCustomerId, '別人的狗', 'ACTIVE', 'DOG');
     const inactivePetId = await createPetForCustomer(customerId, '停用狗', 'INACTIVE', 'DOG');
 
@@ -327,5 +348,106 @@ describe('Public booking customer confirmation', () => {
     const catResponse = await request(app).get(`/api/public/booking/services?pet_id=${catPetId}`).set('Cookie', cookie).expect(200);
     expect(catResponse.body.data.services.map((service) => service.id)).toEqual(expect.arrayContaining([catOnly.id, bothPets.id]));
     expect(catResponse.body.data.services.map((service) => service.id)).not.toContain(dogOnly.id);
+  });
+
+  test('lets customers request a slot and enforces capacity when the shop confirms it', async () => {
+    await configureAvailableSlot(1);
+    const petId = await createPetForCustomer(customerId, '預約狗', 'ACTIVE', 'DOG');
+    const service = await createServiceFixture({ name: 'Capacity Groom', type: 'GROOMING', species: 'DOG' });
+    const cookie = await createBookingSession();
+    const availability = await request(app)
+      .get(`/api/public/booking/availability?pet_id=${petId}&service_id=${service.id}&date=2099-01-01`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(availability.body.data.slots.map((slot) => slot.time)).toContain('10:30');
+
+    const requestIds = [];
+    for (let index = 0; index < 2; index += 1) {
+      const response = await request(app)
+        .post('/api/public/booking/requests')
+        .set('Cookie', cookie)
+        .send({
+          pet_id: petId,
+          service_id: service.id,
+          appointment_date: '2099-01-01',
+          appointment_time: '10:30',
+        })
+        .expect(201);
+      expect(response.body.data.request.status).toBe('PENDING');
+      requestIds.push(response.body.data.request.appointment_id);
+      appointmentIds.push(response.body.data.request.appointment_id);
+    }
+
+    const owner = getFoundationOwner();
+    const staffAgent = request.agent(app);
+    await staffAgent.post('/api/auth/login')
+      .send({ username: owner.username, password: owner.password })
+      .expect(200);
+    await staffAgent.patch(`/api/appointments/${requestIds[0]}`)
+      .send({ status: 'CONFIRMED' })
+      .expect(200);
+    const rejected = await staffAgent.patch(`/api/appointments/${requestIds[1]}`)
+      .send({ status: 'CONFIRMED' })
+      .expect(409);
+    expect(rejected.body.error.code).toBe('BOOKING_CAPACITY_UNAVAILABLE');
+  });
+
+  test('lets the shop block resource dates and refuses blocks over confirmed appointments', async () => {
+    await configureAvailableSlot(1);
+    const owner = getFoundationOwner();
+    const staffAgent = request.agent(app);
+    await staffAgent.post('/api/auth/login')
+      .send({ username: owner.username, password: owner.password })
+      .expect(200);
+    const resourceResponse = await staffAgent.post('/api/shop-settings/booking-resources')
+      .send({
+        resource_type: 'GROOMING_STATION',
+        service_type: 'GROOMING',
+        name: `Station ${Date.now()}`,
+        capacity: 1,
+        hours: [{ weekday: 'THURSDAY', start_time: '10:00', end_time: '12:00' }],
+      })
+      .expect(201);
+    const resourceId = resourceResponse.body.data.resource.id;
+    resourceIds.push(resourceId);
+
+    const petId = await createPetForCustomer(customerId, '資源預約狗', 'ACTIVE', 'DOG');
+    const service = await createServiceFixture({ name: 'Resource Groom', type: 'GROOMING', species: 'DOG' });
+    const cookie = await createBookingSession();
+    const query = `/api/public/booking/availability?pet_id=${petId}&service_id=${service.id}&date=2099-01-01`;
+    const available = await request(app).get(query).set('Cookie', cookie).expect(200);
+    expect(available.body.data.slots.map((slot) => slot.time)).toContain('10:30');
+
+    const blocked = await staffAgent.post(`/api/shop-settings/booking-resources/${resourceId}/blocks`)
+      .send({ block_date: '2099-01-01', note: '設備保養' })
+      .expect(201);
+    const blocks = await staffAgent.get('/api/shop-settings/booking-resources').expect(200);
+    expect(blocks.body.data.resources.find((resource) => resource.id === resourceId).blocks).toContainEqual(
+      expect.objectContaining({ id: blocked.body.data.block.id, block_date: '2099-01-01', note: '設備保養' }),
+    );
+    const unavailable = await request(app).get(query).set('Cookie', cookie).expect(200);
+    expect(unavailable.body.data.slots.map((slot) => slot.time)).not.toContain('10:30');
+    await staffAgent.delete(`/api/shop-settings/booking-resources/${resourceId}/blocks/${blocked.body.data.block.id}`).expect(200);
+
+    const booking = await request(app).post('/api/public/booking/requests')
+      .set('Cookie', cookie)
+      .send({
+        pet_id: petId,
+        service_id: service.id,
+        appointment_date: '2099-01-01',
+        appointment_time: '10:30',
+      })
+      .expect(201);
+    const appointmentId = booking.body.data.request.appointment_id;
+    appointmentIds.push(appointmentId);
+    await staffAgent.patch(`/api/appointments/${appointmentId}`).send({ status: 'CONFIRMED' }).expect(200);
+    const conflictingBlock = await staffAgent.post(`/api/shop-settings/booking-resources/${resourceId}/blocks`)
+      .send({ block_date: '2099-01-01', start_time: '10:45', end_time: '11:00' })
+      .expect(409);
+    expect(conflictingBlock.body.error.code).toBe('BOOKING_RESOURCE_IN_USE');
+    await staffAgent.patch(`/api/appointments/${appointmentId}`).send({ status: 'CANCELLED' }).expect(200);
+    await staffAgent.post(`/api/shop-settings/booking-resources/${resourceId}/blocks`)
+      .send({ block_date: '2099-01-01', start_time: '10:45', end_time: '11:00' })
+      .expect(201);
   });
 });

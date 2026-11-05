@@ -1,123 +1,189 @@
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/router';
-import { getApplicationHealth, getCurrentStaff, getDatabaseHealth, getShopIdentity, getShopSettings, logout } from '../api/client';
-import { getRoleLabel } from '../utils/staff-display';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { API_BASE_URL, getPublicPortalBackground, getPublicShops } from '../api/client';
+
+function PortalIcon({ name }) {
+  const paths = {
+    paw: 'M8 11a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm8 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM5 16a1.8 1.8 0 1 0 0-3.6A1.8 1.8 0 0 0 5 16Zm14 0a1.8 1.8 0 1 0 0-3.6A1.8 1.8 0 0 0 19 16Zm-7-2c-2.7 0-5.2 2-5.2 4.1 0 1.2 1 1.9 2.4 1.9h5.6c1.4 0 2.4-.7 2.4-1.9 0-2.1-2.5-4.1-5.2-4.1Z',
+    announcement: 'M3 10v4h3l10 4V6L6 10H3Zm3 4 1.5 5h3L8 14m10-5a5 5 0 0 1 0 6m2-8a8 8 0 0 1 0 10',
+    staff: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 9a8 8 0 0 1 16 0M18 5l2 2 3-3',
+    arrow: 'M5 12h14m-6-6 6 6-6 6',
+  };
+  return (
+    <svg className="portal-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d={paths[name]} />
+    </svg>
+  );
+}
+
+function AnnouncementMarquee({ announcements }) {
+  const [paused, setPaused] = useState(false);
+  if (!announcements.length) return null;
+
+  return (
+    <section className="portal-announcement" aria-label="店家公告">
+      <div className="portal-announcement-label">
+        <PortalIcon name="announcement" />
+        <span>最新公告</span>
+      </div>
+      <div className={`portal-marquee${paused ? ' is-paused' : ''}`}>
+        <div className="portal-marquee-track">
+          {[0, 1].map((copy) => (
+            <div className="portal-marquee-group" key={copy} aria-hidden={copy === 1}>
+              {announcements.map((item) => (
+                <span className="portal-marquee-item" key={`${copy}-${item.id}`}>
+                  <strong>{item.name}</strong>
+                  <span>{item.announcement}</span>
+                  <span className="portal-marquee-separator" aria-hidden="true">✦</span>
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+      <button
+        className="portal-marquee-toggle"
+        type="button"
+        onClick={() => setPaused((current) => !current)}
+        aria-label={paused ? '繼續播放店家公告' : '暫停店家公告跑馬燈'}
+        aria-pressed={paused}
+      >
+        {paused ? '播放' : '暫停'}
+      </button>
+    </section>
+  );
+}
 
 export default function Home() {
-  const router = useRouter();
-  const [applicationHealth, setApplicationHealth] = useState(null);
-  const [databaseHealth, setDatabaseHealth] = useState(null);
-  const [staff, setStaff] = useState(null);
-  const [shopName, setShopName] = useState('店家');
+  const [shops, setShops] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [backgroundUrl, setBackgroundUrl] = useState(null);
+  const [backgroundError, setBackgroundError] = useState('');
+
+  const loadShops = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await getPublicShops();
+      if (!Array.isArray(result.shops)) {
+        throw new Error('店家資訊格式不正確，請稍後再試。');
+      }
+      setShops(result.shops);
+    } catch (loadError) {
+      setError(loadError.message || '目前無法載入店家資訊，請稍後再試。');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadShops();
+  }, [loadShops]);
 
   useEffect(() => {
     let active = true;
+    getPublicPortalBackground().then(({ background_url: url }) => {
+      if (active) setBackgroundUrl(url || null);
+    }).catch((loadError) => {
+      if (active) setBackgroundError(loadError.message || '背景照片目前無法載入，已改用預設背景。');
+    });
+    return () => { active = false; };
+  }, []);
 
-    async function loadHealth() {
-      try {
-        const currentStaff = await getCurrentStaff();
-        const [application, database, settings] = await Promise.all([
-          getApplicationHealth(),
-          getDatabaseHealth(),
-          currentStaff.staff.roles.includes('OWNER') ? getShopSettings() : getShopIdentity(),
-        ]);
-
-        if (!active) {
-          return;
-        }
-
-        setStaff(currentStaff.staff);
-        setApplicationHealth(application);
-        setDatabaseHealth(database);
-        setShopName(settings?.shop?.name || '店家');
-      } catch (healthError) {
-        if (active) {
-          router.replace('/login');
-        }
-      }
-    }
-
-    loadHealth();
-
-    return () => {
-      active = false;
-    };
-  }, [router]);
-
-  const displayHealthStatus = (value) => ({
-    checking: '檢查中',
-    ok: '正常',
-    connected: '已連線',
-  }[value] || value);
-  const applicationStatus = displayHealthStatus(applicationHealth ? applicationHealth.status : 'checking');
-  const databaseStatus = displayHealthStatus(databaseHealth ? databaseHealth.database : 'checking');
-  const roleText = staff && staff.roles.length
-    ? staff.roles.map((role) => getRoleLabel(role)).join(', ')
-    : '檢查中';
-
-  async function handleLogout() {
-    try {
-      await logout();
-      router.replace('/login');
-    } catch (logoutError) {
-      setError(logoutError.message);
-    }
-  }
+  const announcements = useMemo(
+    () => shops.filter((shop) => shop.announcement?.trim()),
+    [shops],
+  );
 
   return (
-    <main className="dashboard-page">
-      <header className="page-heading">
-        <div>
-          <p className="page-eyebrow">{shopName}</p>
-          <h1 className="page-title-with-icon">
-            <svg className="page-title-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M3 3h8v8H3z M13 3h8v5h-8z M13 10h8v11h-8z M3 13h8v8H3z" />
-            </svg>
-            今日總覽
-          </h1>
-          <p className="page-heading-description">查看工作室服務狀態與目前登入資訊。</p>
-        </div>
-      </header>
+    <main className="portal-page">
+      <div className="portal-background" aria-hidden="true">
+        {backgroundUrl ? (
+          <div
+            className="portal-background-image"
+            style={{ backgroundImage: `url("${API_BASE_URL}${backgroundUrl}")` }}
+          />
+        ) : null}
+      </div>
+      <div className="portal-content">
+        <header className="portal-topbar">
+          <div className="portal-brand" aria-label="毛孩生活服務入口">
+            <span className="portal-brand-mark"><PortalIcon name="paw" /></span>
+            <span>毛孩生活服務</span>
+          </div>
+        </header>
 
-      <section className="dashboard-grid" aria-label="系統摘要">
-        <article className="dashboard-card">
-          <div className="dashboard-card-heading">
-            <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M4 4h7v7H4z M13 4h7v7h-7z M13 13h7v7h-7z M4 13h7v7H4z" />
-            </svg>
-            <div className="dashboard-card-label">系統服務</div>
-          </div>
-          <div className={`dashboard-status${applicationHealth?.status === 'ok' ? ' status-success' : ''}`}>
-            {applicationStatus}
-          </div>
-          <p className="dashboard-card-note">應用程式目前的運作狀態</p>
-        </article>
-        <article className="dashboard-card">
-          <div className="dashboard-card-heading">
-            <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M12 3c4.4 0 8 1.3 8 3s-3.6 3-8 3-8-1.3-8-3 3.6-3 8-3Z M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6 M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
-            </svg>
-            <div className="dashboard-card-label">資料庫連線</div>
-          </div>
-          <div className={`dashboard-status${databaseHealth?.database === 'connected' ? ' status-success' : ''}`}>
-            {databaseStatus}
-          </div>
-          <p className="dashboard-card-note">資料服務連線狀態</p>
-        </article>
-        <article className="dashboard-card dashboard-card-staff">
-          <div className="dashboard-card-heading">
-            <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M20 21a8 8 0 0 0-16 0 M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
-            </svg>
-            <div className="dashboard-card-label">已登入員工</div>
-          </div>
-          <div className="dashboard-status">{staff ? staff.username : '檢查中'}</div>
-          <p className="dashboard-card-note">{roleText}</p>
-        </article>
-      </section>
+        <AnnouncementMarquee announcements={announcements} />
 
-      {error ? <div className="alert alert-warning mt-4" role="alert">{error}</div> : null}
+        <section className="portal-hero">
+          <div className="portal-hero-copy">
+            <p className="portal-eyebrow">毛孩美容・安心住宿</p>
+            <h1>讓每一次照護，<br />都成為安心的日常。</h1>
+            <p>從專業美容到安心住宿，為毛孩挑選值得信賴的店家，輕鬆開始預約。</p>
+            {backgroundError ? <p className="portal-background-status" role="status">{backgroundError}</p> : null}
+          </div>
+        </section>
+
+        <section className="portal-member-panel" aria-labelledby="portal-member-title">
+          <div className="portal-member-heading">
+            <div className="portal-member-title">
+              <span className="portal-member-icon"><PortalIcon name="paw" /></span>
+              <div>
+                <h2 id="portal-member-title">挑選店家，開始預約</h2>
+                <p>選擇想前往的店家，查看服務與預約資訊。</p>
+              </div>
+            </div>
+            <span className="portal-member-note">找到最適合毛孩的照護</span>
+          </div>
+
+          {loading ? <p className="portal-status" role="status">正在載入店家資訊…</p> : null}
+          {!loading && error ? (
+            <div>
+              <p className="portal-status portal-status-error" role="alert">{error}</p>
+              <button className="portal-retry" type="button" onClick={loadShops}>重新載入</button>
+            </div>
+          ) : null}
+          {!loading && !error && shops.length === 0 ? (
+            <p className="portal-status">目前沒有開放預約的店家，請稍後再試。</p>
+          ) : null}
+          {!loading && !error && shops.length > 0 ? (
+            <div className="portal-shop-grid">
+              {shops.map((shop) => (
+                <Link
+                  className="portal-shop-link"
+                  href={`/booking?shop_id=${encodeURIComponent(shop.id)}`}
+                  key={shop.id}
+                >
+                  <span className="portal-shop-logo" aria-hidden="true">
+                    <PortalIcon name="paw" />
+                    {shop.logo_url ? (
+                      <img
+                        src={`${API_BASE_URL}${shop.logo_url}`}
+                        alt=""
+                        onError={(event) => { event.currentTarget.hidden = true; }}
+                      />
+                    ) : null}
+                  </span>
+                  <span className="portal-shop-name">{shop.name}</span>
+                  <span className="portal-shop-actions">
+                    <span className="portal-shop-paw"><PortalIcon name="paw" /></span>
+                    <span className="portal-shop-arrow"><PortalIcon name="arrow" /></span>
+                  </span>
+                </Link>
+              ))}
+            </div>
+          ) : null}
+        </section>
+
+        <footer className="portal-footer">
+          <span>© 2026 毛孩生活服務｜保留所有權利</span>
+          <Link className="portal-staff-link" href="/login">
+            <PortalIcon name="staff" />
+            店家登入
+          </Link>
+        </footer>
+      </div>
     </main>
   );
 }

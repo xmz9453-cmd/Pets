@@ -45,12 +45,12 @@ async function loginAsOwner() {
   return agent;
 }
 
-function contractPayload(versionLabel) {
-  return { version_label: versionLabel };
+function contractPayload(versionLabel, serviceType = 'GENERAL') {
+  return { version_label: versionLabel, service_type: serviceType };
 }
 
-async function createDraft(agent, versionLabel = `V-${Date.now()}`) {
-  const response = await agent.post('/api/contract-versions').send(contractPayload(versionLabel));
+async function createDraft(agent, versionLabel = `V-${Date.now()}`, serviceType = 'GENERAL') {
+  const response = await agent.post('/api/contract-versions').send(contractPayload(versionLabel, serviceType));
   expect(response.status).toBe(201);
   return response.body.data.contract_version;
 }
@@ -61,13 +61,24 @@ async function uploadPdf(agent, versionId, fileBytes = testPdf, filename = 'cont
     .attach('file', fileBytes, { filename, contentType: mimetype });
 }
 
-async function createPublished(agent, versionLabel) {
-  const draft = await createDraft(agent, versionLabel);
+async function createPublished(agent, versionLabel, serviceType = 'GENERAL') {
+  const draft = await createDraft(agent, versionLabel, serviceType);
   const uploadResponse = await uploadPdf(agent, draft.id);
   expect(uploadResponse.status).toBe(200);
   const response = await agent.post(`/api/contract-versions/${draft.id}/publish`);
   expect(response.status).toBe(200);
   return response.body.data.contract_version;
+}
+
+async function queryContractVersion(versionId) {
+  const [rows] = await getPool().query(
+    `SELECT id, version_label, status, is_current, file_name, mime_type,
+            file_size, storage_path, file_hash
+     FROM contract_versions
+     WHERE id = ?`,
+    [versionId],
+  );
+  return rows[0] || null;
 }
 
 async function cleanContractVersions() {
@@ -101,6 +112,14 @@ describe('Contract Version API', () => {
       'INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)',
       [staffResult.insertId, role.id],
     );
+    await getPool().query(
+      'INSERT INTO staff_shop_memberships (staff_id, shop_id) VALUES (?, 1)',
+      [staffResult.insertId],
+    );
+    await getPool().query(
+      'INSERT INTO staff_shop_roles (staff_id, shop_id, role_id) VALUES (?, 1, ?)',
+      [staffResult.insertId, role.id],
+    );
     await cleanContractVersions();
   });
 
@@ -128,6 +147,35 @@ describe('Contract Version API', () => {
     expect(listResponse.body.data.contract_versions).toHaveLength(1);
     expect(detailResponse.status).toBe(200);
     expect(detailResponse.body.data.contract_version.id).toBe(created.id);
+  });
+
+  test('keeps the current grooming and boarding contracts independent', async () => {
+    const agent = await loginAsOwner();
+    const groomingV1 = await createPublished(agent, 'grooming-v1', 'GROOMING');
+    const boardingV1 = await createPublished(agent, 'boarding-v1', 'BOARDING');
+    const invalid = await agent.post('/api/contract-versions').send({
+      version_label: 'invalid-type',
+      service_type: 'DAYCARE',
+    });
+
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error.fields.service_type).toBeDefined();
+
+    const groomingCurrent = await agent.post(`/api/contract-versions/${groomingV1.id}/current`);
+    const boardingCurrent = await agent.post(`/api/contract-versions/${boardingV1.id}/current`);
+    const groomingV2 = await createPublished(agent, 'grooming-v2', 'GROOMING');
+    const replaceGroomingCurrent = await agent.post(`/api/contract-versions/${groomingV2.id}/current`);
+    const listResponse = await agent.get('/api/contract-versions');
+    const currentTypes = listResponse.body.data.contract_versions
+      .filter((version) => version.is_current)
+      .map((version) => version.service_type)
+      .sort();
+
+    expect(groomingCurrent.status).toBe(200);
+    expect(boardingCurrent.status).toBe(200);
+    expect(replaceGroomingCurrent.status).toBe(200);
+    expect(currentTypes).toEqual(['BOARDING', 'GROOMING']);
+    expect(listResponse.body.data.contract_versions.find((version) => version.id === groomingV1.id).is_current).toBe(false);
   });
 
   test('updates Draft labels, rejects client PDF metadata, and rejects duplicate labels', async () => {
@@ -173,6 +221,127 @@ describe('Contract Version API', () => {
     expect(replacementResponse.status).toBe(400);
     expect(updateResponse.status).toBe(400);
     expect(republishResponse.status).toBe(400);
+  });
+
+  test('deletes Draft and unused Published versions and removes their PDFs', async () => {
+    const agent = await loginAsOwner();
+    const draft = await createDraft(agent, 'delete-draft');
+    const uploadResponse = await uploadPdf(agent, draft.id);
+    const draftPdfPath = await contractPdfStorage.resolveStoragePath(
+      uploadResponse.body.data.contract_version.storage_path,
+    );
+
+    const draftDelete = await agent.delete(`/api/contract-versions/${draft.id}`);
+    expect(draftDelete.status).toBe(200);
+    expect(draftDelete.body.data).toMatchObject({ deleted: true, pdf_cleanup_warning: false });
+    expect(fs.existsSync(draftPdfPath)).toBe(false);
+    await expect(queryContractVersion(draft.id)).resolves.toBeNull();
+
+    const published = await createPublished(agent, 'delete-published');
+    const publishedPdfPath = await contractPdfStorage.resolveStoragePath(published.storage_path);
+    const publishedDelete = await agent.delete(`/api/contract-versions/${published.id}`);
+
+    expect(publishedDelete.status).toBe(200);
+    expect(publishedDelete.body.data).toMatchObject({ deleted: true, pdf_cleanup_warning: false });
+    expect(fs.existsSync(publishedPdfPath)).toBe(false);
+    await expect(queryContractVersion(published.id)).resolves.toBeNull();
+  });
+
+  test('rejects deleting Current and versions referenced by onboarding or signed history', async () => {
+    const agent = await loginAsOwner();
+    const current = await createPublished(agent, 'delete-current');
+    await agent.post(`/api/contract-versions/${current.id}/current`);
+    const currentDelete = await agent.delete(`/api/contract-versions/${current.id}`);
+
+    expect(currentDelete.status).toBe(409);
+    expect(currentDelete.body.error.code).toBe('CURRENT_CONTRACT_VERSION_CANNOT_BE_DELETED');
+
+    const onboardingVersion = await createPublished(agent, 'delete-onboarding-reference');
+    const [staffRows] = await getPool().query('SELECT id FROM staff WHERE username = ?', [owner.username]);
+    const onboardingToken = crypto.randomBytes(32).toString('hex');
+    let onboardingId;
+    let historyOnboardingId;
+    let customerId;
+    let petId;
+    let appointmentId;
+
+    try {
+      const [onboardingResult] = await getPool().query(
+        `INSERT INTO onboardings (shop_id, public_token_hash, contract_version_id, created_by_staff_id)
+         VALUES (1, ?, ?, ?)`,
+        [onboardingToken, onboardingVersion.id, staffRows[0].id],
+      );
+      onboardingId = onboardingResult.insertId;
+      const onboardingDelete = await agent.delete(`/api/contract-versions/${onboardingVersion.id}`);
+
+      expect(onboardingDelete.status).toBe(409);
+      expect(onboardingDelete.body.error.code).toBe('CONTRACT_VERSION_IN_USE');
+
+      const historyVersion = await createPublished(agent, 'delete-history-reference');
+      const historyOnboardingVersion = await createDraft(agent, 'history-onboarding-holder');
+      const phone = `09${crypto.randomInt(100000000, 999999999)}`;
+      const [customerResult] = await getPool().query(
+        'INSERT INTO customers (shop_id, name, phone) VALUES (1, ?, ?)',
+        ['Contract deletion fixture', phone],
+      );
+      customerId = customerResult.insertId;
+      const [petResult] = await getPool().query(
+        `INSERT INTO pets (shop_id, name, species, gender)
+         VALUES (1, 'Contract deletion fixture', 'DOG', 'UNKNOWN')`,
+      );
+      petId = petResult.insertId;
+      const [appointmentResult] = await getPool().query(
+        `INSERT INTO appointments (shop_id, customer_id, appointment_date, appointment_time)
+         VALUES (1, ?, '2030-01-01', '10:00:00')`,
+        [customerId],
+      );
+      appointmentId = appointmentResult.insertId;
+      const historyOnboardingToken = crypto.randomBytes(32).toString('hex');
+      const [historyOnboardingResult] = await getPool().query(
+        `INSERT INTO onboardings (shop_id, public_token_hash, contract_version_id, created_by_staff_id)
+         VALUES (1, ?, ?, ?)`,
+        [historyOnboardingToken, historyOnboardingVersion.id, staffRows[0].id],
+      );
+      historyOnboardingId = historyOnboardingResult.insertId;
+      await getPool().query(
+        `INSERT INTO contract_history
+         (shop_id, onboarding_id, customer_id, pet_id, appointment_id, contract_version_id, version,
+          pdf_hash, storage_path, agreed_at, signature_evidence, signature_hash)
+         VALUES (1, ?, ?, ?, ?, ?, 'history-reference', ?, 'contract-versions/history.pdf',
+                 '2030-01-01 10:00:00', ?, ?)`,
+        [
+          historyOnboardingId,
+          customerId,
+          petId,
+          appointmentId,
+          historyVersion.id,
+          'a'.repeat(64),
+          Buffer.from('signature evidence'),
+          'b'.repeat(64),
+        ],
+      );
+
+      const historyDelete = await agent.delete(`/api/contract-versions/${historyVersion.id}`);
+      expect(historyDelete.status).toBe(409);
+      expect(historyDelete.body.error.code).toBe('CONTRACT_VERSION_IN_USE');
+    } finally {
+      if (historyOnboardingId) {
+        await getPool().query('DELETE FROM contract_history WHERE onboarding_id = ?', [historyOnboardingId]);
+        await getPool().query('DELETE FROM onboardings WHERE id = ?', [historyOnboardingId]);
+      }
+      if (onboardingId) {
+        await getPool().query('DELETE FROM onboardings WHERE id = ?', [onboardingId]);
+      }
+      if (appointmentId) {
+        await getPool().query('DELETE FROM appointments WHERE id = ?', [appointmentId]);
+      }
+      if (petId) {
+        await getPool().query('DELETE FROM pets WHERE id = ?', [petId]);
+      }
+      if (customerId) {
+        await getPool().query('DELETE FROM customers WHERE id = ?', [customerId]);
+      }
+    }
   });
 
   test('uploads valid PDFs, replaces Draft files without overwrite, and rejects invalid uploads', async () => {
@@ -236,7 +405,7 @@ describe('Contract Version API', () => {
       uploadPdf(agent, draft.id, firstBytes, 'first.pdf'),
       uploadPdf(agent, draft.id, secondBytes, 'second.pdf'),
     ]);
-    const current = await contractVersionRepository.getContractVersionById(draft.id);
+    const current = await queryContractVersion(draft.id);
     const stored = await contractPdfStorage.verifyStoredFile(current);
     const pdfFiles = fs.readdirSync(path.join(process.env.CONTRACT_STORAGE_ROOT, 'contract-versions'));
 
@@ -262,7 +431,7 @@ describe('Contract Version API', () => {
     const agent = await loginAsOwner();
     const missingDraft = await createDraft(agent, 'missing-file');
     await uploadPdf(agent, missingDraft.id);
-    const missingVersion = await contractVersionRepository.getContractVersionById(missingDraft.id);
+    const missingVersion = await queryContractVersion(missingDraft.id);
     await contractPdfStorage.removeStoredFile(missingVersion.storage_path);
     const missingPublish = await agent.post(`/api/contract-versions/${missingDraft.id}/publish`);
 
@@ -332,10 +501,12 @@ describe('Contract Version API', () => {
 
     const detailResponse = await agent.get('/api/contract-versions/999999');
     const publishResponse = await agent.post('/api/contract-versions/999999/publish');
+    const deleteResponse = await agent.delete('/api/contract-versions/999999');
 
     expect(detailResponse.status).toBe(404);
     expect(detailResponse.body.error.code).toBe('CONTRACT_VERSION_NOT_FOUND');
     expect(publishResponse.status).toBe(404);
+    expect(deleteResponse.status).toBe(404);
   });
 
   test('rolls back the previous Current when promotion fails', async () => {
@@ -359,6 +530,8 @@ describe('Contract Version API', () => {
 
   test('requires authentication and OWNER authorization', async () => {
     const anonymousResponse = await request(app).get('/api/contract-versions');
+    const ownerAgent = await loginAsOwner();
+    const draft = await createDraft(ownerAgent, 'owner-only-delete');
     const frontDesk = request.agent(app);
     const frontDeskCredentials = getFrontDeskStaff();
     const loginResponse = await frontDesk.post('/api/auth/login').send({
@@ -366,10 +539,12 @@ describe('Contract Version API', () => {
       password: frontDeskCredentials.password,
     });
     const forbiddenResponse = await frontDesk.get('/api/contract-versions');
+    const forbiddenDelete = await frontDesk.delete(`/api/contract-versions/${draft.id}`);
 
     expect(anonymousResponse.status).toBe(401);
     expect(loginResponse.status).toBe(200);
     expect(forbiddenResponse.status).toBe(403);
+    expect(forbiddenDelete.status).toBe(403);
   });
 
   test('allows active FRONT_DESK and GROOMER staff to read Published PDFs but not upload', async () => {

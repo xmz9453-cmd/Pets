@@ -3,6 +3,8 @@ const shopsRepository = require('../data/shops.repository');
 const { getPool } = require('../config/database');
 const { getCurrentShopId } = require('../utils/shop-context');
 const { resetOperationalDataForApplication } = require('../../../database/scripts/reset-operational-data');
+const shopLogoStorage = require('../utils/shop-logo-storage');
+const { logError } = require('../utils/logger');
 
 const WEEKDAYS = shopSettingsRepository.WEEKDAYS;
 
@@ -96,6 +98,7 @@ function validateShopPayload(payload = {}) {
   const phone = normalizeText(payload.phone);
   const address = normalizeText(payload.address);
   const email = normalizeText(payload.email);
+  const announcement = normalizeText(payload.announcement);
 
   if (!name) {
     errors.name = 'Name is required';
@@ -113,6 +116,10 @@ function validateShopPayload(payload = {}) {
 
   if (email !== null && email !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     errors.email = 'Email format is invalid';
+  }
+
+  if (announcement !== null && Array.from(announcement).length > 300) {
+    errors.announcement = '入口公告不可超過 300 個字元';
   }
 
   return errors;
@@ -156,6 +163,7 @@ async function updateShopSettings(payload = {}) {
     phone: normalizeText(payload.phone),
     address: normalizeText(payload.address),
     email: normalizeText(payload.email),
+    announcement: normalizeText(payload.announcement),
   };
 
   const normalizedBusinessHours = (payload.business_hours || []).map((entry) => {
@@ -191,6 +199,66 @@ async function updateShopSettings(payload = {}) {
   });
 }
 
+async function saveShopLogo(file) {
+  let storedKey = null;
+  let storedFileCreated = false;
+  try {
+    const { extension } = await shopLogoStorage.inspectUploadedFile(file);
+    storedKey = shopLogoStorage.createStorageKey(extension);
+    await shopLogoStorage.moveTemporaryFile(file.path, storedKey);
+    storedFileCreated = true;
+
+    const result = await withTransaction(async (connection) => {
+      await shopSettingsRepository.getShopSettingsWithHours(connection);
+      const current = await shopSettingsRepository.getShopSettingsForUpdate(connection);
+      const previousKey = await shopSettingsRepository.getShopLogoStorageKey(current.id, connection);
+      const shop = await shopSettingsRepository.updateShopLogo(current.id, storedKey, connection);
+      return { shop, previousKey };
+    });
+
+    if (result.previousKey && result.previousKey !== storedKey) {
+      await shopLogoStorage.removeStoredLogo(result.previousKey).catch((cleanupError) => {
+        logError('Failed to remove replaced shop logo', { code: cleanupError.code });
+      });
+    }
+    return { shop: result.shop };
+  } catch (error) {
+    if (storedFileCreated) {
+      await shopLogoStorage.removeStoredLogo(storedKey).catch((cleanupError) => {
+        logError('Failed to remove unreferenced shop logo', { code: cleanupError.code });
+      });
+    }
+    throw error;
+  } finally {
+    if (file?.path) {
+      await shopLogoStorage.removeTemporaryFile(file.path).catch((cleanupError) => {
+        logError('Failed to remove shop logo upload temporary file', { code: cleanupError.code });
+      });
+    }
+  }
+}
+
+async function removeShopLogo() {
+  const result = await withTransaction(async (connection) => {
+    await shopSettingsRepository.getShopSettingsWithHours(connection);
+    const current = await shopSettingsRepository.getShopSettingsForUpdate(connection);
+    const previousKey = await shopSettingsRepository.getShopLogoStorageKey(current.id, connection);
+    const shop = await shopSettingsRepository.updateShopLogo(current.id, null, connection);
+    return { shop, previousKey };
+  });
+
+  if (result.previousKey) {
+    await shopLogoStorage.removeStoredLogo(result.previousKey).catch((cleanupError) => {
+      logError('Failed to remove deleted shop logo', { code: cleanupError.code });
+    });
+  }
+  return { shop: result.shop };
+}
+
+async function getPublicShopLogo(storageKey) {
+  return shopLogoStorage.readStoredLogo(storageKey);
+}
+
 async function resetOperationalData({ confirmation, expectedShopId } = {}) {
   const shopId = getCurrentShopId();
   if (!shopId || Number(expectedShopId) !== shopId) {
@@ -222,6 +290,9 @@ module.exports = {
   createNotFoundError,
   getShopSettings,
   getShopIdentity,
+  getPublicShopLogo,
+  removeShopLogo,
   resetOperationalData,
+  saveShopLogo,
   updateShopSettings,
 };

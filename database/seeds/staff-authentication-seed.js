@@ -18,7 +18,10 @@ function getFrontDeskStaff() {
 }
 
 async function seedStaffAuthentication() {
-  const staffAccounts = [getFoundationOwner(), getFrontDeskStaff()];
+  const staffAccounts = [{ ...getFoundationOwner(), roleCode: 'OWNER' }];
+  if (process.env.NODE_ENV !== 'production') {
+    staffAccounts.push({ ...getFrontDeskStaff(), roleCode: 'FRONT_DESK' });
+  }
   const pool = getPool();
 
   for (const staff of staffAccounts) {
@@ -35,14 +38,31 @@ async function seedStaffAuthentication() {
     );
 
     const [staffRows] = await pool.query('SELECT id FROM staff WHERE username = ? LIMIT 1', [staff.username]);
-    const roleCode = staff.username === 'owner' ? 'OWNER' : 'FRONT_DESK';
-    const [roleRows] = await pool.query('SELECT id FROM roles WHERE code = ? LIMIT 1', [roleCode]);
+    const [roleRows] = await pool.query('SELECT id FROM roles WHERE code = ? LIMIT 1', [staff.roleCode]);
 
     if (staffRows.length && roleRows.length) {
       await pool.query(
         'INSERT IGNORE INTO staff_roles (staff_id, role_id) VALUES (?, ?)',
         [staffRows[0].id, roleRows[0].id],
       );
+      await pool.query(
+        'INSERT IGNORE INTO staff_shop_memberships (staff_id, shop_id) VALUES (?, 1)',
+        [staffRows[0].id],
+      );
+      await pool.query(
+        'INSERT IGNORE INTO staff_shop_roles (staff_id, shop_id, role_id) VALUES (?, 1, ?)',
+        [staffRows[0].id, roleRows[0].id],
+      );
+      if (staff.roleCode === 'OWNER') {
+        await pool.query(
+          'INSERT IGNORE INTO platform_shop_managers (staff_id) VALUES (?)',
+          [staffRows[0].id],
+        );
+        await pool.query(
+          'DELETE FROM platform_shop_managers WHERE staff_id <> ?',
+          [staffRows[0].id],
+        );
+      }
     }
   }
 }

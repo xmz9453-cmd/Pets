@@ -40,6 +40,16 @@ function normalizeVersionId(value) {
   return versionId;
 }
 
+function normalizeContractVersion(row) {
+  if (!row) {
+    return null;
+  }
+  return {
+    ...row,
+    is_referenced: Boolean(row.is_referenced),
+  };
+}
+
 function normalizeEditablePayload(payload = {}) {
   const normalized = {};
   const errors = {};
@@ -119,7 +129,8 @@ async function withTransaction(handler) {
 }
 
 function mapDuplicateLabelError(error) {
-  if (error.code === 'ER_DUP_ENTRY' && String(error.message).includes('uq_contract_versions_version_label')) {
+  if (error.code === 'ER_DUP_ENTRY'
+      && /uq_contract_versions_(?:version_label|shop_label)/.test(String(error.message))) {
     return createConflictError('CONTRACT_VERSION_LABEL_EXISTS', 'Version label already exists');
   }
   return error;
@@ -135,12 +146,20 @@ async function getContractVersion(versionId) {
   if (!contractVersion) {
     throw createNotFoundError();
   }
-  return { contract_version: contractVersion };
+  return { contract_version: normalizeContractVersion(contractVersion) };
 }
 
 async function createDraft(payload = {}) {
   const { normalized, errors } = normalizeEditablePayload(payload);
   Object.assign(errors, validateStatusFields(payload, { creating: true }));
+  const serviceType = payload.service_type === undefined
+    ? 'GENERAL'
+    : String(payload.service_type).trim().toUpperCase();
+  if (!['GENERAL', 'GROOMING', 'BOARDING'].includes(serviceType)) {
+    errors.service_type = 'Service type must be GENERAL, GROOMING, or BOARDING';
+  } else {
+    normalized.service_type = serviceType;
+  }
   if (!normalized.version_label) {
     errors.version_label = 'Version label is required';
   }
@@ -160,6 +179,9 @@ async function updateDraft(versionId, payload = {}) {
   const normalizedId = normalizeVersionId(versionId);
   const { normalized, errors } = normalizeEditablePayload(payload);
   Object.assign(errors, validateStatusFields(payload));
+  if (payload.service_type !== undefined) {
+    errors.service_type = 'Service type cannot be changed after creation';
+  }
   if (!Object.keys(normalized).length && !Object.keys(errors).length) {
     errors.version_label = 'At least one editable field is required';
   }
@@ -181,7 +203,7 @@ async function updateDraft(versionId, payload = {}) {
       if (!updated) {
         throw createNotFoundError();
       }
-      return { contract_version: updated };
+      return { contract_version: normalizeContractVersion(updated) };
     });
   } catch (error) {
     throw mapDuplicateLabelError(error);
@@ -251,7 +273,9 @@ async function uploadDraftPdf(versionId, uploadedFile) {
       }
     }
 
-    return { contract_version: await contractVersionRepository.getContractVersionById(normalizedId) };
+    return { contract_version: normalizeContractVersion(
+      await contractVersionRepository.getContractVersionById(normalizedId),
+    ) };
   } catch (error) {
     if (commitAttempted && !committed) {
       logError('Contract PDF upload commit result is uncertain; stored file was retained for reconciliation', {
@@ -328,8 +352,109 @@ async function publishDraft(versionId) {
     if (!published) {
       throw createValidationError({ status: 'Only a DRAFT contract version can be published' });
     }
-    return { contract_version: await contractVersionRepository.getContractVersionById(normalizedId, connection) };
+    return { contract_version: normalizeContractVersion(
+      await contractVersionRepository.getContractVersionById(normalizedId, connection),
+    ) };
   });
+}
+
+async function deleteContractVersion(versionId) {
+  const normalizedId = normalizeVersionId(versionId);
+  const connection = await getPool().getConnection();
+  let storageLockAcquired = false;
+  let transactionStarted = false;
+  let commitAttempted = false;
+  let committed = false;
+  let deletedVersion;
+  let pdfCleanupWarning = false;
+
+  try {
+    const [[lockResult]] = await connection.query('SELECT GET_LOCK(?, 30) AS acquired', [
+      contractPdfStorage.BACKUP_LOCK_NAME,
+    ]);
+    if (Number(lockResult.acquired) !== 1) {
+      const error = new Error('Contract PDF storage is busy; try again');
+      error.statusCode = 503;
+      error.code = 'CONTRACT_STORAGE_BUSY';
+      throw error;
+    }
+    storageLockAcquired = true;
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    const existing = await contractVersionRepository.getContractVersionById(normalizedId, connection, true);
+    if (!existing) {
+      throw createNotFoundError();
+    }
+    if (existing.status !== 'DRAFT' && existing.status !== 'PUBLISHED') {
+      throw createConflictError('CONTRACT_VERSION_CANNOT_BE_DELETED', '此契約版本狀態不可刪除');
+    }
+    if (existing.is_current) {
+      throw createConflictError('CURRENT_CONTRACT_VERSION_CANNOT_BE_DELETED', '目前使用中的契約版本不可刪除');
+    }
+
+    const referenceCount = await contractVersionRepository.countContractVersionReferences(normalizedId, connection);
+    if (referenceCount > 0) {
+      throw createConflictError('CONTRACT_VERSION_IN_USE', '已被建檔或簽署紀錄引用的契約版本不可刪除');
+    }
+
+    const deleted = await contractVersionRepository.deleteContractVersion(normalizedId, connection);
+    if (!deleted) {
+      throw createNotFoundError();
+    }
+    deletedVersion = existing;
+    commitAttempted = true;
+    await connection.commit();
+    committed = true;
+    transactionStarted = false;
+
+    if (deletedVersion.storage_path) {
+      try {
+        await contractPdfStorage.removeStoredFile(deletedVersion.storage_path);
+      } catch (error) {
+        pdfCleanupWarning = true;
+        logError('Failed to remove deleted contract version PDF', {
+          contractVersionId: normalizedId,
+          code: error.code,
+        });
+      }
+    }
+  } catch (error) {
+    if (commitAttempted && !committed) {
+      logError('Contract version deletion commit result is uncertain; PDF was retained for reconciliation', {
+        contractVersionId: normalizedId,
+        code: error.code,
+      });
+    }
+    if (transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        logError('Failed to roll back contract version deletion', {
+          contractVersionId: normalizedId,
+          code: rollbackError.code,
+        });
+      }
+    }
+    if (error.code === 'ER_ROW_IS_REFERENCED_2' || error.errno === 1451) {
+      throw createConflictError('CONTRACT_VERSION_IN_USE', '已被建檔或簽署紀錄引用的契約版本不可刪除');
+    }
+    throw error;
+  } finally {
+    if (storageLockAcquired) {
+      try {
+        await connection.query('SELECT RELEASE_LOCK(?)', [contractPdfStorage.BACKUP_LOCK_NAME]);
+      } catch (error) {
+        logError('Failed to release Contract PDF storage coordination lock', {
+          contractVersionId: normalizedId,
+          code: error.code,
+        });
+      }
+    }
+    connection.release();
+  }
+
+  return { deleted: true, pdf_cleanup_warning: pdfCleanupWarning };
 }
 
 async function getContractVersionPdf(versionId) {
@@ -356,7 +481,7 @@ async function setCurrent(versionId) {
         throw createValidationError({ status: 'Only a PUBLISHED contract version can be current' });
       }
 
-      await contractVersionRepository.clearCurrent(connection);
+      await contractVersionRepository.clearCurrent(connection, target.service_type);
       const marked = await contractVersionRepository.markCurrent(normalizedId, connection);
       if (!marked) {
         throw createValidationError({ status: 'Only a PUBLISHED contract version can be current' });
@@ -373,6 +498,7 @@ async function setCurrent(versionId) {
 
 module.exports = {
   createDraft,
+  deleteContractVersion,
   getContractVersionPdf,
   getContractVersion,
   listContractVersions,

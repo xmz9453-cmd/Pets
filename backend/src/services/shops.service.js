@@ -17,6 +17,10 @@ async function listAccessibleShops(staff) {
   return shopsRepository.listShopsForStaff(staff.id);
 }
 
+async function listPublicShops() {
+  return shopsRepository.listPublicShops();
+}
+
 async function listStaffForPlatformManager(shopId) {
   return shopsRepository.listAllStaffWithRolesAtShop(shopId);
 }
@@ -58,4 +62,9 @@ async function createShop(payload = {}) {
   }
 }
 
-module.exports = { createShop, listAccessibleShops, listStaffForPlatformManager };
+module.exports = {
+  createShop,
+  listAccessibleShops,
+  listPublicShops,
+  listStaffForPlatformManager,
+};

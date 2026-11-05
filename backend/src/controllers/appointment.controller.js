@@ -43,6 +43,15 @@ async function updateAppointment(req, res, next) {
   }
 }
 
+async function acceptBookingRequest(req, res, next) {
+  try {
+    const result = await appointmentService.updateAppointment(req.params.id, { status: 'AWAITING_CUSTOMER' });
+    sendSuccess(res, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function deleteAppointment(req, res, next) {
   try {
     const result = await appointmentService.deleteAppointment(req.params.id);
@@ -54,6 +63,7 @@ async function deleteAppointment(req, res, next) {
 
 module.exports = {
   createAppointment,
+  acceptBookingRequest,
   deleteAppointment,
   getAppointment,
   listAppointments,

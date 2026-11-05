@@ -1,5 +1,6 @@
 const express = require('express');
 const customerController = require('../controllers/customer.controller');
+const customerMemberController = require('../controllers/customer-member.controller');
 const { requireAuthentication } = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/authorize');
 
@@ -13,6 +14,7 @@ router.post('/customers', requireAuthentication, requireRole(['OWNER', 'FRONT_DE
 router.patch('/customers/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.updateCustomer);
 router.patch('/customers/:id/deactivate', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.deactivateCustomer);
 router.patch('/customers/:id/reactivate', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.reactivateCustomer);
+router.post('/customers/:id/member-link', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerMemberController.linkCustomerRecord);
 router.delete('/customers/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), customerController.deleteCustomer);
 
 module.exports = router;

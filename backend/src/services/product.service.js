@@ -19,6 +19,10 @@ function validate(payload, partial = false) {
   if (!partial && payload.species !== undefined && !VALID_SPECIES.has(payload.species)) errors.species = 'Species must be DOG, CAT, or BOTH';
   if (payload.species !== undefined && !VALID_SPECIES.has(payload.species)) errors.species = 'Species must be DOG, CAT, or BOTH';
   if (payload.status !== undefined && !VALID_STATUSES.has(payload.status)) errors.status = 'Status must be ACTIVE or INACTIVE';
+  if (payload.stock_quantity !== undefined
+    && (!Number.isInteger(Number(payload.stock_quantity)) || Number(payload.stock_quantity) < 0 || Number(payload.stock_quantity) > 2147483647)) {
+    errors.stock_quantity = 'Stock quantity must be a non-negative whole number';
+  }
   return errors;
 }
 
@@ -27,14 +31,24 @@ async function getProduct(id) { const product = await productRepository.getProdu
 async function createProduct(payload = {}) {
   const errors = validate(payload); if (Object.keys(errors).length) throw validation(errors);
   const name = String(payload.name).trim(); if (await productRepository.findByName(name)) throw validation({ name: 'Product name already exists' });
-  return { product: await productRepository.createProduct({ ...payload, name, price: Number(payload.price), unit: String(payload.unit || '件').trim(), species: payload.species || 'BOTH' }) };
+  return { product: await productRepository.createProduct({
+    ...payload,
+    name,
+    price: Number(payload.price),
+    stock_quantity: payload.stock_quantity === undefined ? 0 : Number(payload.stock_quantity),
+    unit: String(payload.unit || '件').trim(),
+    species: payload.species || 'BOTH',
+  }) };
 }
 async function updateProduct(id, payload = {}) {
   if (!await productRepository.getProductById(id)) throw notFound();
   if (payload.status !== undefined) throw validation({ status: 'Use enable or disable action to change status' });
   const errors = validate(payload, true); if (Object.keys(errors).length) throw validation(errors);
   if (payload.name !== undefined && await productRepository.findByName(String(payload.name).trim(), id)) throw validation({ name: 'Product name already exists' });
-  const next = { ...payload }; if (next.name !== undefined) next.name = String(next.name).trim(); if (next.price !== undefined) next.price = Number(next.price);
+  const next = { ...payload };
+  if (next.name !== undefined) next.name = String(next.name).trim();
+  if (next.price !== undefined) next.price = Number(next.price);
+  if (next.stock_quantity !== undefined) next.stock_quantity = Number(next.stock_quantity);
   return { product: await productRepository.updateProduct(id, next) };
 }
 

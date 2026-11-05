@@ -39,6 +39,14 @@ async function updateDraft(req, res, next) {
   }
 }
 
+async function deleteContractVersion(req, res, next) {
+  try {
+    sendSuccess(res, await contractVersionService.deleteContractVersion(req.params.id));
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function uploadDraftPdf(req, res, next) {
   try {
     sendSuccess(res, await contractVersionService.uploadDraftPdf(req.params.id, req.file));
@@ -77,6 +85,7 @@ async function setCurrent(req, res, next) {
 
 module.exports = {
   createDraft,
+  deleteContractVersion,
   getContractVersionPdf,
   getContractVersion,
   listContractVersions,

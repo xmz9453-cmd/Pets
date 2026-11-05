@@ -53,16 +53,24 @@ function createValidationError(fields) {
   return error;
 }
 
-function normalizeRegistrationPayload(payload = {}) {
+function normalizeStaffPayload(payload = {}) {
   return {
     username: typeof payload.username === 'string' ? payload.username.trim() : '',
     password: typeof payload.password === 'string' ? payload.password : '',
     displayName: typeof payload.display_name === 'string' ? payload.display_name.trim() : '',
+    roles: Array.isArray(payload.roles) ? [...new Set(payload.roles)] : null,
   };
 }
 
-async function register(payload) {
-  const values = normalizeRegistrationPayload(payload);
+function validateStaffRoles(roles) {
+  const allowedRoles = ['OWNER', 'FRONT_DESK', 'GROOMER'];
+  if (!Array.isArray(roles) || roles.length === 0 || roles.some((role) => !allowedRoles.includes(role))) {
+    throw createValidationError({ roles: '請至少選擇一個有效的店家角色' });
+  }
+}
+
+async function createStaff(payload, shopId) {
+  const values = normalizeStaffPayload(payload);
   const fields = {};
   if (!values.username) fields.username = 'Username is required';
   if (!values.password) fields.password = 'Password is required';
@@ -70,39 +78,32 @@ async function register(payload) {
   if (values.username.length > 100) fields.username = 'Username must be 100 characters or fewer';
   if (values.displayName.length > 100) fields.display_name = 'Display name must be 100 characters or fewer';
   if (values.password.length < 8) fields.password = 'Password must be at least 8 characters';
+  if (!Number.isInteger(Number(shopId)) || Number(shopId) < 1) fields.shop_id = 'Shop id is invalid';
   if (Object.keys(fields).length) throw createValidationError(fields);
+  validateStaffRoles(values.roles);
 
+  const normalizedShopId = Number(shopId);
+  const shop = await shopsRepository.getShopById(normalizedShopId);
+  if (!shop || shop.status !== 'ACTIVE') {
+    const error = new Error('找不到可使用的店家');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const passwordHash = await hashPassword(values.password);
   const connection = await authRepository.getPool().getConnection();
-  let registrationLockAcquired = false;
   try {
     await connection.beginTransaction();
-    await authRepository.acquireRegistrationLock(connection);
-    registrationLockAcquired = true;
-    const isFirstUser = (await authRepository.countStaff(connection)) === 0;
     const staffId = await authRepository.createStaff({
       username: values.username,
-      passwordHash: await hashPassword(values.password),
+      passwordHash,
       displayName: values.displayName,
     }, connection);
-    if (isFirstUser) {
-      await authRepository.replaceRolesForStaff(staffId, ['OWNER'], connection);
-      await shopsRepository.addMembership(staffId, 1, ['OWNER'], connection);
-      await connection.query('INSERT IGNORE INTO platform_shop_managers (staff_id) VALUES (?)', [staffId]);
-    } else {
-      await shopsRepository.addMembership(staffId, 1, [], connection);
-    }
+    await shopsRepository.addMembership(staffId, normalizedShopId, values.roles, connection);
+    const staff = (await shopsRepository.listAllStaffWithRolesAtShop(normalizedShopId, connection))
+      .find((item) => item.id === staffId);
     await connection.commit();
-    return {
-      staff: {
-        id: staffId,
-        username: values.username,
-        display_name: values.displayName,
-        status: 'ACTIVE',
-        roles: isFirstUser ? ['OWNER'] : [],
-        shop_id: 1,
-        is_platform_shop_manager: isFirstUser,
-      },
-    };
+    return toAccountStatus(staff);
   } catch (error) {
     await connection.rollback();
     if (error.code === 'ER_DUP_ENTRY') {
@@ -112,18 +113,12 @@ async function register(payload) {
     }
     throw error;
   } finally {
-    try {
-      if (registrationLockAcquired) {
-        await authRepository.releaseRegistrationLock(connection);
-      }
-    } finally {
-      connection.release();
-    }
+    connection.release();
   }
 }
 
 async function listStaff(shopId) {
-  return (await shopsRepository.listStaffWithRolesAtShop(shopId)).map(toAccountStatus);
+  return (await shopsRepository.listAllStaffWithRolesAtShop(shopId)).map(toAccountStatus);
 }
 
 async function updateStaffStatus(actor, staffId, requestedStatus) {
@@ -151,21 +146,28 @@ async function updateStaffStatus(actor, staffId, requestedStatus) {
 
     if (target.status === dbStatus) {
       await connection.rollback();
-      return toAccountStatus((await authRepository.listStaffWithRoles(connection)).find((staff) => staff.id === target.id));
+      const currentShopStaff = await shopsRepository.listAllStaffWithRolesAtShop(actor.shop_id, connection);
+      return toAccountStatus(currentShopStaff.find((staff) => staff.id === target.id));
     }
 
     if (target.status === 'ACTIVE' && dbStatus === 'INACTIVE') {
-      const activeOwnerIds = await authRepository.listActiveOwnerIds(connection);
-      const targetIsOwner = activeOwnerIds.includes(target.id);
-      if (targetIsOwner && activeOwnerIds.length <= 1) {
-        const error = new Error('不可停用最後一個管理者帳號');
-        error.statusCode = 403;
-        throw error;
+      const ownerShopIds = (await authRepository.listActiveOwnerShopIds(normalizedStaffId, connection)).sort((a, b) => a - b);
+      for (const shopId of ownerShopIds) {
+        await shopsRepository.lockShop(shopId, connection);
+        if (await shopsRepository.countActiveOwnersAtShop(shopId, connection) <= 1) {
+          const error = new Error('不可停用店內最後一位 OWNER 帳號');
+          error.statusCode = 403;
+          throw error;
+        }
       }
     }
 
     await authRepository.updateStaffStatus(normalizedStaffId, dbStatus, connection);
-    const updated = (await authRepository.listStaffWithRoles(connection)).find((staff) => staff.id === target.id);
+    if (dbStatus === 'INACTIVE') {
+      await authRepository.deleteSessionsForStaff(normalizedStaffId, connection);
+    }
+    const updated = (await shopsRepository.listAllStaffWithRolesAtShop(actor.shop_id, connection))
+      .find((staff) => staff.id === target.id);
     await connection.commit();
     return toAccountStatus(updated);
   } catch (error) {
@@ -178,34 +180,82 @@ async function updateStaffStatus(actor, staffId, requestedStatus) {
   }
 }
 
-async function updateStaffRoles(staffId, roles, shopId) {
-  const allowedRoles = ['OWNER', 'FRONT_DESK', 'GROOMER'];
+async function updateStaffRoles(actor, staffId, roles, shopId) {
   const normalizedRoles = Array.isArray(roles) ? [...new Set(roles)] : null;
-  if (!normalizedRoles || normalizedRoles.some((role) => !allowedRoles.includes(role))) {
-    throw createValidationError({ roles: 'Roles must be OWNER, FRONT_DESK, or GROOMER' });
+  if (normalizedRoles?.length) validateStaffRoles(normalizedRoles);
+  if (!normalizedRoles) {
+    throw createValidationError({ roles: 'Roles must be an array' });
   }
   if (!Number.isInteger(Number(staffId)) || !Number.isInteger(Number(shopId))) {
     throw createValidationError({ staff_id: 'Staff id is invalid' });
   }
 
+  const targetId = Number(staffId);
+  const normalizedShopId = Number(shopId);
   const connection = await authRepository.getPool().getConnection();
   try {
     await connection.beginTransaction();
-    await shopsRepository.addMembership(Number(staffId), Number(shopId), normalizedRoles, connection);
-    const staff = (await shopsRepository.listStaffWithRolesAtShop(Number(shopId), connection)).find((item) => item.id === Number(staffId));
-    if (!staff) {
-      const error = new Error('Staff not found');
+    const target = await authRepository.findStaffByIdForUpdate(targetId, connection);
+    if (!target) {
+      const error = new Error('找不到指定帳號');
       error.statusCode = 404;
       throw error;
     }
+    if (target.status !== 'ACTIVE') {
+      const error = new Error('停用帳號不可加入店家或調整角色');
+      error.statusCode = 409;
+      throw error;
+    }
+    if (!await shopsRepository.lockShop(normalizedShopId, connection)) {
+      const error = new Error('找不到指定店家');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const currentRoles = await shopsRepository.listRolesForStaffAtShop(targetId, normalizedShopId);
+    const isMember = await shopsRepository.hasMembership(targetId, normalizedShopId, connection);
+    if (!actor.is_platform_shop_manager
+      && (await shopsRepository.isPlatformShopManager(targetId)
+        || currentRoles.includes('OWNER')
+        || normalizedRoles.includes('OWNER'))) {
+      const error = new Error('OWNER 身分及系統管理者帳號僅能由系統管理者管理');
+      error.statusCode = 403;
+      throw error;
+    }
+    if (!normalizedRoles.length && !isMember) {
+      const error = new Error('此員工尚未加入該店');
+      error.statusCode = 404;
+      throw error;
+    }
+    if (currentRoles.includes('OWNER') && !normalizedRoles.includes('OWNER')
+      && await shopsRepository.countActiveOwnersAtShop(normalizedShopId, connection) <= 1) {
+      const error = new Error('不可移除店內最後一位 OWNER');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    if (normalizedRoles.length) {
+      await shopsRepository.addMembership(targetId, normalizedShopId, normalizedRoles, connection);
+    } else {
+      await shopsRepository.removeMembership(targetId, normalizedShopId, connection);
+      if (await shopsRepository.countMembershipsForStaff(targetId, connection) === 0) {
+        await authRepository.deleteSessionsForStaff(targetId, connection);
+      }
+    }
+    const staff = (await shopsRepository.listAllStaffWithRolesAtShop(normalizedShopId, connection))
+      .find((item) => item.id === targetId);
     await connection.commit();
-    return staff;
+    return toAccountStatus(staff);
   } catch (error) {
     await connection.rollback();
     throw error;
   } finally {
     connection.release();
   }
+}
+
+async function removeStaffMembership(actor, staffId, shopId) {
+  return updateStaffRoles(actor, staffId, [], shopId);
 }
 
 async function login(username, password, requestedShopId) {
@@ -227,15 +277,6 @@ async function login(username, password, requestedShopId) {
     throw createAuthError('此帳號已停用，無法登入，請聯絡管理者。');
   }
 
-  const token = createSessionToken();
-  const tokenHash = hashSessionToken(token);
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-  await authRepository.createSession({
-    staffId: staff.id,
-    tokenHash,
-    expiresAt,
-  });
-
   const isPlatformShopManager = await shopsRepository.isPlatformShopManager(staff.id);
   const shops = isPlatformShopManager
     ? await shopsRepository.listAllShops()
@@ -246,6 +287,14 @@ async function login(username, password, requestedShopId) {
   const roles = isPlatformShopManager
     ? ['OWNER']
     : await shopsRepository.listRolesForStaffAtShop(staff.id, selectedShop.id);
+  const token = createSessionToken();
+  const tokenHash = hashSessionToken(token);
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  await authRepository.createSession({
+    staffId: staff.id,
+    tokenHash,
+    expiresAt,
+  });
   return {
     token,
     staff: {
@@ -356,14 +405,25 @@ async function resetOtherPassword(actor, staffId, payload) {
     throw error;
   }
 
-  const target = await authRepository.findStaffById(targetId);
-  if (!target) {
-    const error = new Error('找不到指定帳號');
-    error.statusCode = 404;
+  const passwordHash = await hashPassword(values.newPassword);
+  const connection = await authRepository.getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const target = await authRepository.findStaffByIdForUpdate(targetId, connection);
+    if (!target) {
+      const error = new Error('找不到指定帳號');
+      error.statusCode = 404;
+      throw error;
+    }
+    await authRepository.updateStaffPassword(targetId, passwordHash, connection);
+    await authRepository.deleteSessionsForStaff(targetId, connection);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
     throw error;
+  } finally {
+    connection.release();
   }
-
-  await authRepository.updateStaffPassword(targetId, await hashPassword(values.newPassword));
   return { message: '密碼已重設' };
 }
 
@@ -373,10 +433,11 @@ module.exports = {
   authenticateToken,
   changeOwnPassword,
   createAuthError,
+  createStaff,
   login,
   listStaff,
   logout,
-  register,
+  removeStaffMembership,
   resetOtherPassword,
   updateStaffRoles,
   updateStaffStatus,

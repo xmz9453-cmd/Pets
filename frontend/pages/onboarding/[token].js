@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import {
   API_BASE_URL,
+  getPublicOnboardingAvailability,
   getPublicOnboarding,
   resolveOnboardingCustomer,
   resolveOnboardingPet,
@@ -20,16 +21,22 @@ const EMPTY_DATA = {
     name: '', species: '', gender: 'UNKNOWN', breed: '', weight: '',
     chip_number: '', personality: [], medical_history: [], other_history: '', note: '',
   },
-  appointment: { appointment_date: '', appointment_time: '', service_id: '' },
+  appointment: {
+    appointment_date: '',
+    appointment_time: '',
+    service_id: '',
+    check_out_date: '',
+    check_out_time: '',
+  },
 };
 
 const CUSTOMER_LABELS = {
-  name: '姓名', phone: '電話', address: '地址', line_account: 'LINE 帳號',
+  name: '姓名', phone: '聯絡電話', address: '聯絡地址', line_account: 'LINE 帳號',
   id_number: '身分證字號', emergency_contact: '緊急聯絡人',
   emergency_phone: '緊急聯絡電話', note: '備註',
 };
 const PET_LABELS = {
-  name: '寵物名稱', species: '種類', gender: '性別', breed: '品種',
+  name: '寵物名字', species: '寵物種類', gender: '性別', breed: '品種',
   weight: '體重（公斤）', chip_number: '晶片號碼', note: '備註',
 };
 const personalityOptionsBySpecies = {
@@ -71,6 +78,8 @@ export default function PublicOnboardingPage() {
   const [onboarding, setOnboarding] = useState(null);
   const [contract, setContract] = useState(null);
   const [services, setServices] = useState([]);
+  const [availableSlots, setAvailableSlots] = useState([]);
+  const [loadingSlots, setLoadingSlots] = useState(false);
   const [customerResolution, setCustomerResolution] = useState('UNRESOLVED');
   const [petResolution, setPetResolution] = useState('UNRESOLVED');
   const [customerQuery, setCustomerQuery] = useState('');
@@ -127,7 +136,7 @@ export default function PublicOnboardingPage() {
       setPetResolution(result.onboarding.pet_resolution);
       loadedRef.current = true;
     }).catch((loadError) => {
-      if (active) setError(loadError.message || '無法載入 Onboarding');
+      if (active) setError(loadError.message || '無法載入補件資料，請重新登入後再試。');
     }).finally(() => {
       if (active) setLoading(false);
     });
@@ -193,7 +202,7 @@ export default function PublicOnboardingPage() {
       if (kind === 'customer') setCustomerCandidates(result.candidates || []);
       else setPetCandidates(result.candidates || []);
     } catch (searchError) {
-      setError(searchError.message || '搜尋失敗');
+      setError(searchError.message || '搜尋資料失敗，請稍後再試。');
     }
   }
 
@@ -205,7 +214,42 @@ export default function PublicOnboardingPage() {
       if (kind === 'customer') setCustomerResolution(resolution);
       else setPetResolution(resolution);
     } catch (resolveError) {
-      setError(resolveError.message || '確認資料失敗');
+      setError(resolveError.message || '確認資料失敗，請稍後再試。');
+    }
+  }
+
+  async function findAvailableSlots() {
+    const selectedService = services.find((service) => Number(service.id) === Number(data.appointment.service_id));
+    if (!selectedService || !data.appointment.appointment_date) {
+      setError('請先選擇服務及日期。');
+      return;
+    }
+    if (selectedService.type === 'BOARDING' && (!data.appointment.check_out_date || !data.appointment.check_out_time)) {
+      setError('住宿服務請先選擇退房日期與時間。');
+      return;
+    }
+    setLoadingSlots(true);
+    setError('');
+    setAvailableSlots([]);
+    try {
+      const filters = {
+        service_id: String(selectedService.id),
+        date: data.appointment.appointment_date,
+      };
+      if (selectedService.type === 'BOARDING') {
+        filters.check_out_date = data.appointment.check_out_date;
+        filters.check_out_time = data.appointment.check_out_time;
+      }
+      const result = await getPublicOnboardingAvailability(token, filters);
+      setAvailableSlots(result.slots || []);
+      if (!result.slots?.some((slot) => slot.time === data.appointment.appointment_time)) {
+        updateField('appointment', 'appointment_time', '');
+      }
+      if (!result.slots?.length) setError('這個日期目前沒有可申請的時段，請改選其他日期。');
+    } catch (availabilityError) {
+      setError(availabilityError.message || '目前無法查詢可申請時段。');
+    } finally {
+      setLoadingSlots(false);
     }
   }
 
@@ -215,9 +259,9 @@ export default function PublicOnboardingPage() {
     try {
       if (dirty) await savePublicOnboarding(token, data);
       if (customerResolution === 'UNRESOLVED' || petResolution === 'UNRESOLVED') {
-        throw new Error('請先完成 Customer 與 Pet 資料確認');
+        throw new Error('請先確認客戶與寵物資料。');
       }
-      if (!signatureReady) throw new Error('請先手寫簽名');
+      if (!signatureReady) throw new Error('請先簽署電子契約。');
       await submitPublicOnboarding(token, canvasRef.current.toDataURL('image/png'));
       setSubmitted(true);
     } catch (submitError) {
@@ -229,7 +273,7 @@ export default function PublicOnboardingPage() {
     return <main className="container py-4"><p>載入中...</p></main>;
   }
   if (submitted) {
-    return <main className="container py-5"><div className="alert alert-success"><h1 className="h4">資料已送出</h1><p className="mb-0">電子契約與預約已完成。</p></div></main>;
+    return <main className="container py-5"><div className="alert alert-success"><h1 className="h4">資料與電子契約已送出</h1><p className="mb-0">{onboarding?.is_member_booking ? '預約已正式確認。商品請於到店付款；取消或改期請聯絡店家。' : '預約申請已送出，請等待店家確認。時段尚未保留；取消或改期請聯絡店家。'}</p></div></main>;
   }
 
   const unavailable = !onboarding || ['COMPLETED', 'EXPIRED'].includes(onboarding.status);
@@ -238,26 +282,28 @@ export default function PublicOnboardingPage() {
       <h1 className="mb-3">客戶資料與電子契約</h1>
       {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
       {unavailable ? (
-        <div className="alert alert-warning">{onboarding?.status === 'COMPLETED' ? '此 Onboarding 已完成。' : '此 Onboarding 已過期或無法使用。'}</div>
+        <div className="alert alert-warning">{onboarding?.status === 'COMPLETED' ? '此補件資料已完成。' : '此補件資料已過期或無法使用。'}</div>
       ) : (
         <>
           <p className="text-muted">請於 {String(onboarding.expires_at).replace('T', ' ').slice(0, 16)} 前完成。</p>
           <form onSubmit={handleSubmit}>
             <section className="card mb-4">
-              <div className="card-header fw-semibold">Customer 資料</div>
+              <div className="card-header fw-semibold">客戶資料</div>
               <div className="card-body row g-3">
                 {Object.entries(CUSTOMER_LABELS).map(([field, label]) => (
                   <div className={field === 'note' || field === 'address' ? 'col-12' : 'col-md-6'} key={field}>
                     <label className="form-label">{label}</label>
                     {field === 'note' || field === 'address' ? (
-                      <textarea className="form-control" rows={2} value={data.customer[field]} onChange={(event) => updateField('customer', field, event.target.value)} />
+                      <textarea className="form-control" rows={2} required={onboarding.is_member_booking && field === 'address'} value={data.customer[field]} onChange={(event) => updateField('customer', field, event.target.value)} />
                     ) : (
-                      <input className="form-control" required={customerResolution === 'NEW' && ['name', 'phone'].includes(field)} value={data.customer[field]} onChange={(event) => updateField('customer', field, event.target.value)} />
+                      <input className="form-control" required={(customerResolution === 'NEW' && ['name', 'phone'].includes(field))
+                        || (onboarding.is_member_booking && ['name', 'phone', 'emergency_contact', 'emergency_phone'].includes(field))}
+                      value={data.customer[field]} onChange={(event) => updateField('customer', field, event.target.value)} />
                     )}
                   </div>
                 ))}
-                <div className="col-12 border-top pt-3">
-                  <label className="form-label">搜尋既有 Customer（姓名或電話）</label>
+                {!onboarding.is_member_booking ? <div className="col-12 border-top pt-3">
+                  <label className="form-label">搜尋既有客戶（姓名或電話）</label>
                   <div className="input-group">
                     <input className="form-control" value={customerQuery} onChange={(event) => setCustomerQuery(event.target.value)} />
                     <button type="button" className="btn btn-outline-dark" onClick={() => findCandidates('customer')}>搜尋</button>
@@ -265,17 +311,17 @@ export default function PublicOnboardingPage() {
                   {customerCandidates.map((candidate) => (
                     <div className="d-flex align-items-center gap-2 mt-2" key={candidate.key}>
                       <span>{candidate.name}（{candidate.phone}）</span>
-                      <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => chooseResolution('customer', 'EXISTING', candidate.key)}>使用此 Customer</button>
+                      <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => chooseResolution('customer', 'EXISTING', candidate.key)}>使用此客戶</button>
                     </div>
                   ))}
-                  <button type="button" className="btn btn-sm btn-outline-secondary mt-2" onClick={() => chooseResolution('customer', 'NEW')}>建立新 Customer</button>
-                  <span className="ms-2 small text-muted">確認狀態：{customerResolution}</span>
-                </div>
+                  <button type="button" className="btn btn-sm btn-outline-secondary mt-2" onClick={() => chooseResolution('customer', 'NEW')}>建立新客戶</button>
+                  <span className="ms-2 small text-muted">資料連結狀態：{customerResolution === 'EXISTING' ? '已連結既有資料' : customerResolution === 'NEW' ? '新增資料' : '尚未確認'}</span>
+                </div> : <p className="col-12 small text-muted mb-0">這些資料已連結至您的會員預約，不會搜尋或自動合併其他客戶資料。</p>}
               </div>
             </section>
 
             <section className="card mb-4">
-              <div className="card-header fw-semibold">Pet 資料</div>
+              <div className="card-header fw-semibold">寵物資料</div>
               <div className="card-body row g-3">
                 {Object.entries(PET_LABELS).map(([field, label]) => (
                   <div className={['personality', 'medical_history', 'note'].includes(field) ? 'col-12' : 'col-md-6'} key={field}>
@@ -293,7 +339,9 @@ export default function PublicOnboardingPage() {
                     ) : field === 'note' ? (
                       <textarea className="form-control" rows={2} value={data.pet[field]} onChange={(event) => updateField('pet', field, event.target.value)} />
                     ) : (
-                      <input className="form-control" required={field === 'name' && petResolution === 'NEW'} type={field === 'weight' ? 'number' : 'text'} step={field === 'weight' ? '0.1' : undefined} value={data.pet[field]} onChange={(event) => updateField('pet', field, event.target.value)} />
+                      <input className="form-control" required={(field === 'name' && petResolution === 'NEW')
+                        || (onboarding.is_member_booking && field === 'weight' && services.find((service) => Number(service.id) === Number(data.appointment.service_id))?.type === 'GROOMING')}
+                      type={field === 'weight' ? 'number' : 'text'} step={field === 'weight' ? '0.1' : undefined} value={data.pet[field]} onChange={(event) => updateField('pet', field, event.target.value)} />
                     )}
                   </div>
                 ))}
@@ -345,37 +393,91 @@ export default function PublicOnboardingPage() {
                     </div>
                   ) : null}
                 </div>
-                <div className="col-12 border-top pt-3">
-                  <label className="form-label">搜尋既有 Pet（名稱或晶片號碼）</label>
+                {!onboarding.is_member_booking ? <div className="col-12 border-top pt-3">
+                  <label className="form-label">搜尋既有寵物（名稱或晶片號碼）</label>
                   <div className="input-group">
                     <input className="form-control" value={petQuery} onChange={(event) => setPetQuery(event.target.value)} />
                     <button type="button" className="btn btn-outline-dark" onClick={() => findCandidates('pet')}>搜尋</button>
                   </div>
                   {petCandidates.map((candidate) => (
                     <div className="d-flex align-items-center gap-2 mt-2" key={candidate.key}>
-                      <span>{candidate.name}（{candidate.species}{candidate.breed ? `，${candidate.breed}` : ''}）</span>
-                      <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => chooseResolution('pet', 'EXISTING', candidate.key)}>使用此 Pet</button>
+                      <span>{candidate.name}（{candidate.species === 'DOG' ? '狗' : '貓'}{candidate.breed ? `，${candidate.breed}` : ''}）</span>
+                      <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => chooseResolution('pet', 'EXISTING', candidate.key)}>使用此寵物</button>
                     </div>
                   ))}
-                  <button type="button" className="btn btn-sm btn-outline-secondary mt-2" onClick={() => chooseResolution('pet', 'NEW')}>建立新 Pet</button>
-                  <span className="ms-2 small text-muted">確認狀態：{petResolution}</span>
+                  <button type="button" className="btn btn-sm btn-outline-secondary mt-2" onClick={() => chooseResolution('pet', 'NEW')}>建立新寵物</button>
+                  <span className="ms-2 small text-muted">資料連結狀態：{petResolution === 'EXISTING' ? '已連結既有資料' : petResolution === 'NEW' ? '新增資料' : '尚未確認'}</span>
+                </div> : <p className="col-12 small text-muted mb-0">這筆寵物資料已連結至您的會員預約，不會搜尋或自動合併其他寵物資料。</p>}
+              </div>
+            </section>
+
+            {onboarding.is_member_booking ? (
+              <section className="card mb-4">
+                <div className="card-header fw-semibold">預約資料</div>
+                <div className="card-body">
+                  <p className="mb-1">日期與時間：{data.appointment.appointment_date} {String(data.appointment.appointment_time).slice(0, 5)}</p>
+                  <p className="mb-1">服務項目：{services.find((service) => Number(service.id) === Number(data.appointment.service_id))?.name || '已選擇的服務'}</p>
+                  {data.appointment.check_out_date ? <p className="mb-1">退房時間：{data.appointment.check_out_date} {String(data.appointment.check_out_time).slice(0, 5)}</p> : null}
+                  <p className="small text-muted mb-0">此預約已由店家接受並保留時段與必要資源；完成資料與契約後將正式確認。取消或改期請聯絡店家。</p>
                 </div>
-              </div>
-            </section>
-
+              </section>
+            ) : (
             <section className="card mb-4">
-              <div className="card-header fw-semibold">Appointment</div>
+              <div className="card-header fw-semibold">預約資料</div>
               <div className="card-body row g-3">
-                <div className="col-md-4"><label className="form-label">預約日期</label><input required type="date" className="form-control" value={data.appointment.appointment_date} onChange={(event) => updateField('appointment', 'appointment_date', event.target.value)} /></div>
-                <div className="col-md-4"><label className="form-label">預約時間</label><input required type="time" className="form-control" value={data.appointment.appointment_time} onChange={(event) => updateField('appointment', 'appointment_time', event.target.value)} /></div>
-                <div className="col-md-4"><label className="form-label">Service</label><select required className="form-select" value={data.appointment.service_id} onChange={(event) => updateField('appointment', 'service_id', event.target.value)}><option value="">選擇服務</option>{services.filter((service) => service.species === 'BOTH' || !data.pet.species || service.species === data.pet.species).map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}</select></div>
+                <div className="col-md-4"><label className="form-label">預約／入住日期</label><input required type="date" className="form-control" value={data.appointment.appointment_date} onChange={(event) => {
+                  updateField('appointment', 'appointment_date', event.target.value);
+                  updateField('appointment', 'appointment_time', '');
+                  setAvailableSlots([]);
+                }} /></div>
+                <div className="col-md-4"><label className="form-label">服務項目</label><select required className="form-select" value={data.appointment.service_id} onChange={(event) => {
+                  updateField('appointment', 'service_id', event.target.value);
+                  updateField('appointment', 'check_out_date', '');
+                  updateField('appointment', 'check_out_time', '');
+                  updateField('appointment', 'appointment_time', '');
+                  setAvailableSlots([]);
+                }}><option value="">選擇服務</option>{services.filter((service) => service.species === 'BOTH' || !data.pet.species || service.species === data.pet.species).map((service) => <option key={service.id} value={service.id}>{service.type === 'BOARDING' ? '住宿｜' : '美容｜'}{service.name}</option>)}</select></div>
+                {services.find((service) => Number(service.id) === Number(data.appointment.service_id))?.type === 'BOARDING' ? (
+                  <>
+                    <div className="col-md-4"><label className="form-label">退房日期</label><input required type="date" min={data.appointment.appointment_date || undefined} className="form-control" value={data.appointment.check_out_date} onChange={(event) => {
+                      updateField('appointment', 'check_out_date', event.target.value);
+                      updateField('appointment', 'appointment_time', '');
+                      setAvailableSlots([]);
+                    }} /></div>
+                    <div className="col-md-4"><label className="form-label">預計退房時間</label><input required type="time" className="form-control" value={data.appointment.check_out_time} onChange={(event) => {
+                      updateField('appointment', 'check_out_time', event.target.value);
+                      updateField('appointment', 'appointment_time', '');
+                      setAvailableSlots([]);
+                    }} /></div>
+                  </>
+                ) : null}
+                <div className="col-12">
+                  <button type="button" className="btn btn-outline-primary" onClick={findAvailableSlots} disabled={loadingSlots || !data.appointment.appointment_date || !data.appointment.service_id}>
+                    {loadingSlots ? '查詢中...' : '查詢可申請時段'}
+                  </button>
+                </div>
+                {availableSlots.length ? (
+                  <div className="col-12">
+                    <label className="form-label">可申請時段</label>
+                    <div className="d-flex flex-wrap gap-2">
+                      {availableSlots.map((slot) => (
+                        <label key={slot.time} className={`btn ${data.appointment.appointment_time === slot.time ? 'btn-primary' : 'btn-outline-primary'}`}>
+                          <input className="visually-hidden" type="radio" name="onboarding-appointment-time" value={slot.time} checked={data.appointment.appointment_time === slot.time} onChange={() => updateField('appointment', 'appointment_time', slot.time)} />
+                          {slot.time}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                <div className="col-12"><p className="small text-muted mb-0">此為預約申請，需由店家確認；選擇時段不代表名額已保留。取消或改期請聯絡店家。</p></div>
               </div>
             </section>
+            )}
 
             <section className="card mb-4">
-              <div className="card-header fw-semibold">電子契約 {contract ? `（${contract.version}）` : ''}</div>
+              <div className="card-header fw-semibold">{contract?.service_type === 'BOARDING' ? '住宿電子契約' : contract?.service_type === 'GROOMING' ? '美容電子契約' : '電子契約'} {contract ? `（${contract.version}）` : ''}</div>
               <div className="card-body">
-                {contract ? <iframe title="電子契約 PDF" src={`${API_BASE_URL}/api/public/onboardings/${encodeURIComponent(token)}/contract.pdf`} className="w-100 border mb-3" style={{ height: 480 }} /> : null}
+                {contract ? <iframe title="電子契約文件" src={`${API_BASE_URL}/api/public/onboardings/${encodeURIComponent(token)}/contract.pdf`} className="w-100 border mb-3" style={{ height: 480 }} /> : null}
                 <label className="form-label">請在下方簽名</label>
                 <canvas
                   ref={canvasRef}

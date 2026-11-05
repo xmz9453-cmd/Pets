@@ -18,6 +18,16 @@ function toIsoDateString(value) {
   return String(value).slice(0, 10);
 }
 
+function toIsoDateTimeString(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value.replace('T', ' ').slice(0, 19);
+  if (value instanceof Date) {
+    const localDate = new Date(value.getTime() - (value.getTimezoneOffset() * 60000));
+    return localDate.toISOString().replace('T', ' ').slice(0, 19);
+  }
+  return String(value).replace('T', ' ').slice(0, 19);
+}
+
 function normalizeAppointment(row) {
   if (!row) {
     return null;
@@ -35,6 +45,9 @@ function normalizeAppointment(row) {
     customer_name: row.customer_name || null,
     customer_phone: row.customer_phone || null,
     pet_count: Number(row.pet_count || 0),
+    service_type: row.service_type || null,
+    requested_check_out: toIsoDateTimeString(row.requested_check_out),
+    requested_products: row.requested_products || '',
   };
 }
 
@@ -70,10 +83,15 @@ async function listAppointments(filters = {}) {
 
   const [rows] = await getPool().query(
     `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone,
-            COUNT(ap.id) AS pet_count
+            COUNT(ap.id) AS pet_count, MAX(brd.service_type) AS service_type,
+            MAX(brd.requested_check_out) AS requested_check_out,
+            (SELECT GROUP_CONCAT(CONCAT(brp.product_name, ' ×', brp.quantity) ORDER BY brp.product_name SEPARATOR '、')
+             FROM booking_request_products brp
+             WHERE brp.appointment_id = a.id AND brp.shop_id = a.shop_id) AS requested_products
      FROM appointments a
      LEFT JOIN customers c ON c.id = a.customer_id AND c.shop_id = a.shop_id
      LEFT JOIN appointment_pets ap ON ap.appointment_id = a.id AND ap.shop_id = a.shop_id
+     LEFT JOIN booking_request_details brd ON brd.appointment_id = a.id AND brd.shop_id = a.shop_id
      ${whereClause}
      GROUP BY a.id, c.name, c.phone
      ORDER BY a.appointment_date DESC, a.appointment_time DESC
@@ -98,9 +116,14 @@ async function listAppointments(filters = {}) {
 
 async function getAppointmentById(appointmentId, connection = getPool()) {
   const [rows] = await connection.query(
-    `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone
+    `SELECT a.*, c.name AS customer_name, c.phone AS customer_phone,
+            brd.service_type, brd.requested_check_out
+            , (SELECT GROUP_CONCAT(CONCAT(brp.product_name, ' ×', brp.quantity) ORDER BY brp.product_name SEPARATOR '、')
+               FROM booking_request_products brp
+               WHERE brp.appointment_id = a.id AND brp.shop_id = a.shop_id) AS requested_products
      FROM appointments a
      LEFT JOIN customers c ON c.id = a.customer_id AND c.shop_id = a.shop_id
+     LEFT JOIN booking_request_details brd ON brd.appointment_id = a.id AND brd.shop_id = a.shop_id
      WHERE a.id = ? AND a.shop_id = ?
      LIMIT 1`,
     [appointmentId, getCurrentShopId()],

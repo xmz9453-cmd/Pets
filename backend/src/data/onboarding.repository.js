@@ -27,9 +27,10 @@ async function getByTokenHash(tokenHash, connection = getPool(), forUpdate = fal
 async function getPublicData(tokenHash) {
   const [rows] = await getPool().query(
     `SELECT o.id, o.shop_id, o.status, o.customer_data, o.appointment_data, o.customer_resolution,
+            o.appointment_id, o.customer_member_id,
             o.created_at, o.expires_at, o.contract_version_id, o.matched_customer_id,
             op.pet_data, op.resolution AS pet_resolution, op.matched_pet_id,
-            cv.version_label, cv.file_name, cv.mime_type, cv.file_size, cv.storage_path, cv.file_hash
+            cv.version_label, cv.service_type, cv.file_name, cv.mime_type, cv.file_size, cv.storage_path, cv.file_hash
      FROM onboardings o
      INNER JOIN onboarding_pets op ON op.onboarding_id = o.id AND op.shop_id = o.shop_id
      INNER JOIN contract_versions cv ON cv.id = o.contract_version_id AND cv.shop_id = o.shop_id

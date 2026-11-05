@@ -5,6 +5,7 @@ const { requirePlatformShopManager } = require('../middleware/authorize');
 
 const router = express.Router();
 
+router.get('/public/shops', shopsController.listPublic);
 router.get('/shops', requireAuthentication, shopsController.list);
 router.post('/shops', requireAuthentication, requirePlatformShopManager, shopsController.create);
 router.get('/shops/staff', requireAuthentication, requirePlatformShopManager, shopsController.listStaff);

@@ -18,7 +18,7 @@ export default function Login() {
       try {
         await getCurrentStaff();
         if (active) {
-          router.replace('/');
+          router.replace('/dashboard');
         }
       } catch (sessionError) {
         // No valid session: keep the login page available without surfacing a client error.
@@ -55,7 +55,7 @@ export default function Login() {
 
     try {
       await login(validation.values.username, validation.values.password);
-      router.replace('/');
+      router.replace('/dashboard');
     } catch (loginError) {
       setError(formatLoginError(loginError.message));
       setSubmitting(false);
@@ -98,8 +98,7 @@ export default function Login() {
           <button className="btn btn-dark w-100" type="submit" disabled={submitting}>
             {submitting ? '登入中...' : '登入'}
           </button>
-          <a className="btn btn-link w-100 mt-2" href="/register">註冊新帳號</a>
-          <a className="btn btn-link w-100" href="/forgot-password">忘記密碼？</a>
+          <a className="btn btn-link w-100 mt-2" href="/forgot-password">忘記密碼？</a>
           {error ? (
             <div className="alert alert-warning mt-3" role="alert">
               {error}

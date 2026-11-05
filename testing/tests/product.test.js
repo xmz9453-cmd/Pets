@@ -31,6 +31,8 @@ async function createRoleStaff(roleCode) {
   );
   const [roleRows] = await getPool().query('SELECT id FROM roles WHERE code = ?', [roleCode]);
   await getPool().query('INSERT INTO staff_roles (staff_id, role_id) VALUES (?, ?)', [staffResult.insertId, roleRows[0].id]);
+  await getPool().query('INSERT INTO staff_shop_memberships (staff_id, shop_id) VALUES (?, 1)', [staffResult.insertId]);
+  await getPool().query('INSERT INTO staff_shop_roles (staff_id, shop_id, role_id) VALUES (?, 1, ?)', [staffResult.insertId, roleRows[0].id]);
   return login(username, password);
 }
 

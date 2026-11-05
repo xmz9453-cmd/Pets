@@ -1,0 +1,53 @@
+const customerBookingService = require('../services/customer-booking.service');
+
+async function send(res, handler) {
+  try {
+    const result = await handler();
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    throw error;
+  }
+}
+
+function listPets(req, res, next) {
+  send(res, () => customerBookingService.listPets()).catch(next);
+}
+
+function listServices(req, res, next) {
+  send(res, () => customerBookingService.listServices(req.query.pet_id, req.query.species)).catch(next);
+}
+
+function listProducts(req, res, next) {
+  send(res, () => customerBookingService.listProducts(req.query.species)).catch(next);
+}
+
+function listAvailability(req, res, next) {
+  send(res, () => customerBookingService.listAvailability(req.query)).catch(next);
+}
+
+function listRequests(req, res, next) {
+  send(res, () => customerBookingService.listRequests()).catch(next);
+}
+
+function getOnboardingToken(req, res, next) {
+  send(res, () => customerBookingService.getOnboardingToken(req.params.id)).catch(next);
+}
+
+async function createBookingRequest(req, res, next) {
+  try {
+    const result = await customerBookingService.createBookingRequest(req.body || {});
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = {
+  createBookingRequest,
+  getOnboardingToken,
+  listAvailability,
+  listPets,
+  listProducts,
+  listRequests,
+  listServices,
+};

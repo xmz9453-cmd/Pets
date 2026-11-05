@@ -31,8 +31,8 @@ async function findByName(name, excludeId = null) {
 
 async function createProduct(payload) {
   const [result] = await getPool().query(
-    'INSERT INTO products (shop_id, name, description, price, unit, species, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [getCurrentShopId(), payload.name, payload.description || null, payload.price, payload.unit, payload.species, payload.status || 'ACTIVE'],
+    'INSERT INTO products (shop_id, name, description, price, stock_quantity, unit, species, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [getCurrentShopId(), payload.name, payload.description || null, payload.price, payload.stock_quantity ?? 0, payload.unit, payload.species, payload.status || 'ACTIVE'],
   );
   return getProductById(result.insertId);
 }
@@ -40,7 +40,7 @@ async function createProduct(payload) {
 async function updateProduct(id, payload) {
   const fields = [];
   const values = [];
-  for (const key of ['name', 'description', 'price', 'unit', 'species', 'status']) {
+  for (const key of ['name', 'description', 'price', 'stock_quantity', 'unit', 'species', 'status']) {
     if (payload[key] !== undefined) { fields.push(`${key} = ?`); values.push(payload[key] === '' ? null : payload[key]); }
   }
   if (fields.length) { values.push(id, getCurrentShopId()); await getPool().query(`UPDATE products SET ${fields.join(', ')} WHERE id = ? AND shop_id = ?`, values); }
