@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { createProduct, disableProduct, enableProduct, getCurrentStaff, getProducts, updateProduct } from '../api/client';
+import { createProduct, deleteProduct, disableProduct, enableProduct, getCurrentStaff, getProducts, updateProduct } from '../api/client';
 
 const emptyForm = { name: '', price: '', stock_quantity: '0' };
 
@@ -113,6 +113,23 @@ export default function ProductsPage() {
     }
   }
 
+  async function removeProduct(product) {
+    if (!window.confirm(`確定永久刪除商品「${product.name}」嗎？若商品已有訂單或預約紀錄，系統將保留商品並拒絕刪除。`)) return;
+    try {
+      setSaving(true);
+      setError('');
+      setSuccess('');
+      await deleteProduct(product.id);
+      if (editingId === product.id) resetForm();
+      setSuccess('商品已刪除');
+      await loadProducts();
+    } catch (deleteError) {
+      setError(deleteError.message || '商品刪除失敗，請稍後再試');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const canManage = staff && staff.roles && staff.roles.includes('OWNER');
 
   return (
@@ -124,7 +141,7 @@ export default function ProductsPage() {
       {success ? <div className="alert alert-success" role="alert">{success}</div> : null}
       <div className="row g-4">
         {canManage ? <div className="col-lg-4"><div className="foundation-panel"><h2 className="h5 mb-3">{editingId ? '編輯商品' : '新增商品'}</h2><form onSubmit={handleSubmit}><label className="form-label" htmlFor="product-name">商品名稱</label><input id="product-name" className="form-control mb-3" maxLength="100" value={formData.name} onChange={(event) => setFormData({ ...formData, name: event.target.value })} required /><label className="form-label" htmlFor="product-price">售價</label><input id="product-price" className="form-control mb-3" type="number" min="0.01" step="0.01" value={formData.price} onChange={(event) => setFormData({ ...formData, price: event.target.value })} required /><label className="form-label" htmlFor="product-stock">庫存數量</label><input id="product-stock" className="form-control mb-3" type="number" min="0" step="1" value={formData.stock_quantity} onChange={(event) => setFormData({ ...formData, stock_quantity: event.target.value })} required /><div className="d-flex gap-2"><button type="submit" className="btn btn-primary" disabled={saving}>{saving ? '儲存中...' : '儲存'}</button>{editingId ? <button type="button" className="btn btn-outline-secondary" onClick={resetForm}>取消</button> : null}</div></form></div></div> : null}
-          <div className={canManage ? 'col-lg-8' : 'col-12'}><div className="foundation-panel"><h2 className="h5 mb-3">商品列表</h2>{loading ? <p className="text-muted mb-0">商品載入中...</p> : products.length === 0 ? <div className="alert alert-light border mb-0">目前沒有商品</div> : <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>商品名稱</th><th>售價</th><th>庫存</th><th>狀態</th><th>操作</th></tr></thead><tbody>{products.map((product) => <tr key={product.id}><td>{product.name}</td><td>{product.price.toFixed(2)}</td><td>{product.stock_quantity ?? 0}</td><td><span className={`badge ${product.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>{product.status === 'ACTIVE' ? '啟用中' : '已停用'}</span></td><td>{canManage ? <div className="btn-group btn-group-sm"><button type="button" className="btn btn-outline-primary" onClick={() => startEdit(product)}>編輯</button><button type="button" className={product.status === 'ACTIVE' ? 'btn btn-outline-danger' : 'btn btn-outline-success'} disabled={saving} onClick={() => changeStatus(product)}>{product.status === 'ACTIVE' ? '停用' : '啟用'}</button></div> : <span className="text-muted">僅可查看</span>}</td></tr>)}</tbody></table></div>}</div></div>
+          <div className={canManage ? 'col-lg-8' : 'col-12'}><div className="foundation-panel"><h2 className="h5 mb-3">商品列表</h2>{loading ? <p className="text-muted mb-0">商品載入中...</p> : products.length === 0 ? <div className="alert alert-light border mb-0">目前沒有商品</div> : <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>商品名稱</th><th>售價</th><th>庫存</th><th>狀態</th><th>操作</th></tr></thead><tbody>{products.map((product) => <tr key={product.id}><td>{product.name}</td><td>{product.price.toFixed(2)}</td><td>{product.stock_quantity ?? 0}</td><td><span className={`badge ${product.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>{product.status === 'ACTIVE' ? '啟用中' : '已停用'}</span></td><td>{canManage ? <div className="btn-group btn-group-sm"><button type="button" className="btn btn-outline-primary" onClick={() => startEdit(product)}>編輯</button><button type="button" className={product.status === 'ACTIVE' ? 'btn btn-outline-danger' : 'btn btn-outline-success'} disabled={saving} onClick={() => changeStatus(product)}>{product.status === 'ACTIVE' ? '停用' : '啟用'}</button><button type="button" className="btn btn-outline-danger" disabled={saving} onClick={() => removeProduct(product)}>刪除</button></div> : <span className="text-muted">僅可查看</span>}</td></tr>)}</tbody></table></div>}</div></div>
       </div>
     </main>
   );

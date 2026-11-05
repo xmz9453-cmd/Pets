@@ -10,6 +10,7 @@ router.get('/products', requireAuthentication, readRoles, productController.list
 router.get('/products/:id', requireAuthentication, readRoles, productController.getProduct);
 router.post('/products', requireAuthentication, writeRoles, productController.createProduct);
 router.patch('/products/:id', requireAuthentication, writeRoles, productController.updateProduct);
+router.delete('/products/:id', requireAuthentication, writeRoles, productController.deleteProduct);
 router.post('/products/:id/enable', requireAuthentication, writeRoles, productController.enableProduct);
 router.post('/products/:id/disable', requireAuthentication, writeRoles, productController.disableProduct);
 module.exports = router;

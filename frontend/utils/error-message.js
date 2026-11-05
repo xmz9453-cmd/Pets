@@ -44,6 +44,7 @@ const ERROR_MESSAGES = {
   ORDER_DELETE_PROTECTED: '此訂單已有相關營運資料，無法刪除。',
   PET_DELETE_PROTECTED: '此寵物已有相關營運資料，無法刪除。',
   PET_NOT_FOUND: '找不到指定的寵物資料。',
+  PRODUCT_IN_USE: '此商品已有訂單或預約紀錄，無法刪除；如不再販售，請改為停用。',
   PRODUCT_NOT_FOUND: '找不到指定的商品資料。',
   SERVICE_IN_USE: '此服務已有使用紀錄，無法刪除。',
   SERVICE_NOT_FOUND: '找不到指定的服務資料。',

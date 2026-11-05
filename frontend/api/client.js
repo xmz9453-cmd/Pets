@@ -666,6 +666,7 @@ export async function getProducts(params = {}) {
 export async function getProduct(productId) { return request(`/api/products/${productId}`); }
 export async function createProduct(payload) { return request('/api/products', { method: 'POST', body: JSON.stringify(payload) }); }
 export async function updateProduct(productId, payload) { return request(`/api/products/${productId}`, { method: 'PATCH', body: JSON.stringify(payload) }); }
+export async function deleteProduct(productId) { return request(`/api/products/${productId}`, { method: 'DELETE' }); }
 export async function enableProduct(productId) { return request(`/api/products/${productId}/enable`, { method: 'POST' }); }
 export async function disableProduct(productId) { return request(`/api/products/${productId}/disable`, { method: 'POST' }); }
 

@@ -57,6 +57,37 @@ describe('Product API', () => {
     expect((await agent.post(`/api/products/${productId}/enable`)).body.data.product.status).toBe('ACTIVE');
   });
 
+  test('owner can delete an unused product but cannot delete one with order history', async () => {
+    const agent = await login();
+    const unused = await agent.post('/api/products').send({ name: '可刪除商品', price: 100 });
+    const unusedId = unused.body.data.product.id;
+
+    expect(await agent.delete(`/api/products/${unusedId}`)).toMatchObject({
+      status: 200,
+      body: { success: true, data: { deleted: true } },
+    });
+    expect((await agent.get(`/api/products/${unusedId}`)).status).toBe(404);
+
+    const productResponse = await agent.post('/api/products').send({ name: '有訂單商品', price: 200 });
+    const productId = productResponse.body.data.product.id;
+    const suffix = `${Date.now()}${sequence}`.slice(-8);
+    const customerResponse = await agent.post('/api/customers').send({
+      name: `Product deletion customer ${suffix}`,
+      phone: `09${suffix}`,
+    });
+    const order = await agent.post('/api/orders').send({
+      customer_id: customerResponse.body.data.customer.id,
+      business_unit: 'DOG',
+      items: [{ product_id: productId, transaction_price: 200, quantity: 1 }],
+    });
+    expect(order.status).toBe(201);
+
+    const rejected = await agent.delete(`/api/products/${productId}`);
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.error.code).toBe('PRODUCT_IN_USE');
+    expect((await agent.get(`/api/products/${productId}`)).status).toBe(200);
+  });
+
   test.each([
     [{ name: '   ', price: 100 }, 'name'],
     [{ name: '無效價格', price: 'abc' }, 'price'],
@@ -70,7 +101,10 @@ describe('Product API', () => {
 
   test.each(['FRONT_DESK', 'GROOMER'])('allows %s to read but not manage products', async (roleCode) => {
     const agent = await createRoleStaff(roleCode);
+    const ownerAgent = await login();
+    const productResponse = await ownerAgent.post('/api/products').send({ name: `限制刪除商品${roleCode}`, price: 100 });
     expect((await agent.get('/api/products')).status).toBe(200);
     expect((await agent.post('/api/products').send({ name: `禁止商品${roleCode}`, price: 100 })).status).toBe(403);
+    expect((await agent.delete(`/api/products/${productResponse.body.data.product.id}`)).status).toBe(403);
   });
 });

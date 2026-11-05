@@ -52,4 +52,12 @@ async function updateProductStatus(id, status) {
   return getProductById(id);
 }
 
-module.exports = { createProduct, findByName, getProductById, listProducts, updateProduct, updateProductStatus };
+async function deleteProduct(id) {
+  const [result] = await getPool().query(
+    'DELETE FROM products WHERE id = ? AND shop_id = ?',
+    [id, getCurrentShopId()],
+  );
+  return result.affectedRows === 1;
+}
+
+module.exports = { createProduct, deleteProduct, findByName, getProductById, listProducts, updateProduct, updateProductStatus };

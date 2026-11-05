@@ -52,6 +52,22 @@ async function updateProduct(id, payload = {}) {
   return { product: await productRepository.updateProduct(id, next) };
 }
 
+async function deleteProduct(id) {
+  if (!await productRepository.getProductById(id)) throw notFound();
+  try {
+    await productRepository.deleteProduct(id);
+    return { deleted: true };
+  } catch (error) {
+    if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+      const conflict = new Error('此商品已有訂單或預約紀錄，無法刪除；如不再販售，請改為停用。');
+      conflict.statusCode = 409;
+      conflict.code = 'PRODUCT_IN_USE';
+      throw conflict;
+    }
+    throw error;
+  }
+}
+
 async function setStatus(id, status) {
   if (!await productRepository.getProductById(id)) throw notFound();
   return { product: await productRepository.updateProductStatus(id, status) };
@@ -60,4 +76,4 @@ async function setStatus(id, status) {
 async function enableProduct(id) { return setStatus(id, 'ACTIVE'); }
 async function disableProduct(id) { return setStatus(id, 'INACTIVE'); }
 
-module.exports = { createProduct, disableProduct, enableProduct, getProduct, listProducts, updateProduct };
+module.exports = { createProduct, deleteProduct, disableProduct, enableProduct, getProduct, listProducts, updateProduct };
