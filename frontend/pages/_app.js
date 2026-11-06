@@ -57,7 +57,7 @@ function AppShell({ Component, pageProps }) {
   const previousUnreadCount = useRef(null);
   const audioContextRef = useRef(null);
 
-  const shouldShowNav = !['/', '/login', '/forgot-password', '/onboarding/[token]', '/booking'].includes(router.pathname);
+  const shouldShowNav = !['/', '/login', '/forgot-password', '/onboarding/[token]', '/booking', '/announcements'].includes(router.pathname);
   const visibleNavItems = NAV_ITEMS.filter((item) =>
     staff && Array.isArray(staff.roles)
       ? item.allowedRoles.some((role) => staff.roles.includes(role))

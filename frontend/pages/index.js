@@ -22,16 +22,15 @@ function PortalIcon({ name }) {
 }
 
 function AnnouncementMarquee({ announcements }) {
-  const [paused, setPaused] = useState(false);
   if (!announcements.length) return null;
 
   return (
-    <section className="portal-announcement" aria-label="店家公告">
+    <Link className="portal-announcement" href="/announcements" aria-label="查看所有店家公告">
       <div className="portal-announcement-label">
         <PortalIcon name="announcement" />
         <span>最新公告</span>
       </div>
-      <div className={`portal-marquee${paused ? ' is-paused' : ''}`}>
+      <div className="portal-marquee">
         <div className="portal-marquee-track">
           {[0, 1].map((copy) => (
             <div className="portal-marquee-group" key={copy} aria-hidden={copy === 1}>
@@ -46,16 +45,7 @@ function AnnouncementMarquee({ announcements }) {
           ))}
         </div>
       </div>
-      <button
-        className="portal-marquee-toggle"
-        type="button"
-        onClick={() => setPaused((current) => !current)}
-        aria-label={paused ? '繼續播放店家公告' : '暫停店家公告跑馬燈'}
-        aria-pressed={paused}
-      >
-        {paused ? '播放' : '暫停'}
-      </button>
-    </section>
+    </Link>
   );
 }
 
@@ -172,7 +162,7 @@ export default function Home() {
                   href={`/booking?shop_id=${encodeURIComponent(shop.id)}`}
                   key={shop.id}
                 >
-                  <span className="portal-shop-logo" aria-hidden="true">
+                  <span className={`portal-shop-logo${shop.logo_url ? ' has-logo' : ''}`} aria-hidden="true">
                     {!shop.logo_url ? <PortalIcon name="paw" /> : null}
                     {shop.logo_url ? (
                       <img
@@ -184,7 +174,6 @@ export default function Home() {
                   </span>
                   <span className="portal-shop-name">{shop.name}</span>
                   <span className="portal-shop-actions">
-                    <span className="portal-shop-paw"><PortalIcon name="paw" /></span>
                     <span className="portal-shop-arrow"><PortalIcon name="arrow" /></span>
                   </span>
                 </Link>
