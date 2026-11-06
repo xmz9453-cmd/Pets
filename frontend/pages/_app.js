@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import '../styles/globals.css';
 import {
+  API_BASE_URL,
   getCurrentStaff,
   getShopNotifications,
   logout,
@@ -32,6 +33,7 @@ const ICON_PATHS = {
   receipt: 'M4 3h16v18l-3-2-3 2-3-2-3 2-4-2V3Z M8 8h8 M8 12h8 M8 16h4',
   chart: 'M4 19V5 M4 19h17 M8 15l4-4 3 2 5-6',
   settings: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.5 2.6-.2-.1a1.7 1.7 0 0 0-1.9.3l-.1.1h-3l-.1-.2a1.7 1.7 0 0 0-1.5-1l-.2.1-2.6-1.5.1-.2a1.7 1.7 0 0 0-.3-1.9l-.1-.1v-3l.2-.1a1.7 1.7 0 0 0 1-1.5l-.1-.2 1.5-2.6.2.1a1.7 1.7 0 0 0 1.9-.3l.1-.1h3l.1.2a1.7 1.7 0 0 0 1.5 1l.2-.1 2.6 1.5-.1.2a1.7 1.7 0 0 0 .3 1.9l.1.1v3l-.2.1Z',
+  home: 'm3 10.5 9-7.5 9 7.5 M5 9v12h14V9 M9 21v-7h6v7',
 };
 
 function AppIcon({ name }) {
@@ -48,6 +50,7 @@ function AppShell({ Component, pageProps }) {
   const [shops, setShops] = useState([]);
   const [selectedShopId, setSelectedShopId] = useState('');
   const [shopName, setShopName] = useState('店家');
+  const selectedShop = shops.find((shop) => Number(shop.id) === Number(selectedShopId));
   const [error, setError] = useState('');
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -94,6 +97,19 @@ function AppShell({ Component, pageProps }) {
       active = false;
     };
   }, [router.pathname, shouldShowNav]);
+
+  useEffect(() => {
+    function updateShopLogo(event) {
+      setShops((current) => current.map((shop) => (
+        Number(shop.id) === Number(selectedShopId)
+          ? { ...shop, logo_url: event.detail?.logo_url || null }
+          : shop
+      )));
+    }
+
+    window.addEventListener('psop:shop-logo-updated', updateShopLogo);
+    return () => window.removeEventListener('psop:shop-logo-updated', updateShopLogo);
+  }, [selectedShopId]);
 
   useEffect(() => {
     setSoundEnabled(window.localStorage.getItem('psop.notificationSound') === 'enabled');
@@ -213,7 +229,16 @@ function AppShell({ Component, pageProps }) {
       {shouldShowNav ? (
         <div className="app-shell">
           <aside className="app-sidebar">
-            <div className="app-sidebar-brand">{shopName}</div>
+            <div className="app-sidebar-brand">
+              <span className="app-sidebar-brand-mark">
+                {selectedShop?.logo_url ? (
+                  <img src={`${API_BASE_URL}${selectedShop.logo_url}`} alt="" />
+                ) : (
+                  <AppIcon name="paw" />
+                )}
+              </span>
+              <span className="app-sidebar-brand-name">{shopName}</span>
+            </div>
             {staff?.is_platform_shop_manager && shops.length > 1 ? (
               <div className="px-3 pb-3">
                 <label className="form-label small mb-1" htmlFor="current-shop">目前店家</label>
@@ -256,6 +281,10 @@ function AppShell({ Component, pageProps }) {
             </nav>
             <div className="app-sidebar-footer">
               <span className="app-sidebar-user">{staff ? staff.display_name : '驗證中'}</span>
+              <a href="/" className="app-sidebar-home-link">
+                <AppIcon name="home" />
+                返回入口
+              </a>
               <button type="button" className="btn btn-outline-secondary btn-sm" onClick={handleLogout}>登出</button>
             </div>
           </aside>

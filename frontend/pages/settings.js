@@ -922,6 +922,7 @@ export default function SettingsPage() {
       const updated = normalizeSavedSettings(result);
       setOriginal(updated);
       setForm(updated);
+      window.dispatchEvent(new CustomEvent('psop:shop-logo-updated', { detail: { logo_url: updated.logo_url } }));
       setSuccess('店家 Logo 已更新，入口頁將顯示新圖片。');
     } catch (uploadError) {
       setError(uploadError.message || 'Logo 上傳失敗。');
@@ -942,6 +943,7 @@ export default function SettingsPage() {
       const updated = normalizeSavedSettings(result);
       setOriginal(updated);
       setForm(updated);
+      window.dispatchEvent(new CustomEvent('psop:shop-logo-updated', { detail: { logo_url: updated.logo_url } }));
       setSuccess('店家 Logo 已移除。');
     } catch (deleteError) {
       setError(deleteError.message || 'Logo 移除失敗。');
@@ -1263,14 +1265,13 @@ export default function SettingsPage() {
               <div className="col-md-6">
                 <label className="form-label" htmlFor="shop-logo-upload">入口店家 Logo</label>
                 <div className="d-flex flex-wrap align-items-center gap-3">
-                  <div className="settings-logo-preview" aria-label={form.logo_url ? '目前店家 Logo' : '尚未設定店家 Logo'}>
-                    {form.logo_url ? (
+                  {form.logo_url ? (
+                    <div className="settings-logo-preview" aria-label="目前店家 Logo">
                       <img src={`${API_BASE_URL}${form.logo_url}`} alt="" />
-                    ) : (
-                      <span aria-hidden="true">🐾</span>
-                    )}
-                  </div>
+                    </div>
+                  ) : null}
                   <div className="d-flex flex-wrap gap-2">
+                    {!form.logo_url ? <span className="small text-muted align-self-center">尚未上傳 Logo</span> : null}
                     <label className={`btn btn-outline-secondary btn-sm mb-0${!canEdit || logoUploading ? ' disabled' : ''}`} htmlFor="shop-logo-upload">
                       {logoUploading ? '上傳中…' : form.logo_url ? '更換 Logo' : '上傳 Logo'}
                     </label>

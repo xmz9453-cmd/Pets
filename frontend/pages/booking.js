@@ -28,6 +28,7 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat('zh-TW', {
   currency: 'TWD',
   maximumFractionDigits: 0,
 });
+const TAIWAN_PHONE_PATTERN = /^(?:09\d{2}-?\d{6}|02-?\d{8}|0[3-8]-?\d{7}|(?:037|049|082|089)-?\d{6}|(?:0826|0836)-?\d{5})$/;
 
 function getToday() {
   const now = new Date();
@@ -188,6 +189,11 @@ export default function BookingPage() {
   }
 
   async function handleSubmitRequest() {
+    if (!TAIWAN_PHONE_PATTERN.test(phone.trim())) {
+      setError('請輸入台灣市話或手機，例如 04-7123456 或 0911-223344。');
+      return;
+    }
+
     setBusy(true);
     setError('');
     setMessage('');
@@ -402,10 +408,20 @@ export default function BookingPage() {
                     </div>
                     <div className="col-md-6">
                       <label className="form-label" htmlFor="booking-phone">聯絡電話</label>
-                      <input id="booking-phone" className="form-control" type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} required maxLength={30} />
+                      <input
+                        id="booking-phone"
+                        className="form-control"
+                        type="tel"
+                        value={phone}
+                        onChange={(event) => setPhone(event.target.value)}
+                        required
+                        maxLength={15}
+                        pattern="(?:09\d{2}-?\d{6}|02-?\d{8}|0[3-8]-?\d{7}|(?:037|049|082|089)-?\d{6}|(?:0826|0836)-?\d{5})"
+                        title="請輸入台灣手機或市話，例如 0911-223344 或 04-7123456。"
+                      />
                     </div>
                   </div>
-                  <small className="text-muted">聯絡電話必填，不會以簡訊驗證。</small>
+                  <small className="text-muted">請填寫台灣市話或手機，例如市話 04-7123456、手機 0911-223344；不會以簡訊驗證。</small>
                 </div>
               </section>
 

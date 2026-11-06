@@ -587,9 +587,6 @@ export default function AppointmentsPage() {
                                 </button>
                               </>
                             ) : null}
-                            {appointment.service_type && ['SCHEDULED', 'CONFIRMED'].includes(appointment.status) ? (
-                              <span className="small text-muted">改期／取消申請由上方審核</span>
-                            ) : null}
                             {!appointment.service_type ? (
                               <>
                                 <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => handleEdit(appointment.id)}>

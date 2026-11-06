@@ -23,9 +23,11 @@ function validation(fields) {
 }
 
 function normalizePhone(value) {
-  const phone = String(value ?? '').replace(/[()\s-]/g, '');
-  if (!/^\+?\d{8,15}$/.test(phone)) throw validation({ phone: '請輸入有效的聯絡電話。' });
-  return phone;
+  const phone = String(value ?? '').trim();
+  if (!/^(?:09\d{2}-?\d{6}|02-?\d{8}|0[3-8]-?\d{7}|(?:037|049|082|089)-?\d{6}|(?:0826|0836)-?\d{5})$/.test(phone)) {
+    throw validation({ phone: '請輸入台灣市話或手機，例如 04-7123456 或 0911-223344。' });
+  }
+  return phone.replace(/-/g, '');
 }
 
 function normalizeDate(value, field) {

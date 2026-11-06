@@ -1,17 +1,27 @@
 const { getPool } = require('../config/database');
 
+const SHOP_LOGO_SELECT = `(SELECT ss.logo_storage_key
+                          FROM shop_settings ss
+                          WHERE ss.shop_id = s.id
+                          ORDER BY ss.id DESC
+                          LIMIT 1) AS logo_storage_key`;
+
 function normalizeShop(row) {
   return {
     id: Number(row.id),
     name: row.name,
     slug: row.slug,
     status: row.status,
+    logo_url: row.logo_storage_key ? `/api/public/shop-logos/${row.logo_storage_key}` : null,
   };
 }
 
 async function listAllShops() {
   const [rows] = await getPool().query(
-    "SELECT id, name, slug, status FROM shops WHERE status = 'ACTIVE' ORDER BY id ASC",
+    `SELECT s.id, s.name, s.slug, s.status, ${SHOP_LOGO_SELECT}
+     FROM shops s
+     WHERE s.status = 'ACTIVE'
+     ORDER BY s.id ASC`,
   );
   return rows.map(normalizeShop);
 }
@@ -43,7 +53,7 @@ async function listPublicShops() {
 
 async function listShopsForStaff(staffId) {
   const [rows] = await getPool().query(
-    `SELECT s.id, s.name, s.slug, s.status
+    `SELECT s.id, s.name, s.slug, s.status, ${SHOP_LOGO_SELECT}
      FROM shops s
      INNER JOIN staff_shop_memberships m ON m.shop_id = s.id
      WHERE m.staff_id = ? AND s.status = 'ACTIVE'
