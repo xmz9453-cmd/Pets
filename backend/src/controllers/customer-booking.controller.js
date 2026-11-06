@@ -1,4 +1,5 @@
 const customerBookingService = require('../services/customer-booking.service');
+const bookingChangeService = require('../services/booking-change.service');
 
 async function send(res, handler) {
   try {
@@ -26,7 +27,16 @@ function listAvailability(req, res, next) {
 }
 
 function listRequests(req, res, next) {
-  send(res, () => customerBookingService.listRequests()).catch(next);
+  send(res, () => bookingChangeService.listCustomerRequests()).catch(next);
+}
+
+async function createBookingChangeRequest(req, res, next) {
+  try {
+    const result = await bookingChangeService.createCustomerChangeRequest(req.params.id, req.body || {});
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
 }
 
 function getOnboardingToken(req, res, next) {
@@ -44,6 +54,7 @@ async function createBookingRequest(req, res, next) {
 
 module.exports = {
   createBookingRequest,
+  createBookingChangeRequest,
   getOnboardingToken,
   listAvailability,
   listPets,

@@ -116,6 +116,51 @@ body {
   padding: 30px clamp(20px, 3.2vw, 48px);
 }
 
+.app-topbar {
+  display: flex;
+  justify-content: flex-end;
+  margin: -10px 0 18px;
+}
+
+.app-notification-menu {
+  position: relative;
+  z-index: 1040;
+}
+
+.app-notification-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(390px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--warm-border);
+  border-radius: 12px;
+  background: var(--warm-surface);
+  box-shadow: var(--warm-shadow);
+}
+
+.app-notification-list {
+  display: grid;
+  gap: 6px;
+}
+
+.app-notification-item {
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--warm-text);
+  text-align: left;
+}
+
+.app-notification-item:hover,
+.app-notification-item.unread {
+  background: var(--warm-sand);
+}
+
 .app-main h1 {
   color: var(--warm-text);
   font-size: clamp(1.65rem, 2.4vw, 2.1rem);

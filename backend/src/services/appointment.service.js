@@ -23,6 +23,13 @@ function createNotFoundError(code, message) {
   return error;
 }
 
+function createConflictError(code, message) {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.code = code;
+  return error;
+}
+
 function normalizeTime(value) {
   if (value === undefined || value === null || value === '') {
     return null;
@@ -1042,6 +1049,153 @@ async function updateAppointment(appointmentId, payload = {}) {
   });
 }
 
+async function reviewBookingChangeRequest(requestIdValue, payload = {}, staffId) {
+  const requestId = Number(requestIdValue);
+  if (!Number.isInteger(requestId) || requestId <= 0) {
+    throw createNotFoundError('BOOKING_CHANGE_REQUEST_NOT_FOUND', '找不到改期或取消申請。');
+  }
+  const decision = String(payload.decision || '').toUpperCase();
+  if (!['APPROVE', 'REJECT'].includes(decision)) {
+    throw createValidationError({ decision: '請選擇同意或駁回。' });
+  }
+  const staffNote = payload.staff_note === undefined || payload.staff_note === null
+    ? null
+    : String(payload.staff_note).trim();
+  if (staffNote && staffNote.length > 500) {
+    throw createValidationError({ staff_note: '審核備註不可超過 500 個字元。' });
+  }
+
+  return withTransaction(async (connection) => {
+    const [requestReferences] = await connection.query(
+      `SELECT appointment_id FROM booking_change_requests
+       WHERE id = ? AND shop_id = ? LIMIT 1`,
+      [requestId, getCurrentShopId()],
+    );
+    if (!requestReferences.length) {
+      throw createNotFoundError('BOOKING_CHANGE_REQUEST_NOT_FOUND', '找不到改期或取消申請。');
+    }
+    const appointmentId = Number(requestReferences[0].appointment_id);
+    const [appointments] = await connection.query(
+      `SELECT a.id, a.status, a.appointment_date, a.appointment_time,
+              brd.service_type, brd.requested_check_out, do.status AS operation_status,
+              EXISTS (
+                SELECT 1 FROM orders o
+                WHERE o.shop_id = a.shop_id AND o.appointment_id = a.id AND o.status = 'PAID'
+              ) AS has_completed_order
+       FROM appointments a
+       INNER JOIN booking_request_details brd
+         ON brd.appointment_id = a.id AND brd.shop_id = a.shop_id
+       LEFT JOIN daily_operations do
+         ON do.appointment_id = a.id AND do.shop_id = a.shop_id
+       WHERE a.id = ? AND a.shop_id = ?
+       LIMIT 1 FOR UPDATE`,
+      [appointmentId, getCurrentShopId()],
+    );
+    const appointment = appointments[0];
+    const [requests] = await connection.query(
+      `SELECT * FROM booking_change_requests
+       WHERE id = ? AND shop_id = ? AND appointment_id = ?
+       LIMIT 1 FOR UPDATE`,
+      [requestId, getCurrentShopId(), appointmentId],
+    );
+    const changeRequest = requests[0];
+    if (!appointment || !changeRequest) {
+      throw createNotFoundError('BOOKING_CHANGE_REQUEST_NOT_FOUND', '找不到改期或取消申請。');
+    }
+    if (changeRequest.status !== 'PENDING') {
+      throw createConflictError('BOOKING_CHANGE_ALREADY_REVIEWED', '此申請已完成審核。');
+    }
+    if (!['SCHEDULED', 'CONFIRMED'].includes(appointment.status)
+      || (appointment.operation_status && appointment.operation_status !== 'SCHEDULED')
+      || Boolean(appointment.has_completed_order)) {
+      throw createConflictError('BOOKING_CHANGE_NOT_ALLOWED', '預約已進入服務流程或已完成結帳，無法再核准改期或取消。');
+    }
+
+    if (decision === 'REJECT') {
+      await connection.query(
+        `UPDATE booking_change_requests
+         SET status = 'REJECTED', staff_note = ?, reviewed_by_staff_id = ?, reviewed_at = UTC_TIMESTAMP()
+         WHERE id = ? AND shop_id = ?`,
+        [staffNote, staffId, requestId, getCurrentShopId()],
+      );
+    } else {
+      const currentDate = appointment.appointment_date instanceof Date
+        ? appointment.appointment_date.toISOString().slice(0, 10)
+        : String(appointment.appointment_date).slice(0, 10);
+      const currentTime = String(appointment.appointment_time).slice(0, 8);
+      if (currentDate !== String(changeRequest.original_appointment_date).slice(0, 10)
+        || currentTime !== String(changeRequest.original_appointment_time).slice(0, 8)) {
+        throw createConflictError('BOOKING_CHANGE_STALE', '預約時間已被其他操作變更，請重新確認後再審核。');
+      }
+
+      if (changeRequest.request_type === 'CANCEL') {
+        await appointmentRepository.updateAppointment(appointmentId, { status: 'CANCELLED' }, connection);
+        await connection.query(
+          'DELETE FROM appointment_resource_assignments WHERE shop_id = ? AND appointment_id = ?',
+          [getCurrentShopId(), appointmentId],
+        );
+        await releaseBookingProducts(appointmentId, connection);
+      } else {
+        const proposedDate = String(changeRequest.proposed_appointment_date).slice(0, 10);
+        const proposedTime = String(changeRequest.proposed_appointment_time).slice(0, 8);
+        const proposedCheckOut = changeRequest.proposed_check_out;
+        const proposedCheckOutValue = proposedCheckOut instanceof Date
+          ? toSqlDateTime(proposedCheckOut)
+          : proposedCheckOut ? String(proposedCheckOut).replace('T', ' ').slice(0, 19) : null;
+        if (proposedDate === currentDate && proposedTime === currentTime
+          && proposedCheckOutValue === (appointment.requested_check_out
+            ? String(appointment.requested_check_out).replace('T', ' ').slice(0, 19)
+            : null)) {
+          throw createValidationError({ proposed_appointment_date: '新時段與目前預約相同。' });
+        }
+        await connection.query(
+          `UPDATE appointments SET appointment_date = ?, appointment_time = ?
+           WHERE id = ? AND shop_id = ?`,
+          [proposedDate, proposedTime, appointmentId, getCurrentShopId()],
+        );
+        await connection.query(
+          `UPDATE booking_request_details SET requested_check_out = ?
+           WHERE appointment_id = ? AND shop_id = ?`,
+          [proposedCheckOutValue, appointmentId, getCurrentShopId()],
+        );
+        await connection.query(
+          `UPDATE boardings SET expected_check_in = TIMESTAMP(?, ?), expected_check_out = ?
+           WHERE appointment_id = ? AND shop_id = ? AND status = 'PENDING'`,
+          [proposedDate, proposedTime, proposedCheckOutValue, appointmentId, getCurrentShopId()],
+        );
+        await connection.query(
+          'DELETE FROM appointment_resource_assignments WHERE shop_id = ? AND appointment_id = ?',
+          [getCurrentShopId(), appointmentId],
+        );
+        await connection.query(
+          `UPDATE daily_operations SET responsible_staff_id = NULL
+           WHERE appointment_id = ? AND shop_id = ? AND status = 'SCHEDULED'`,
+          [appointmentId, getCurrentShopId()],
+        );
+        await prepareAcceptedBookingRequest(appointmentId, connection);
+      }
+      await connection.query(
+        `UPDATE booking_change_requests
+         SET status = 'APPROVED', staff_note = ?, reviewed_by_staff_id = ?, reviewed_at = UTC_TIMESTAMP()
+         WHERE id = ? AND shop_id = ?`,
+        [staffNote, staffId, requestId, getCurrentShopId()],
+      );
+    }
+
+    await connection.query(
+      `UPDATE shop_notifications SET read_at = COALESCE(read_at, UTC_TIMESTAMP())
+       WHERE shop_id = ? AND booking_change_request_id = ?`,
+      [getCurrentShopId(), requestId],
+    );
+    return {
+      request: {
+        id: requestId,
+        status: decision === 'APPROVE' ? 'APPROVED' : 'REJECTED',
+      },
+    };
+  });
+}
+
 async function deleteAppointment(appointmentId) {
   const normalizedAppointmentId = Number(appointmentId);
   if (!Number.isInteger(normalizedAppointmentId) || normalizedAppointmentId <= 0) {
@@ -1057,5 +1211,6 @@ module.exports = {
   deleteAppointment,
   getAppointmentById,
   listAppointments,
+  reviewBookingChangeRequest,
   updateAppointment,
 };

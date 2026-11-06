@@ -18,6 +18,7 @@ router.get('/public/member/products', publicShopContext, requireCustomerAuthenti
 router.get('/public/member/availability', publicShopContext, requireCustomerAuthentication, customerBookingController.listAvailability);
 router.get('/public/member/requests', publicShopContext, requireCustomerAuthentication, customerBookingController.listRequests);
 router.get('/public/member/requests/:id/onboarding', publicShopContext, requireCustomerAuthentication, customerBookingController.getOnboardingToken);
+router.post('/public/member/requests/:id/changes', publicShopContext, requireCustomerAuthentication, customerBookingController.createBookingChangeRequest);
 router.post('/public/member/requests', publicShopContext, requireCustomerAuthentication, customerBookingController.createBookingRequest);
 
 module.exports = router;

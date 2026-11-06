@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import {
   createCustomerBookingRequest,
+  createCustomerBookingChangeRequest,
   getCustomerBookingAvailability,
   getCustomerBookingOnboardingToken,
   getCustomerBookingPets,
@@ -76,6 +77,12 @@ export default function BookingPage() {
   const [busy, setBusy] = useState(false);
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [submittedRequest, setSubmittedRequest] = useState(null);
+  const [changeRequestAppointmentId, setChangeRequestAppointmentId] = useState(null);
+  const [proposedChangeDate, setProposedChangeDate] = useState('');
+  const [proposedChangeTime, setProposedChangeTime] = useState('');
+  const [proposedCheckOutDate, setProposedCheckOutDate] = useState('');
+  const [proposedCheckOutTime, setProposedCheckOutTime] = useState('');
+  const [changeNote, setChangeNote] = useState('');
 
   const selectedPet = pets.find((pet) => String(pet.id) === petId);
   const selectedSpecies = selectedPet?.species || species;
@@ -225,6 +232,49 @@ export default function BookingPage() {
     }
   }
 
+  function beginReschedule(request) {
+    setChangeRequestAppointmentId(request.appointment_id);
+    setProposedChangeDate(request.appointment_date);
+    setProposedChangeTime(String(request.appointment_time).slice(0, 5));
+    setProposedCheckOutDate(request.requested_check_out ? String(request.requested_check_out).slice(0, 10) : '');
+    setProposedCheckOutTime(request.requested_check_out ? String(request.requested_check_out).slice(11, 16) : '');
+    setChangeNote('');
+    setError('');
+  }
+
+  async function submitChangeRequest(event, request, requestType) {
+    event.preventDefault();
+    if (requestType === 'CANCEL'
+      && !window.confirm('確定要向店家提出取消這筆預約的申請嗎？店家審核前，原預約仍維持有效。')) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await createCustomerBookingChangeRequest(request.appointment_id, {
+        request_type: requestType,
+        customer_note: requestType === 'RESCHEDULE' ? changeNote : null,
+        ...(requestType === 'RESCHEDULE' ? {
+          proposed_appointment_date: proposedChangeDate,
+          proposed_appointment_time: proposedChangeTime,
+          ...(request.service_type === 'BOARDING' ? {
+            proposed_check_out_date: proposedCheckOutDate,
+            proposed_check_out_time: proposedCheckOutTime,
+          } : {}),
+        } : {}),
+      }, shopId);
+      const result = await getCustomerBookingRequests(shopId);
+      setRequests(result.requests || []);
+      setChangeRequestAppointmentId(null);
+      setMessage(requestType === 'CANCEL'
+        ? '取消申請已送出。店家審核前，原預約仍維持有效。'
+        : '改期申請已送出。店家審核前，原預約仍維持有效。');
+    } catch (changeError) {
+      setError(changeError.message || '無法送出預約變更申請，請稍後再試。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleLogout() {
     try {
       await logoutCustomerMember(shopId);
@@ -243,7 +293,7 @@ export default function BookingPage() {
         <div className="col-12 col-lg-9">
           <h1 className="text-center mb-4">會員預約</h1>
           <div className="alert alert-info" role="note">
-            送出的是預約申請，時段尚未保留，需店家確認。加購商品也需店家確認庫存，請於到店時付款。取消或改期請聯絡店家。
+            預約改期或取消可在此提出申請；店家審核前，原預約仍維持有效。新預約申請需店家確認，時段尚未保留；加購商品也需店家確認庫存，請於到店時付款。
           </div>
           {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
           {message ? <div className="alert alert-info" role="status" aria-live="polite">{message}</div> : null}
@@ -548,9 +598,71 @@ export default function BookingPage() {
                               補齊資料與簽署契約
                             </button>
                           ) : null}
-                          {['CANCELLED', 'SCHEDULED', 'CONFIRMED'].includes(request.status) ? (
-                            <small className="d-block text-muted">取消或改期請聯絡店家。</small>
+                          {request.latest_change_request ? (
+                            <div className={`alert ${request.latest_change_request.status === 'REJECTED' ? 'alert-warning' : 'alert-light'} border mt-2 mb-2`}>
+                              <strong>
+                                {request.latest_change_request.request_type === 'CANCEL' ? '取消' : '改期'}申請
+                                {request.latest_change_request.status === 'PENDING' ? '待店家審核' : request.latest_change_request.status === 'APPROVED' ? '已同意' : '未同意'}
+                              </strong>
+                              <div className="small">
+                                原時段：{request.latest_change_request.original_appointment_date} {String(request.latest_change_request.original_appointment_time).slice(0, 5)}
+                                {request.latest_change_request.original_check_out ? `（原退房 ${String(request.latest_change_request.original_check_out).slice(0, 16)}）` : ''}
+                                {request.latest_change_request.request_type === 'RESCHEDULE'
+                                  ? ` → ${request.latest_change_request.proposed_appointment_date} ${String(request.latest_change_request.proposed_appointment_time).slice(0, 5)}${request.latest_change_request.proposed_check_out ? `（新退房 ${String(request.latest_change_request.proposed_check_out).slice(0, 16)}）` : ''}`
+                                  : ''}
+                              </div>
+                              {request.latest_change_request.staff_note ? <div className="small">店家備註：{request.latest_change_request.staff_note}</div> : null}
+                            </div>
                           ) : null}
+                          {request.has_completed_order ? (
+                            <small className="d-block text-muted mt-2">本次服務已完成結帳，無法再提出改期或取消。</small>
+                          ) : null}
+                          {['SCHEDULED', 'CONFIRMED'].includes(request.status)
+                            && !request.has_completed_order
+                            && request.latest_change_request?.status !== 'PENDING' ? (
+                              <div className="mt-2">
+                                {changeRequestAppointmentId === request.appointment_id ? (
+                                  <form className="border rounded p-3" onSubmit={(event) => submitChangeRequest(event, request, 'RESCHEDULE')}>
+                                    <h3 className="h6">提出改期申請</h3>
+                                    <div className="row g-2">
+                                      <div className="col-sm-6">
+                                        <label className="form-label">新日期</label>
+                                        <input className="form-control" type="date" min={getToday()} required value={proposedChangeDate} onChange={(event) => setProposedChangeDate(event.target.value)} />
+                                      </div>
+                                      <div className="col-sm-6">
+                                        <label className="form-label">新時間</label>
+                                        <input className="form-control" type="time" required value={proposedChangeTime} onChange={(event) => setProposedChangeTime(event.target.value)} />
+                                      </div>
+                                      {request.service_type === 'BOARDING' ? (
+                                        <>
+                                          <div className="col-sm-6">
+                                            <label className="form-label">新退房日期</label>
+                                            <input className="form-control" type="date" min={proposedChangeDate || getToday()} required value={proposedCheckOutDate} onChange={(event) => setProposedCheckOutDate(event.target.value)} />
+                                          </div>
+                                          <div className="col-sm-6">
+                                            <label className="form-label">新退房時間</label>
+                                            <input className="form-control" type="time" required value={proposedCheckOutTime} onChange={(event) => setProposedCheckOutTime(event.target.value)} />
+                                          </div>
+                                        </>
+                                      ) : null}
+                                      <div className="col-12">
+                                        <label className="form-label">備註（選填）</label>
+                                        <textarea className="form-control" rows="2" maxLength={500} value={changeNote} onChange={(event) => setChangeNote(event.target.value)} />
+                                      </div>
+                                    </div>
+                                    <div className="d-flex gap-2 mt-3">
+                                      <button className="btn btn-primary btn-sm" type="submit" disabled={busy}>{busy ? '送出中...' : '送出改期申請'}</button>
+                                      <button className="btn btn-outline-secondary btn-sm" type="button" onClick={() => setChangeRequestAppointmentId(null)} disabled={busy}>取消</button>
+                                    </div>
+                                  </form>
+                                ) : (
+                                  <div className="d-flex gap-2">
+                                    <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => beginReschedule(request)}>提出改期</button>
+                                    <button type="button" className="btn btn-sm btn-outline-danger" disabled={busy} onClick={(event) => submitChangeRequest(event, request, 'CANCEL')}>提出取消</button>
+                                  </div>
+                                )}
+                              </div>
+                            ) : null}
                         </div>
                       ))}
                     </div>

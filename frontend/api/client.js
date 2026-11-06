@@ -263,6 +263,14 @@ export async function createCustomerBookingRequest(payload, shopId) {
   });
 }
 
+export async function createCustomerBookingChangeRequest(appointmentId, payload, shopId) {
+  return request(`/api/public/member/requests/${encodeURIComponent(appointmentId)}/changes`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    ...publicShopOptions(shopId),
+  });
+}
+
 export async function getCustomerBookingRequests(shopId) {
   return request('/api/public/member/requests', publicShopOptions(shopId));
 }
@@ -387,6 +395,35 @@ export async function getAppointments(params = {}) {
   });
   const query = search.toString();
   return request(`/api/appointments${query ? `?${query}` : ''}`);
+}
+
+export async function getBookingChangeRequests() {
+  return request('/api/booking-change-requests');
+}
+
+export async function reviewBookingChangeRequest(requestId, payload) {
+  return request(`/api/booking-change-requests/${encodeURIComponent(requestId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getShopNotifications() {
+  return request('/api/notifications');
+}
+
+export async function markShopNotificationRead(notificationId) {
+  return request(`/api/notifications/${encodeURIComponent(notificationId)}/read`, {
+    method: 'PATCH',
+    body: '{}',
+  });
+}
+
+export async function markAllShopNotificationsRead() {
+  return request('/api/notifications/read-all', {
+    method: 'POST',
+    body: '{}',
+  });
 }
 
 export async function getAppointment(appointmentId) {

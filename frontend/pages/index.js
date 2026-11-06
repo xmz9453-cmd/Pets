@@ -173,7 +173,7 @@ export default function Home() {
                   key={shop.id}
                 >
                   <span className="portal-shop-logo" aria-hidden="true">
-                    <PortalIcon name="paw" />
+                    {!shop.logo_url ? <PortalIcon name="paw" /> : null}
                     {shop.logo_url ? (
                       <img
                         src={`${API_BASE_URL}${shop.logo_url}`}

@@ -6,11 +6,13 @@ import {
   deleteAppointment,
   getAppointment,
   getAppointments,
+  getBookingChangeRequests,
   getCurrentStaff,
   getCustomers,
   getPets,
   getServices,
   updateAppointment,
+  reviewBookingChangeRequest,
 } from '../api/client';
 
 const EMPTY_FORM = {
@@ -41,6 +43,8 @@ export default function AppointmentsPage() {
   const [pets, setPets] = useState([]);
   const [services, setServices] = useState([]);
   const [appointments, setAppointments] = useState([]);
+  const [changeRequests, setChangeRequests] = useState([]);
+  const [reviewNotes, setReviewNotes] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -73,6 +77,12 @@ export default function AppointmentsPage() {
     setAppointments(result.appointments || []);
   }
 
+  async function refreshChangeRequests() {
+    if (!staff?.roles?.some((role) => ['OWNER', 'FRONT_DESK'].includes(role))) return;
+    const result = await getBookingChangeRequests();
+    setChangeRequests(result.requests || []);
+  }
+
   useEffect(() => {
     let active = true;
 
@@ -86,6 +96,10 @@ export default function AppointmentsPage() {
         setStaff(currentStaff.staff);
         await loadCustomersAndPets();
         await refreshAppointments();
+        if (currentStaff.staff.roles?.some((role) => ['OWNER', 'FRONT_DESK'].includes(role))) {
+          const changeResult = await getBookingChangeRequests();
+          if (active) setChangeRequests(changeResult.requests || []);
+        }
       } catch (loadError) {
         if (active) {
           router.replace('/login');
@@ -283,17 +297,35 @@ export default function AppointmentsPage() {
     }
   }
 
-  async function handleCancelRequest(appointment) {
-    if (!window.confirm(`確定要取消申請編號 ${appointment.id} 嗎？已保留的資源與商品庫存會一併釋出。`)) return;
+  async function handleRejectBookingRequest(appointment) {
+    if (!window.confirm(`確定要拒絕預約申請編號 ${appointment.id} 嗎？`)) return;
     setSaving(true);
     setError('');
     setSuccess('');
     try {
       await updateAppointment(appointment.id, { status: 'CANCELLED' });
-      setSuccess('預約申請已取消，已保留的資源與商品庫存已釋出。');
+      setSuccess('預約申請已拒絕。');
       await refreshAppointments();
     } catch (cancelError) {
-      setError(cancelError.message || '無法取消此預約申請。');
+      setError(cancelError.message || '無法拒絕此預約申請。');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleReviewChangeRequest(request, decision) {
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await reviewBookingChangeRequest(request.id, {
+        decision,
+        staff_note: reviewNotes[request.id] || '',
+      });
+      setSuccess(decision === 'APPROVE' ? '已同意客戶的預約變更申請。' : '已駁回客戶的預約變更申請。');
+      await Promise.all([refreshChangeRequests(), refreshAppointments()]);
+    } catch (reviewError) {
+      setError(reviewError.message || '審核申請失敗，請重新確認預約時段。');
     } finally {
       setSaving(false);
     }
@@ -312,11 +344,57 @@ export default function AppointmentsPage() {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <div>
           <h1 className="mb-1">預約管理</h1>
-          <p className="text-muted mb-0">建立、維護預約，並確認客戶的線上預約申請。</p>
+          <p className="text-muted mb-0">線上新預約申請可在列表接受或拒絕；已確認預約的改期／取消，請在上方審核客戶申請。</p>
         </div>
       </div>
       {error ? <div className="alert alert-danger">{error}</div> : null}
       {success ? <div className="alert alert-success">{success}</div> : null}
+
+      {staff?.roles?.some((role) => ['OWNER', 'FRONT_DESK'].includes(role)) ? (
+        <section className="card shadow-sm mb-4" aria-labelledby="change-requests-title">
+          <div className="card-body">
+            <h2 className="h5 mb-3" id="change-requests-title">待審核的改期／取消申請</h2>
+            {!changeRequests.length ? <p className="text-muted mb-0">目前沒有待審核申請。</p> : (
+              <div className="list-group list-group-flush">
+                {changeRequests.map((request) => (
+                  <div className="list-group-item px-0" key={request.id}>
+                    <div className="d-flex flex-wrap justify-content-between gap-2">
+                      <strong>{request.customer_name}｜{request.pet_names || '寵物'}｜{request.request_type === 'CANCEL' ? '取消申請' : '改期申請'}</strong>
+                      <span className="text-muted">
+                        原預約：{request.original_appointment_date} {String(request.original_appointment_time).slice(0, 5)}
+                        {request.original_check_out ? `（原退房 ${String(request.original_check_out).slice(0, 16)}）` : ''}
+                      </span>
+                    </div>
+                    {request.request_type === 'RESCHEDULE' ? (
+                      <p className="mb-1">希望改為：{request.proposed_appointment_date} {String(request.proposed_appointment_time).slice(0, 5)}
+                        {request.proposed_check_out ? `（退房 ${String(request.proposed_check_out).slice(0, 16)}）` : ''}
+                      </p>
+                    ) : null}
+                    {request.customer_note ? <p className="small text-muted mb-2">客戶備註：{request.customer_note}</p> : null}
+                    <div className="d-flex flex-wrap gap-2 mt-2">
+                      <input
+                        className="form-control form-control-sm"
+                        style={{ maxWidth: 360 }}
+                        maxLength={500}
+                        aria-label="審核備註"
+                        placeholder="審核備註（選填）"
+                        value={reviewNotes[request.id] || ''}
+                        onChange={(event) => setReviewNotes((current) => ({ ...current, [request.id]: event.target.value }))}
+                      />
+                      <button type="button" className="btn btn-sm btn-primary" disabled={saving} onClick={() => handleReviewChangeRequest(request, 'APPROVE')}>
+                        同意
+                      </button>
+                      <button type="button" className="btn btn-sm btn-outline-danger" disabled={saving} onClick={() => handleReviewChangeRequest(request, 'REJECT')}>
+                        駁回
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
 
       <div className="row g-4">
         <div className="col-lg-5">
@@ -500,14 +578,17 @@ export default function AppointmentsPage() {
                           <td>{appointment.pet_count || 0}</td>
                           <td className="text-end">
                             {appointment.service_type && appointment.status === 'PENDING' ? (
-                              <button type="button" className="btn btn-sm btn-primary" onClick={() => handleAcceptRequest(appointment)} disabled={saving}>
-                                接受申請
-                              </button>
+                              <>
+                                <button type="button" className="btn btn-sm btn-primary" onClick={() => handleAcceptRequest(appointment)} disabled={saving}>
+                                  接受申請
+                                </button>
+                                <button type="button" className="btn btn-sm btn-outline-danger ms-1" onClick={() => handleRejectBookingRequest(appointment)} disabled={saving}>
+                                  拒絕申請
+                                </button>
+                              </>
                             ) : null}
-                            {appointment.service_type && appointment.status !== 'CANCELLED' ? (
-                              <button type="button" className="btn btn-sm btn-outline-danger ms-1" onClick={() => handleCancelRequest(appointment)} disabled={saving}>
-                                取消申請
-                              </button>
+                            {appointment.service_type && ['SCHEDULED', 'CONFIRMED'].includes(appointment.status) ? (
+                              <span className="small text-muted">改期／取消申請由上方審核</span>
                             ) : null}
                             {!appointment.service_type ? (
                               <>

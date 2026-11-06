@@ -1,8 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import '../styles/globals.css';
-import { getCurrentStaff, logout } from '../api/client';
+import {
+  getCurrentStaff,
+  getShopNotifications,
+  logout,
+  markAllShopNotificationsRead,
+  markShopNotificationRead,
+} from '../api/client';
 
 const NAV_ITEMS = [
   { href: '/customers', label: '客戶', icon: 'user', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
@@ -43,6 +49,13 @@ function AppShell({ Component, pageProps }) {
   const [selectedShopId, setSelectedShopId] = useState('');
   const [shopName, setShopName] = useState('店家');
   const [error, setError] = useState('');
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationError, setNotificationError] = useState('');
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const previousUnreadCount = useRef(null);
+  const audioContextRef = useRef(null);
 
   const shouldShowNav = !['/', '/login', '/forgot-password', '/onboarding/[token]', '/booking'].includes(router.pathname);
   const visibleNavItems = NAV_ITEMS.filter((item) =>
@@ -81,6 +94,103 @@ function AppShell({ Component, pageProps }) {
       active = false;
     };
   }, [router.pathname, shouldShowNav]);
+
+  useEffect(() => {
+    setSoundEnabled(window.localStorage.getItem('psop.notificationSound') === 'enabled');
+  }, []);
+
+  useEffect(() => {
+    if (!shouldShowNav || !staff) return undefined;
+    let active = true;
+
+    async function refreshNotifications() {
+      try {
+        const result = await getShopNotifications();
+        if (!active) return;
+        const nextCount = Number(result.unread_count || 0);
+        if (previousUnreadCount.current !== null
+          && nextCount > previousUnreadCount.current
+          && window.localStorage.getItem('psop.notificationSound') === 'enabled') {
+          playNotificationSound().catch((soundError) => {
+            setNotificationError(soundError.message || '通知提示音無法播放。');
+          });
+        }
+        previousUnreadCount.current = nextCount;
+        setNotifications(result.notifications || []);
+        setUnreadCount(nextCount);
+        setNotificationError('');
+      } catch (notificationLoadError) {
+        if (active) setNotificationError(notificationLoadError.message || '通知載入失敗，請稍後重試。');
+      }
+    }
+
+    refreshNotifications();
+    const timer = window.setInterval(refreshNotifications, 30000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [router.pathname, shouldShowNav, staff]);
+
+  async function playNotificationSound() {
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextConstructor) {
+      throw new Error('此瀏覽器不支援通知提示音。');
+    }
+    if (!audioContextRef.current) audioContextRef.current = new AudioContextConstructor();
+    const audio = audioContextRef.current;
+    await audio.resume();
+    const startAt = audio.currentTime;
+    [880, 660].forEach((frequency, index) => {
+      const oscillator = audio.createOscillator();
+      const gain = audio.createGain();
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, startAt + index * 0.18);
+      gain.gain.exponentialRampToValueAtTime(0.16, startAt + index * 0.18 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startAt + index * 0.18 + 0.16);
+      oscillator.connect(gain);
+      gain.connect(audio.destination);
+      oscillator.start(startAt + index * 0.18);
+      oscillator.stop(startAt + index * 0.18 + 0.17);
+    });
+  }
+
+  function toggleNotificationSound() {
+    const nextEnabled = !soundEnabled;
+    setSoundEnabled(nextEnabled);
+    window.localStorage.setItem('psop.notificationSound', nextEnabled ? 'enabled' : 'disabled');
+    if (nextEnabled) {
+      playNotificationSound().catch((soundError) => {
+        setNotificationError(soundError.message || '通知提示音無法播放。');
+      });
+    }
+  }
+
+  async function openNotification(notification) {
+    try {
+      if (!notification.read_at) {
+        await markShopNotificationRead(notification.id);
+        setUnreadCount((count) => Math.max(0, count - 1));
+        setNotifications((current) => current.map((item) => item.id === notification.id
+          ? { ...item, read_at: new Date().toISOString() }
+          : item));
+      }
+      setNotificationsOpen(false);
+      await router.push('/appointments');
+    } catch (notificationActionError) {
+      setNotificationError(notificationActionError.message || '無法開啟通知，請稍後重試。');
+    }
+  }
+
+  async function markAllRead() {
+    try {
+      await markAllShopNotificationsRead();
+      setUnreadCount(0);
+      setNotifications((current) => current.map((item) => ({ ...item, read_at: item.read_at || new Date().toISOString() })));
+    } catch (notificationActionError) {
+      setNotificationError(notificationActionError.message || '無法將通知標記為已讀。');
+    }
+  }
 
   async function handleLogout() {
     try {
@@ -150,6 +260,55 @@ function AppShell({ Component, pageProps }) {
             </div>
           </aside>
           <div className="app-main">
+            <div className="app-topbar">
+              <div className="app-notification-menu">
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary position-relative"
+                  aria-expanded={notificationsOpen}
+                  aria-label={`通知${unreadCount ? `，${unreadCount} 則未讀` : ''}`}
+                  onClick={() => setNotificationsOpen((open) => !open)}
+                >
+                  通知
+                  {unreadCount ? <span className="badge rounded-pill bg-danger ms-2">{unreadCount}</span> : null}
+                </button>
+                {notificationsOpen ? (
+                  <section className="app-notification-panel" aria-label="通知中心">
+                    <div className="d-flex justify-content-between align-items-center gap-2 mb-2">
+                      <strong>通知中心</strong>
+                      <button type="button" className="btn btn-link btn-sm p-0" onClick={markAllRead} disabled={!unreadCount}>全部標記已讀</button>
+                    </div>
+                    <label className="form-check form-switch small mb-2">
+                      <input className="form-check-input" type="checkbox" checked={soundEnabled} onChange={toggleNotificationSound} />
+                      <span className="form-check-label">新通知提示音</span>
+                    </label>
+                    {notificationError ? <div className="alert alert-danger py-2 small">{notificationError}</div> : null}
+                    {!notifications.length ? <p className="small text-muted mb-0">目前沒有通知。</p> : (
+                      <div className="app-notification-list">
+                        {notifications.map((notification) => (
+                          <button
+                            type="button"
+                            key={notification.id}
+                            className={`app-notification-item${notification.read_at ? '' : ' unread'}`}
+                            onClick={() => openNotification(notification)}
+                          >
+                            <span className="d-block fw-semibold">
+                              {notification.customer_name}提出{notification.request_type === 'CANCEL' ? '取消' : '改期'}申請
+                            </span>
+                            <span className="d-block small text-muted">
+                              {notification.original_appointment_date} {notification.original_appointment_time}
+                              {notification.request_type === 'RESCHEDULE' && notification.proposed_appointment_date
+                                ? ` → ${notification.proposed_appointment_date} ${notification.proposed_appointment_time}`
+                                : ''}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                ) : null}
+              </div>
+            </div>
             {error ? (
               <div className="alert alert-warning" role="alert">{error}</div>
             ) : null}

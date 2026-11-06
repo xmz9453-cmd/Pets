@@ -359,20 +359,6 @@ async function createBookingRequest(payload = {}) {
   }
 }
 
-async function listRequests() {
-  const memberId = getCurrentCustomerMemberId();
-  const [rows] = await getPool().query(
-    `SELECT a.id AS appointment_id, a.appointment_date, a.appointment_time, a.status,
-            brd.service_type, brd.requested_check_out
-     FROM booking_request_details brd
-     INNER JOIN appointments a ON a.id = brd.appointment_id AND a.shop_id = brd.shop_id
-     WHERE brd.shop_id = ? AND brd.customer_member_id = ?
-     ORDER BY a.created_at DESC`,
-    [getCurrentShopId(), memberId],
-  );
-  return { requests: rows.map((row) => ({ ...row, appointment_id: Number(row.appointment_id) })) };
-}
-
 async function getOnboardingToken(appointmentIdValue) {
   const appointmentId = Number(appointmentIdValue);
   if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
@@ -410,6 +396,5 @@ module.exports = {
   listAvailability,
   listPets,
   listProducts,
-  listRequests,
   listServices,
 };
