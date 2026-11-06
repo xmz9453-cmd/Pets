@@ -155,7 +155,7 @@ describe('Grooming API', () => {
     expect(updateResponse.body.data.note).toContain('已完成耳部清潔');
   });
 
-  test('allows grooming execution during active work and rejects new execution after completion', async () => {
+  test('allows grooming execution during active work and notes to be added after completion', async () => {
     const { agent } = await loginAsOwner();
     const customer = await createCustomer(agent, { name: 'Grooming Lifecycle Client', phone: '0912-555-778' });
     const customerId = customer.body.data.customer.id;
@@ -182,17 +182,18 @@ describe('Grooming API', () => {
     const inProgressGrooming = await agent.post('/api/groomings').send({ daily_operation_id: dailyOperationId, pet_id: pets[1] });
     expect(inProgressGrooming.status).toBe(201);
 
-    const completed = await agent.patch(`/api/groomings/${checkedInGrooming.body.data.id}`).send({
-      before_condition: '良好',
-      actual_grooming_content: '洗澡與修剪',
-      grooming_result: '完成',
-    });
-    expect(completed.status).toBe(200);
     expect((await agent.post(`/api/groomings/${checkedInGrooming.body.data.id}/complete`)).status).toBe(200);
 
     const blocked = await agent.post('/api/groomings').send({ daily_operation_id: dailyOperationId, pet_id: pets[2] });
-    expect(blocked.status).toBe(400);
-    expect(blocked.body.error.code).toBe('VALIDATION_ERROR');
-    expect(blocked.body.error.fields.status).toContain('COMPLETED');
+    expect(blocked.status).toBe(201);
+    expect(blocked.body.data.before_condition).toBeNull();
+    const lateNotes = await agent.patch(`/api/groomings/${blocked.body.data.id}`).send({
+      before_condition: '美容前狀況',
+      actual_grooming_content: '實際美容內容',
+      grooming_result: '美容後結果',
+      note: '客人離店後補登',
+    });
+    expect(lateNotes.status).toBe(200);
+    expect(lateNotes.body.data.note).toBe('客人離店後補登');
   });
 });

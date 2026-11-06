@@ -76,6 +76,21 @@ export async function getPublicPortalBackground() {
   return request('/api/public/portal-background');
 }
 
+export async function getPublicPortalSettings() {
+  return request('/api/public/portal-settings');
+}
+
+export async function getPortalSettings() {
+  return request('/api/portal-settings');
+}
+
+export async function updatePortalSettings(settings) {
+  return request('/api/portal-settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
 export async function getPortalBackgrounds() {
   return request('/api/portal-backgrounds');
 }
@@ -199,43 +214,6 @@ export async function createPublicOnboarding(shopId) {
   return request('/api/public/onboardings', { method: 'POST', body: '{}', ...publicShopOptions(shopId) });
 }
 
-export async function requestPublicBookingOtp(phone, shopId) {
-  return request('/api/public/booking/otp', {
-    method: 'POST',
-    body: JSON.stringify({ phone }),
-    ...publicShopOptions(shopId),
-  });
-}
-
-export async function verifyPublicBookingOtp(phone, code, shopId) {
-  return request('/api/public/booking/otp/verify', {
-    method: 'POST',
-    body: JSON.stringify({ phone, code }),
-    ...publicShopOptions(shopId),
-  });
-}
-
-export async function getPublicBookingPets(shopId) {
-  return request('/api/public/booking/pets', publicShopOptions(shopId));
-}
-
-export async function getPublicBookingServices(petId, shopId) {
-  return request(`/api/public/booking/services?pet_id=${encodeURIComponent(petId)}`, publicShopOptions(shopId));
-}
-
-export async function getPublicBookingAvailability(filters, shopId) {
-  const query = new URLSearchParams(filters).toString();
-  return request(`/api/public/booking/availability?${query}`, publicShopOptions(shopId));
-}
-
-export async function createPublicBookingRequest(payload, shopId) {
-  return request('/api/public/booking/requests', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-    ...publicShopOptions(shopId),
-  });
-}
-
 export async function getCustomerMemberProviders() {
   return request('/api/public/member/providers');
 }
@@ -327,7 +305,10 @@ export async function resolveOnboardingPet(token, payload) {
 }
 
 export async function submitPublicOnboarding(token, signaturePng) {
-  return request(publicOnboardingPath(token, '/submit'), { method: 'POST', body: JSON.stringify({ signature_png: signaturePng }) });
+  return request(publicOnboardingPath(token, '/submit'), {
+    method: 'POST',
+    body: JSON.stringify(signaturePng ? { signature_png: signaturePng } : {}),
+  });
 }
 
 export async function getPets(params = {}) {

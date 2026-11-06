@@ -20,6 +20,7 @@ const publicBookingRoutes = require('./routes/public-booking.routes');
 const customerMemberRoutes = require('./routes/customer-member.routes');
 const shopsRoutes = require('./routes/shops.routes');
 const portalBackgroundsRoutes = require('./routes/portal-backgrounds.routes');
+const portalSettingsRoutes = require('./routes/portal-settings.routes');
 const { errorHandler } = require('./middleware/error-handler');
 const { requestContext } = require('./utils/shop-context');
 
@@ -37,6 +38,7 @@ app.use('/api', healthRoutes);
 app.use('/api', authRoutes);
 app.use('/api', shopsRoutes);
 app.use('/api', portalBackgroundsRoutes);
+app.use('/api', portalSettingsRoutes);
 app.use('/api', petRoutes);
 app.use('/api', customerRoutes);
 app.use('/api', appointmentRoutes);

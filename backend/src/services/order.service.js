@@ -103,15 +103,12 @@ async function validateAppointmentServiceItems(appointmentId, items, connection)
          FROM appointment_pets ap
          INNER JOIN appointment_pet_services aps ON aps.appointment_pet_id = ap.id AND aps.shop_id = ap.shop_id
          INNER JOIN daily_operations d ON d.appointment_id = ap.appointment_id AND d.shop_id = ap.shop_id
-         INNER JOIN groomings g ON g.daily_operation_id = d.id AND g.pet_id = ap.pet_id AND g.shop_id = d.shop_id
          WHERE ap.appointment_id = ? AND ap.shop_id = ?
            AND ap.pet_id = ?
+           AND aps.service_id = ?
            AND d.status = 'COMPLETED'
-           AND g.before_condition IS NOT NULL
-           AND g.actual_grooming_content IS NOT NULL
-           AND g.grooming_result IS NOT NULL
          LIMIT 1`,
-        [appointmentId, getCurrentShopId(), petId],
+        [appointmentId, getCurrentShopId(), petId, serviceId],
       );
     } else if (service.type === 'BOARDING') {
       [completedRows] = await connection.query(

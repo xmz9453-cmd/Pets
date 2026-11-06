@@ -70,20 +70,30 @@ async function createStaffWithRole(roleCode) {
   return { username, password: 'onboarding-test-password' };
 }
 
-async function createCurrentContract() {
+async function createCurrentContract(serviceType = 'GENERAL') {
   const storageKey = contractPdfStorage.createStorageKey();
   const tempPath = await contractPdfStorage.writeTemporaryFile(pdfBytes);
   await contractPdfStorage.moveTemporaryFile(tempPath, storageKey);
   const [result] = await getPool().query(
     `INSERT INTO contract_versions
-     (shop_id, version_label, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
-     VALUES (1, ?, 'PUBLISHED', TRUE, 'onboarding-contract.pdf', 'application/pdf', ?, ?, ?)`,
+     (shop_id, version_label, service_type, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
+     VALUES (1, ?, ?, 'PUBLISHED', TRUE, 'onboarding-contract.pdf', 'application/pdf', ?, ?, ?)`,
     [
       `Onboarding-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      serviceType,
       pdfBytes.length,
       storageKey,
       crypto.createHash('sha256').update(pdfBytes).digest('hex'),
     ],
+  );
+  return result.insertId;
+}
+
+async function createBoardingService() {
+  const [result] = await getPool().query(
+    `INSERT INTO services (shop_id, name, type, price, unit, species, duration_minutes, sort_order, status)
+     VALUES (1, ?, 'BOARDING', 1000, '晚', 'DOG', 60, 999, 'ACTIVE')`,
+    [`Onboarding boarding fixture ${crypto.randomBytes(4).toString('hex')}`],
   );
   return result.insertId;
 }
@@ -109,6 +119,7 @@ async function clearData() {
   await getPool().query('DELETE FROM pet_customer_relationships');
   await getPool().query('DELETE FROM pets');
   await getPool().query('DELETE FROM customers');
+  await getPool().query("DELETE FROM services WHERE name LIKE 'Onboarding boarding fixture %'");
   await getPool().query('DELETE FROM contract_versions');
   fs.rmSync(process.env.CONTRACT_STORAGE_ROOT, { recursive: true, force: true });
   fs.mkdirSync(process.env.CONTRACT_STORAGE_ROOT, { recursive: true });
@@ -120,7 +131,12 @@ async function createOnboarding(agent) {
   return response.body.data;
 }
 
-function onboardingPayload(phone, serviceId) {
+function onboardingPayload(phone, serviceId, serviceType = 'GROOMING') {
+  const appointment = { appointment_date: '2099-01-01', appointment_time: '10:30', service_id: String(serviceId) };
+  if (serviceType === 'BOARDING') {
+    appointment.check_out_date = '2099-01-02';
+    appointment.check_out_time = '12:00';
+  }
   return {
     customer: { name: 'Onboarding Customer', phone },
     pet: {
@@ -132,7 +148,7 @@ function onboardingPayload(phone, serviceId) {
       medical_history: ['其他'],
       other_history: '舊傷已痊癒',
     },
-    appointment: { appointment_date: '2099-01-01', appointment_time: '10:30', service_id: String(serviceId) },
+    appointment,
   };
 }
 
@@ -141,11 +157,22 @@ async function resolveNew(agent, token) {
   await agent.post(`/api/public/onboardings/${token}/pet-resolution`).send({ resolution: 'NEW' }).expect(200);
 }
 
-async function getServiceId() {
+async function resolveExistingCustomer(agent, token, phone) {
+  const search = await agent.get(`/api/public/onboardings/${token}/customers?q=${encodeURIComponent(phone)}`).expect(200);
+  const candidate = search.body.data.candidates.find((item) => item.phone === phone);
+  expect(candidate).toBeDefined();
+  await agent.post(`/api/public/onboardings/${token}/customer-resolution`)
+    .send({ resolution: 'EXISTING', candidate_key: candidate.key })
+    .expect(200);
+  await agent.post(`/api/public/onboardings/${token}/pet-resolution`).send({ resolution: 'NEW' }).expect(200);
+}
+
+async function getServiceId(serviceType = 'GROOMING') {
   const [rows] = await getPool().query(
     `SELECT id FROM services
-     WHERE status = 'ACTIVE' AND species IN ('DOG', 'BOTH')
+     WHERE status = 'ACTIVE' AND type = ? AND species IN ('DOG', 'BOTH')
      ORDER BY id LIMIT 1`,
+    [serviceType],
   );
   return Number(rows[0].id);
 }
@@ -377,7 +404,10 @@ describe('Electronic Contract Onboarding API', () => {
       resolution: 'EXISTING',
       candidate_key: key,
     }).expect(200);
-    expect(resolved.body.data).toEqual({ customer_resolution: 'EXISTING' });
+    expect(resolved.body.data).toEqual({
+      customer_resolution: 'EXISTING',
+      has_current_contract_signature: false,
+    });
     const petSearch = await agent.get(`/api/public/onboardings/${token}/pets?q=Candidate`).expect(200);
     expect(petSearch.body.data.candidates).toHaveLength(1);
     const petKey = petSearch.body.data.candidates[0].key;
@@ -452,6 +482,63 @@ describe('Electronic Contract Onboarding API', () => {
     const [[appointment]] = await getPool().query('SELECT status FROM appointments LIMIT 1');
     expect(appointment.status).toBe('PENDING');
     await agent.post(`/api/public/onboardings/${token}/submit`).send({ signature_png: signaturePng }).expect(410);
+  });
+
+  test('reuses a customer signature only for the same service contract version', async () => {
+    const agent = await loginAsOwner();
+    const groomingContractId = await createCurrentContract('GROOMING');
+    const boardingContractId = await createCurrentContract('BOARDING');
+    const boardingServiceId = await createBoardingService();
+    const phone = `09${crypto.randomInt(100000000, 999999999)}`;
+
+    const first = await createOnboarding(agent);
+    await getPool().query('UPDATE onboardings SET contract_version_id = ? WHERE id = ?', [groomingContractId, first.onboarding_id]);
+    await agent.put(`/api/public/onboardings/${first.token}`)
+      .send(onboardingPayload(phone, await getServiceId('GROOMING')))
+      .expect(200);
+    await resolveNew(agent, first.token);
+    await agent.post(`/api/public/onboardings/${first.token}/submit`).send({ signature_png: signaturePng }).expect(200);
+
+    const second = await createOnboarding(agent);
+    await getPool().query('UPDATE onboardings SET contract_version_id = ? WHERE id = ?', [groomingContractId, second.onboarding_id]);
+    await agent.put(`/api/public/onboardings/${second.token}`)
+      .send(onboardingPayload(phone, await getServiceId('GROOMING')))
+      .expect(200);
+    await resolveExistingCustomer(agent, second.token, phone);
+    const sameContract = await agent.get(`/api/public/onboardings/${second.token}`).expect(200);
+    expect(sameContract.body.data.onboarding.has_current_contract_signature).toBe(true);
+    await agent.post(`/api/public/onboardings/${second.token}/submit`).send({}).expect(200);
+
+    const [[groomingHistory]] = await getPool().query(
+      'SELECT COUNT(*) AS count FROM contract_history WHERE customer_id = (SELECT id FROM customers WHERE phone = ?)',
+      [phone],
+    );
+    expect(Number(groomingHistory.count)).toBe(1);
+
+    const boarding = await createOnboarding(agent);
+    await getPool().query('UPDATE onboardings SET contract_version_id = ? WHERE id = ?', [boardingContractId, boarding.onboarding_id]);
+    await agent.put(`/api/public/onboardings/${boarding.token}`)
+      .send(onboardingPayload(phone, boardingServiceId, 'BOARDING'))
+      .expect(200);
+    await resolveExistingCustomer(agent, boarding.token, phone);
+    const separateContract = await agent.get(`/api/public/onboardings/${boarding.token}`).expect(200);
+    expect(separateContract.body.data.contract.service_type).toBe('BOARDING');
+    expect(separateContract.body.data.onboarding.has_current_contract_signature).toBe(false);
+    const boardingResponse = await agent.post(`/api/public/onboardings/${boarding.token}/submit`).send({}).expect(400);
+    expect(boardingResponse.body.error.fields.signature).toBe('Signature is required');
+
+    await getPool().query('UPDATE contract_versions SET is_current = FALSE WHERE id = ?', [groomingContractId]);
+    const updatedGroomingContractId = await createCurrentContract('GROOMING');
+    const updated = await createOnboarding(agent);
+    await getPool().query('UPDATE onboardings SET contract_version_id = ? WHERE id = ?', [updatedGroomingContractId, updated.onboarding_id]);
+    await agent.put(`/api/public/onboardings/${updated.token}`)
+      .send(onboardingPayload(phone, await getServiceId('GROOMING')))
+      .expect(200);
+    await resolveExistingCustomer(agent, updated.token, phone);
+    const newVersion = await agent.get(`/api/public/onboardings/${updated.token}`).expect(200);
+    expect(newVersion.body.data.onboarding.has_current_contract_signature).toBe(false);
+    const updatedResponse = await agent.post(`/api/public/onboardings/${updated.token}/submit`).send({}).expect(400);
+    expect(updatedResponse.body.error.fields.signature).toBe('Signature is required');
   });
 
   test('rejects onboarding submission if its selected booking time is no longer available', async () => {

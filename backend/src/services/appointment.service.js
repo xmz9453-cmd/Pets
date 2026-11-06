@@ -708,8 +708,11 @@ async function createMemberOnboarding(appointmentId, connection) {
   const [rows] = await connection.query(
     `SELECT a.customer_id, a.appointment_date, a.appointment_time,
             brd.service_type, brd.requested_check_out, brd.customer_member_id,
-            c.name AS customer_name, c.phone AS customer_phone,
+            c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address,
+            c.line_id AS customer_line_account, c.id_card_number AS customer_id_number,
+            c.emergency_contact_name, c.emergency_contact_phone, c.note AS customer_note,
             p.id AS pet_id, p.name AS pet_name, p.species, p.gender, p.breed, p.weight,
+            p.chip_number, p.personality, p.medical_history, p.other_history, p.notes AS pet_note,
             aps.service_id
      FROM appointments a
      INNER JOIN booking_request_details brd
@@ -744,17 +747,27 @@ async function createMemberOnboarding(appointmentId, connection) {
     ? request.appointment_date.toISOString().slice(0, 10)
     : String(request.appointment_date).slice(0, 10);
   const appointmentTime = String(request.appointment_time).slice(0, 8);
-  const customerData = { name: request.customer_name, phone: request.customer_phone };
+  const customerData = {
+    name: request.customer_name,
+    phone: request.customer_phone,
+    address: request.customer_address || '',
+    line_account: request.customer_line_account || '',
+    id_number: request.customer_id_number || '',
+    emergency_contact: request.emergency_contact_name || '',
+    emergency_phone: request.emergency_contact_phone || '',
+    note: request.customer_note || '',
+  };
   const petData = {
     name: request.pet_name,
     species: request.species,
     gender: request.gender || 'UNKNOWN',
     breed: request.breed || '',
     weight: request.weight === null ? '' : String(request.weight),
-    personality: [],
-    medical_history: [],
-    other_history: '',
-    note: '',
+    chip_number: request.chip_number || '',
+    personality: request.personality || [],
+    medical_history: request.medical_history || [],
+    other_history: request.other_history || '',
+    note: request.pet_note || '',
   };
   const appointmentData = {
     appointment_date: appointmentDate,
@@ -762,6 +775,37 @@ async function createMemberOnboarding(appointmentId, connection) {
     service_id: Number(request.service_id),
     ...(checkOut ? { check_out_date: checkOut.slice(0, 10), check_out_time: checkOut.slice(11, 19) } : {}),
   };
+  const customerProfileComplete = [
+    customerData.name,
+    customerData.phone,
+    customerData.address,
+    customerData.emergency_contact,
+    customerData.emergency_phone,
+  ].every((value) => String(value || '').trim())
+    && /^[0-9][0-9\s\-()+.]{5,29}$/.test(customerData.phone)
+    && /^[0-9][0-9\s\-()+.]{5,29}$/.test(customerData.emergency_phone);
+  await connection.query(
+    'SELECT id FROM customers WHERE id = ? AND shop_id = ? LIMIT 1 FOR UPDATE',
+    [request.customer_id, getCurrentShopId()],
+  );
+  const [signedContracts] = await connection.query(
+    `SELECT ch.id
+     FROM contract_history ch
+     INNER JOIN onboardings o ON o.id = ch.onboarding_id AND o.shop_id = ch.shop_id
+     WHERE ch.shop_id = ? AND ch.customer_id = ? AND ch.contract_version_id = ?
+       AND o.status = 'COMPLETED'
+     LIMIT 1 FOR UPDATE`,
+    [getCurrentShopId(), request.customer_id, contracts[0].id],
+  );
+  if (customerProfileComplete && signedContracts.length) {
+    await connection.query(
+      `UPDATE appointments SET status = 'CONFIRMED'
+       WHERE id = ? AND shop_id = ? AND status = 'AWAITING_CUSTOMER'`,
+      [appointmentId, getCurrentShopId()],
+    );
+    return;
+  }
+
   const tokenHash = crypto.createHash('sha256').update(crypto.randomBytes(32)).digest('hex');
   const [onboarding] = await connection.query(
     `INSERT INTO onboardings

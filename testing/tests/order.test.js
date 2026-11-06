@@ -102,7 +102,7 @@ describe('Order API', () => {
     expect(response.status).toBe(400); expect(response.body.error.code).toBe('VALIDATION_ERROR');
   });
 
-  test('binds appointment grooming validation to the selected pet while allowing a different service', async () => {
+  test('allows appointment orders after work is complete without requiring grooming notes', async () => {
     const agent = await login(); const customerId = await createCustomer(agent);
     const petAResponse = await agent.post('/api/pets').send({ name: `Order Pet A ${customerSequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
     const petBResponse = await agent.post('/api/pets').send({ name: `Order Pet B ${customerSequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
@@ -122,17 +122,15 @@ describe('Order API', () => {
     const appointmentId = appointmentResponse.body.data.appointment.id;
     const [[operation]] = await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ? LIMIT 1', [appointmentId]);
     expect((await agent.post(`/api/operations/${operation.id}/check-in`)).status).toBe(200);
-    const groomingResponse = await agent.post('/api/groomings').send({ daily_operation_id: operation.id, pet_id: petAId, before_condition: '良好', actual_grooming_content: '洗澡與修剪', grooming_result: '完成' });
-    expect(groomingResponse.status).toBe(201);
-    expect((await agent.post(`/api/groomings/${groomingResponse.body.data.id}/complete`)).status).toBe(200);
+    expect((await agent.post(`/api/operations/${operation.id}/start-work`)).status).toBe(200);
+    expect((await agent.post(`/api/operations/${operation.id}/complete-work`)).status).toBe(200);
 
-    const wrongPetResponse = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: serviceId, pet_id: petBId, transaction_price: 1, quantity: 1 }] });
-    expect(wrongPetResponse.status).toBe(400);
+    const completedAppointmentPetResponse = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: serviceId, pet_id: petBId, transaction_price: 1, quantity: 1 }] });
+    expect(completedAppointmentPetResponse.status).toBe(201);
     const unrelatedPetResponse = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: serviceId, pet_id: petCId, transaction_price: 1, quantity: 1 }] });
     expect(unrelatedPetResponse.status).toBe(400);
     const wrongServiceResponse = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: unrelatedServiceId, pet_id: petAId, transaction_price: 1, quantity: 1 }] });
-    expect(wrongServiceResponse.status).toBe(201);
-    expect(wrongServiceResponse.body.data.order.items[0].transaction_price).toBe(1);
+    expect(wrongServiceResponse.status).toBe(400);
     const validResponse = await agent.post('/api/orders').send({ customer_id: customerId, source_type: 'APPOINTMENT', appointment_id: appointmentId, business_unit: 'DOG', items: [{ service_id: serviceId, pet_id: petAId, transaction_price: 1, quantity: 1 }] });
     expect(validResponse.status).toBe(201);
     expect(validResponse.body.data.order.items[0].pet_id).toBe(petAId);
@@ -155,8 +153,8 @@ describe('Order API', () => {
     const appointmentId = appointmentResponse.body.data.appointment.id;
     const [[operation]] = await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ? LIMIT 1', [appointmentId]);
     await agent.post(`/api/operations/${operation.id}/check-in`);
-    const groomingResponse = await agent.post('/api/groomings').send({ daily_operation_id: operation.id, pet_id: petId, before_condition: '良好', actual_grooming_content: '完成', grooming_result: '完成' });
-    await agent.post(`/api/groomings/${groomingResponse.body.data.id}/complete`);
+    await agent.post(`/api/operations/${operation.id}/start-work`);
+    await agent.post(`/api/operations/${operation.id}/complete-work`);
 
     const response = await agent.post('/api/orders').send({
       customer_id: customerId,
@@ -164,7 +162,7 @@ describe('Order API', () => {
       appointment_id: appointmentId,
       business_unit: 'DOG',
       items: [
-        { service_id: serviceRows[1].id, pet_id: petId, transaction_price: 1100, quantity: 2 },
+        { service_id: serviceRows[0].id, pet_id: petId, transaction_price: 1100, quantity: 2 },
         { product_id: productResponse.body.data.product.id, transaction_price: 1, quantity: 2 },
       ],
     });
@@ -278,8 +276,9 @@ describe('Order API', () => {
     expect(updateResponse.body.data.order.appointment_id).toBe(appointmentId);
     const [[stored]] = await getPool().query('SELECT source_type, appointment_id FROM orders WHERE id = ?', [created.body.data.order.id]);
     expect(stored.source_type).toBe('APPOINTMENT'); expect(Number(stored.appointment_id)).toBe(appointmentId);
-    const invalidPetUpdate = await agent.patch(`/api/orders/${created.body.data.order.id}`).send({ source_type: 'APPOINTMENT', appointment_id: appointmentId, customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, pet_id: secondPetResponse.body.data.pet.id, transaction_price: 100, quantity: 1 }] });
-    expect(invalidPetUpdate.status).toBe(400);
+    const completedAppointmentPetUpdate = await agent.patch(`/api/orders/${created.body.data.order.id}`).send({ source_type: 'APPOINTMENT', appointment_id: appointmentId, customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, pet_id: secondPetResponse.body.data.pet.id, transaction_price: 100, quantity: 1 }] });
+    expect(completedAppointmentPetUpdate.status).toBe(200);
+    expect(completedAppointmentPetUpdate.body.data.order.items[0].pet_id).toBe(secondPetResponse.body.data.pet.id);
   });
 
   test('deletes a pure unpaid walk-in order without deleting its customer', async () => {

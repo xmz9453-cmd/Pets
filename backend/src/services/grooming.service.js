@@ -127,8 +127,8 @@ async function createGrooming(payload = {}) {
   }
 
   const operation = await ensurePetBelongsToOperation(dailyOperationId, petId);
-  if (operation.status !== 'CHECKED_IN' && operation.status !== 'IN_PROGRESS') {
-    throw createValidationError({ status: `Cannot start grooming from status ${operation.status}` });
+  if (operation.status !== 'CHECKED_IN' && operation.status !== 'IN_PROGRESS' && operation.status !== 'COMPLETED') {
+    throw createValidationError({ status: `Cannot add grooming record from status ${operation.status}` });
   }
 
   const existing = await groomingRepository.findByDailyOperationAndPet(dailyOperationId, petId);
@@ -205,21 +205,6 @@ async function completeGrooming(id) {
   const existing = await groomingRepository.findById(id);
   if (!existing) {
     throw createNotFoundError('GROOMING_NOT_FOUND', 'Grooming record not found');
-  }
-
-  const requiredFields = [
-    existing.before_condition,
-    existing.actual_grooming_content,
-    existing.grooming_result,
-  ];
-
-  const missing = requiredFields.some((value) => !value || !String(value).trim());
-  if (missing) {
-    throw createValidationError({
-      before_condition: 'Before condition is required before completion',
-      actual_grooming_content: 'Actual grooming content is required before completion',
-      grooming_result: 'Grooming result is required before completion',
-    });
   }
 
   const operation = await ensureDailyOperationExists(existing.daily_operation_id);

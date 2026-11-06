@@ -19,7 +19,6 @@ const RESET_TABLES = [
   'pets',
   'customers',
   'products',
-  'services',
 ];
 
 const PRESERVE_TABLES = [
@@ -39,6 +38,7 @@ const PRESERVE_TABLES = [
   'booking_schedule_overrides',
   'contract_versions',
   'contract_history',
+  'services',
 ];
 
 const ENVIRONMENT_DATABASES = new Map([

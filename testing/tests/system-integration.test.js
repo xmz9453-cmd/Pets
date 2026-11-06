@@ -55,9 +55,8 @@ describe('TASK-0017 system integration', () => {
     expect(operation.status).toBe('SCHEDULED');
 
     expect((await agent.post(`/api/operations/${operation.id}/check-in`)).status).toBe(200);
-    const grooming = await agent.post('/api/groomings').send({ daily_operation_id: operation.id, pet_id: petId, before_condition: '良好', actual_grooming_content: '洗澡與修剪', grooming_result: '完成' });
-    expect(grooming.status).toBe(201);
-    const completed = await agent.post(`/api/groomings/${grooming.body.data.id}/complete`);
+    expect((await agent.post(`/api/operations/${operation.id}/start-work`)).status).toBe(200);
+    const completed = await agent.post(`/api/operations/${operation.id}/complete-work`);
     expect(completed.status).toBe(200);
 
     const operations = await agent.get('/api/operations?date=2026-09-03');
@@ -75,6 +74,18 @@ describe('TASK-0017 system integration', () => {
     expect(duplicate.status).toBe(409);
     const payment = await agent.post(`/api/orders/${orderId}/payments`).send({ amount: 1, payment_method: 'CASH' });
     expect(payment.status).toBe(201);
+
+    const grooming = await agent.post('/api/groomings').send({
+      daily_operation_id: operation.id,
+      pet_id: petId,
+      before_condition: '良好',
+      actual_grooming_content: '洗澡與修剪',
+      grooming_result: '完成',
+      note: '客人離店後補登',
+    });
+    expect(grooming.status).toBe(201);
+    expect(grooming.body.data.note).toBe('客人離店後補登');
+
     await getPool().query('UPDATE payments SET paid_at = ? WHERE id = ?', ['2026-09-03 12:00:00', payment.body.data.payment.id]);
     const detail = await agent.get(`/api/orders/${orderId}`);
     expect(detail.body.data.order.status).toBe('PAID');

@@ -54,6 +54,28 @@ function parseJson(value) {
   return value;
 }
 
+function hasCompleteCustomerProfile(customer = {}) {
+  return ['name', 'phone', 'address', 'emergency_contact', 'emergency_phone']
+    .every((field) => String(customer[field] || '').trim())
+    && /^[0-9][0-9\s\-()+.]{5,29}$/.test(customer.phone)
+    && /^[0-9][0-9\s\-()+.]{5,29}$/.test(customer.emergency_phone);
+}
+
+async function findExistingContractSignature(customerId, contractVersionId, connection = getPool(), lock = false) {
+  if (!customerId || !contractVersionId) return null;
+  const [rows] = await connection.query(
+    `SELECT ch.signature_evidence, ch.signature_hash, ch.agreed_at
+     FROM contract_history ch
+     INNER JOIN onboardings o ON o.id = ch.onboarding_id AND o.shop_id = ch.shop_id
+     WHERE ch.shop_id = ? AND ch.customer_id = ? AND ch.contract_version_id = ?
+       AND o.status = 'COMPLETED'
+     ORDER BY ch.agreed_at DESC, ch.id DESC
+     LIMIT 1 ${lock ? 'FOR UPDATE' : ''}`,
+    [getCurrentShopId(), customerId, contractVersionId],
+  );
+  return rows[0] || null;
+}
+
 function dbDateMilliseconds(value) {
   if (value instanceof Date) return value.getTime();
   return new Date(`${String(value).replace(' ', 'T')}Z`).getTime();
@@ -164,6 +186,11 @@ async function getPublic(token) {
   setCurrentShopId(row.shop_id);
   assertMemberOnboardingAccess(row);
   const expired = row.status === 'EXPIRED' || dbDateMilliseconds(row.expires_at) <= Date.now();
+  const customer = parseJson(row.customer_data) || {};
+  const existingSignature = await findExistingContractSignature(
+    row.matched_customer_id,
+    row.contract_version_id,
+  );
   const [services] = await getPool().query(
     `SELECT id, name, type, species, price
      FROM services WHERE shop_id = ? AND status = 'ACTIVE'
@@ -175,12 +202,14 @@ async function getPublic(token) {
       status: expired ? 'EXPIRED' : row.status,
       created_at: row.created_at,
       expires_at: row.expires_at,
-      customer: parseJson(row.customer_data) || {},
+      customer,
       pet: parseJson(row.pet_data) || {},
       appointment: parseJson(row.appointment_data) || {},
       customer_resolution: row.customer_resolution,
       pet_resolution: row.pet_resolution,
       is_member_booking: Boolean(row.customer_member_id),
+      customer_profile_complete: hasCompleteCustomerProfile(customer),
+      has_current_contract_signature: Boolean(existingSignature),
     },
     contract: {
       version: row.version_label,
@@ -330,13 +359,17 @@ async function resolve(token, kind, payload = {}) {
   }
   if (kind === 'customer') {
     await onboardingRepository.setCustomerResolution(row.id, resolution, matchedId);
-    return { customer_resolution: resolution };
+    const existingSignature = await findExistingContractSignature(matchedId, row.contract_version_id);
+    return {
+      customer_resolution: resolution,
+      has_current_contract_signature: Boolean(existingSignature),
+    };
   }
   await onboardingRepository.setPetResolution(row.id, resolution, matchedId);
   return { pet_resolution: resolution };
 }
 
-function validateSubmit(row, signatureData) {
+function validateSubmit(row) {
   const customer = parseJson(row.customer_data) || {};
   const pet = parseJson(row.pet_data) || {};
   const appointment = parseJson(row.appointment_data) || {};
@@ -378,7 +411,6 @@ function validateSubmit(row, signatureData) {
   if (!parsedDate || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) errors['appointment.appointment_date'] = 'Appointment date is invalid';
   if (!/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(appointment.appointment_time || '')) errors['appointment.appointment_time'] = 'Appointment time is required';
   if (!Number.isInteger(Number(appointment.service_id)) || Number(appointment.service_id) <= 0) errors['appointment.service_id'] = 'Service is required';
-  if (!signatureData) errors.signature = 'Signature is required';
   if (Object.keys(errors).length) throw validation(errors);
   return { customer, pet, appointment };
 }
@@ -434,8 +466,8 @@ async function submit(token, payload = {}) {
       throw createError('Onboarding has expired', 410, 'ONBOARDING_EXPIRED');
     }
     checkWritable(row);
-    const signature = decodeSignature(payload.signature_png);
-    const { customer, pet, appointment } = validateSubmit(row, signature);
+    const signature = payload.signature_png ? decodeSignature(payload.signature_png) : null;
+    const { customer, pet, appointment } = validateSubmit(row);
     const contract = await contractVersionRepository.getContractVersionById(row.contract_version_id, connection);
     if (!contract || contract.status !== 'PUBLISHED') throw createError('Pinned contract version is unavailable', 409, 'CONTRACT_VERSION_NOT_AVAILABLE');
     await contractPdfStorage.verifyStoredFile(contract);
@@ -469,11 +501,17 @@ async function submit(token, payload = {}) {
       }
     }
     const [customerRows] = await connection.query(
-      'SELECT id, status FROM customers WHERE id = ? AND shop_id = ? LIMIT 1',
+      'SELECT id, status FROM customers WHERE id = ? AND shop_id = ? LIMIT 1 FOR UPDATE',
       [row.matched_customer_id || 0, getCurrentShopId()],
     );
     if (row.customer_resolution === 'EXISTING' && (!customerRows[0] || customerRows[0].status !== 'ACTIVE')) {
       throw validation({ customer_resolution: 'The selected Customer is no longer available' });
+    }
+    const existingContractSignature = row.customer_resolution === 'EXISTING'
+      ? await findExistingContractSignature(row.matched_customer_id, contract.id, connection, true)
+      : null;
+    if (!existingContractSignature && !signature) {
+      throw validation({ signature: 'Signature is required' });
     }
     if (row.customer_member_id) {
       const [memberCustomerRows] = await connection.query(
@@ -625,14 +663,16 @@ async function submit(token, payload = {}) {
         [getCurrentShopId(), appointmentId, services.type, requestedCheckOut],
       );
     }
-    const signatureHash = crypto.createHash('sha256').update(signature).digest('hex');
-    await connection.query(
-      `INSERT INTO contract_history
-       (shop_id, onboarding_id, customer_id, pet_id, appointment_id, contract_version_id, version,
-        pdf_hash, storage_path, agreed_at, signature_evidence, signature_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), ?, ?)`,
-      [getCurrentShopId(), row.id, customerId, petId, appointmentId, contract.id, contract.version_label, contract.file_hash, contract.storage_path, signature, signatureHash],
-    );
+    if (!existingContractSignature) {
+      const signatureHash = crypto.createHash('sha256').update(signature).digest('hex');
+      await connection.query(
+        `INSERT INTO contract_history
+         (shop_id, onboarding_id, customer_id, pet_id, appointment_id, contract_version_id, version,
+          pdf_hash, storage_path, agreed_at, signature_evidence, signature_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), ?, ?)`,
+        [getCurrentShopId(), row.id, customerId, petId, appointmentId, contract.id, contract.version_label, contract.file_hash, contract.storage_path, signature, signatureHash],
+      );
+    }
     await connection.query(
       `UPDATE onboardings SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ? AND shop_id = ?`,
       [row.id, getCurrentShopId()],

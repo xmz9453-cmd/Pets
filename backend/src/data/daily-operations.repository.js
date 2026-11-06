@@ -82,16 +82,11 @@ async function listTodayOperations(filters = {}, connection = null) {
         FROM appointment_pets eligible_ap
         INNER JOIN appointment_pet_services eligible_aps ON eligible_aps.appointment_pet_id = eligible_ap.id AND eligible_aps.shop_id = do.shop_id
         INNER JOIN services eligible_srv ON eligible_srv.id = eligible_aps.service_id AND eligible_srv.shop_id = do.shop_id
-        LEFT JOIN groomings eligible_g ON eligible_g.daily_operation_id = do.id AND eligible_g.pet_id = eligible_ap.pet_id AND eligible_g.shop_id = do.shop_id
         LEFT JOIN boardings eligible_b ON eligible_b.appointment_id = a.id AND eligible_b.shop_id = do.shop_id
           AND eligible_b.pet_id = eligible_ap.pet_id
           AND eligible_b.service_id = eligible_aps.service_id
         WHERE eligible_ap.appointment_id = a.id AND eligible_ap.shop_id = do.shop_id
-          AND ((eligible_srv.type = 'GROOMING' AND do.status = 'COMPLETED'
-                AND eligible_g.id IS NOT NULL
-                AND eligible_g.before_condition IS NOT NULL
-                AND eligible_g.actual_grooming_content IS NOT NULL
-                AND eligible_g.grooming_result IS NOT NULL)
+          AND ((eligible_srv.type = 'GROOMING' AND do.status = 'COMPLETED')
             OR (eligible_srv.type = 'BOARDING' AND eligible_b.status = 'COMPLETED'))
       ) THEN 1 ELSE 0 END as can_create_appointment_order,
       p.name as pet_name,

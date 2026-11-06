@@ -1,41 +1,14 @@
-const crypto = require('crypto');
-const bookingSessionRepository = require('../data/booking-session.repository');
-const petRepository = require('../data/pet.repository');
-const serviceRepository = require('../data/service.repository');
-const smsProvider = require('./sms-provider');
 const { getPool } = require('../config/database');
-const { getCurrentShopId, setCurrentShopId } = require('../utils/shop-context');
+const { getCurrentShopId } = require('../utils/shop-context');
 
-const SESSION_LIFETIME_MILLISECONDS = 2 * 60 * 60 * 1000;
-const OTP_LIFETIME_MINUTES = 5;
-const OTP_RESEND_DELAY_SECONDS = 60;
-const OTP_HOURLY_LIMIT = 3;
-const OTP_MAX_ATTEMPTS = 5;
-const BOOKING_SESSION_TOKEN_PATTERN = /^[a-f0-9]{64}$/;
 const WEEKDAYS = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
 
-function createError(message, statusCode, code, fields) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  error.code = code;
-  if (fields) error.fields = fields;
-  return error;
-}
-
-function createInvalidSessionError() {
-  return createError('Booking session is invalid', 401, 'BOOKING_SESSION_INVALID');
-}
-
 function createValidationError(fields) {
-  return createError('Validation failed', 400, 'VALIDATION_ERROR', fields);
-}
-
-function normalizePhone(value) {
-  const phone = String(value ?? '').replace(/[()\s-]/g, '');
-  if (!/^\+?\d{8,15}$/.test(phone)) {
-    throw createValidationError({ phone: '請輸入有效的手機號碼。' });
-  }
-  return phone;
+  const error = new Error('Validation failed');
+  error.statusCode = 400;
+  error.code = 'VALIDATION_ERROR';
+  error.fields = fields;
+  return error;
 }
 
 function normalizeDate(value, field) {
@@ -63,186 +36,6 @@ function normalizeCheckOut(dateValue, timeValue) {
   const date = normalizeDate(dateValue, 'check_out_date');
   const time = normalizeTime(timeValue);
   return { date, time, dateTime: `${date} ${time}` };
-}
-
-function otpHash(challengeId, code) {
-  const secret = process.env.BOOKING_OTP_SECRET;
-  if (!secret) {
-    throw createError('Booking OTP secret has not been configured', 503, 'BOOKING_OTP_NOT_CONFIGURED');
-  }
-  return crypto.createHmac('sha256', secret).update(`${challengeId}:${code}`).digest('hex');
-}
-
-async function sendOtp(phoneValue) {
-  const phone = normalizePhone(phoneValue);
-  const shopId = getCurrentShopId();
-  const pool = getPool();
-  const [recent] = await pool.query(
-    `SELECT created_at
-     FROM booking_otp_challenges
-     WHERE shop_id = ? AND phone = ? AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR)
-     ORDER BY created_at DESC
-     LIMIT 3`,
-    [shopId, phone],
-  );
-  if (recent.length >= OTP_HOURLY_LIMIT) {
-    throw createError('OTP request limit reached', 429, 'OTP_RATE_LIMITED');
-  }
-  if (recent[0] && (Date.now() - new Date(recent[0].created_at).getTime()) < OTP_RESEND_DELAY_SECONDS * 1000) {
-    throw createError('OTP resend is temporarily unavailable', 429, 'OTP_RESEND_TOO_SOON');
-  }
-
-  const [shops] = await pool.query('SELECT name FROM shops WHERE id = ? LIMIT 1', [shopId]);
-  if (!shops[0]) throw createError('Shop is unavailable', 404, 'SHOP_NOT_FOUND');
-  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
-  const [result] = await pool.query(
-    `INSERT INTO booking_otp_challenges (shop_id, phone, code_hash, expires_at)
-     VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE))`,
-    [shopId, phone, 'PENDING', OTP_LIFETIME_MINUTES],
-  );
-  const challengeId = result.insertId;
-
-  try {
-    const codeHash = otpHash(challengeId, code);
-    await pool.query('UPDATE booking_otp_challenges SET code_hash = ? WHERE id = ? AND shop_id = ?', [
-      codeHash,
-      challengeId,
-      shopId,
-    ]);
-    const shopName = String(shops[0].name).replace(/[\r\n【】]/g, '').slice(0, 40);
-    await smsProvider.sendBookingOtp({
-      phone,
-      code,
-      message: `【${shopName}】您正在進行預約手機驗證，驗證碼 ${code}，5 分鐘內有效。若非本人操作請忽略。`,
-    });
-  } catch (error) {
-    await pool.query('DELETE FROM booking_otp_challenges WHERE id = ? AND shop_id = ?', [challengeId, shopId]);
-    throw error;
-  }
-
-  return { message: '驗證碼已發送，請留意店家名稱開頭的簡訊。' };
-}
-
-async function verifyOtp(phoneValue, codeValue) {
-  const phone = normalizePhone(phoneValue);
-  const code = String(codeValue ?? '').trim();
-  if (!/^\d{6}$/.test(code)) throw createValidationError({ code: '請輸入 6 位數驗證碼。' });
-
-  const connection = await getPool().getConnection();
-  let token;
-  let customerId;
-  try {
-    await connection.beginTransaction();
-    const [rows] = await connection.query(
-      `SELECT id, shop_id, code_hash, status, attempts
-       FROM booking_otp_challenges
-       WHERE shop_id = ? AND phone = ? AND status = 'PENDING' AND expires_at > UTC_TIMESTAMP()
-       ORDER BY created_at DESC
-       LIMIT 1 FOR UPDATE`,
-      [getCurrentShopId(), phone],
-    );
-    const challenge = rows[0];
-    if (!challenge) {
-      throw createError('驗證碼無效或已過期，請重新取得。', 400, 'OTP_INVALID');
-    }
-
-    const attempts = Number(challenge.attempts) + 1;
-    const matches = crypto.timingSafeEqual(
-      Buffer.from(challenge.code_hash, 'hex'),
-      Buffer.from(otpHash(challenge.id, code), 'hex'),
-    );
-    if (!matches) {
-      const status = attempts >= OTP_MAX_ATTEMPTS ? 'LOCKED' : 'PENDING';
-      await connection.query('UPDATE booking_otp_challenges SET attempts = ?, status = ? WHERE id = ?', [
-        attempts,
-        status,
-        challenge.id,
-      ]);
-      await connection.commit();
-      throw createError(
-        status === 'LOCKED' ? '驗證次數已達上限，請重新取得驗證碼。' : '驗證碼錯誤，請再試一次。',
-        400,
-        status === 'LOCKED' ? 'OTP_ATTEMPTS_EXCEEDED' : 'OTP_INVALID',
-      );
-    }
-
-    await connection.query(
-      `UPDATE booking_otp_challenges
-       SET attempts = ?, status = 'VERIFIED', verified_at = UTC_TIMESTAMP()
-       WHERE id = ?`,
-      [attempts, challenge.id],
-    );
-    const [customers] = await connection.query(
-      `SELECT id FROM customers
-       WHERE shop_id = ? AND phone = ? AND status = 'ACTIVE'
-       LIMIT 1`,
-      [getCurrentShopId(), phone],
-    );
-    if (!customers[0]) {
-      await connection.commit();
-      throw createError('此手機尚未建立店家客戶資料，請先使用新客流程完成資料建檔。', 404, 'CUSTOMER_NOT_FOUND');
-    }
-
-    customerId = Number(customers[0].id);
-    token = crypto.randomBytes(32).toString('hex');
-    const createdAt = new Date();
-    await bookingSessionRepository.createSession({
-      tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
-      customerId,
-      createdAt,
-      expiresAt: new Date(createdAt.getTime() + SESSION_LIFETIME_MILLISECONDS),
-    }, connection);
-    await connection.commit();
-  } catch (error) {
-    if (connection) await connection.rollback();
-    throw error;
-  } finally {
-    connection.release();
-  }
-
-  return { token, customerId };
-}
-
-async function getBookingSession(token) {
-  if (typeof token !== 'string' || !BOOKING_SESSION_TOKEN_PATTERN.test(token)) {
-    throw createInvalidSessionError();
-  }
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  const session = await bookingSessionRepository.findActiveSessionByTokenHash(tokenHash);
-  if (!session) throw createInvalidSessionError();
-  setCurrentShopId(session.shop_id);
-  return session;
-}
-
-async function validatePetAndService(session, petIdValue, serviceIdValue) {
-  const petId = Number(petIdValue);
-  const serviceId = Number(serviceIdValue);
-  if (!Number.isInteger(petId) || petId <= 0) throw createValidationError({ pet_id: '請選擇寵物。' });
-  if (!Number.isInteger(serviceId) || serviceId <= 0) throw createValidationError({ service_id: '請選擇服務。' });
-
-  const pet = await petRepository.getPetById(petId);
-  if (!pet || pet.status !== 'ACTIVE') throw createError('寵物資料不可用。', 404, 'PET_NOT_FOUND');
-  if (!await petRepository.findRelationshipByPetAndCustomer(petId, session.customer_id)) {
-    throw createValidationError({ pet_id: '所選寵物不屬於此客戶。' });
-  }
-  const service = await serviceRepository.getServiceById(serviceId);
-  if (!service || service.status !== 'ACTIVE') throw createError('此服務目前無法預約。', 404, 'SERVICE_NOT_FOUND');
-  if (service.species !== 'BOTH' && service.species !== pet.species) {
-    throw createValidationError({ service_id: '此服務不適用於所選寵物。' });
-  }
-  return { pet, service };
-}
-
-async function validatePetForSession(session, petIdValue) {
-  const petId = Number(petIdValue);
-  if (!Number.isInteger(petId) || petId <= 0) throw createValidationError({ pet_id: '請選擇寵物。' });
-  const pet = await petRepository.getPetById(petId);
-  if (!pet) throw createError('Pet not found', 404, 'PET_NOT_FOUND');
-  if (pet.status !== 'ACTIVE') throw createValidationError({ pet_id: 'Pet is not active' });
-  if (!await petRepository.findRelationshipByPetAndCustomer(petId, session.customer_id)) {
-    throw createValidationError({ pet_id: 'Pet does not belong to this customer' });
-  }
-  return pet;
 }
 
 function sqlWeekday(date) {
@@ -305,12 +98,6 @@ async function isResourceAvailable({
     [getCurrentShopId(), ...availableIds, `${endDate} ${endTime}`, `${date} ${startTime}`],
   );
   return totalCapacity - Number(allocations[0]?.total || 0) > 0;
-}
-
-async function listAvailability(token, query = {}) {
-  const session = await getBookingSession(token);
-  const { pet, service } = await validatePetAndService(session, query.pet_id, query.service_id);
-  return listAvailabilityForService(pet, service, query);
 }
 
 async function listAvailabilityForService(pet, service, query = {}) {
@@ -423,89 +210,6 @@ async function listAvailabilityForService(pet, service, query = {}) {
   return { slots };
 }
 
-async function createBookingRequest(token, payload = {}) {
-  const session = await getBookingSession(token);
-  const { pet, service } = await validatePetAndService(session, payload.pet_id, payload.service_id);
-  const appointmentDate = normalizeDate(payload.appointment_date, 'appointment_date');
-  const appointmentTime = normalizeTime(payload.appointment_time);
-  const checkOut = service.type === 'BOARDING'
-    ? normalizeCheckOut(payload.check_out_date, payload.check_out_time)
-    : null;
-  if (checkOut && checkOut.dateTime <= `${appointmentDate} ${appointmentTime}`) {
-    throw createValidationError({ check_out_date: '退房時間必須晚於入住時間。' });
-  }
-  const availability = await listAvailability(token, {
-    pet_id: pet.id,
-    service_id: service.id,
-    date: appointmentDate,
-    ...(checkOut ? { check_out_date: checkOut.date, check_out_time: checkOut.time.slice(0, 5), time: appointmentTime.slice(0, 5) } : {}),
-  });
-  if (!availability.slots.some((slot) => slot.time === appointmentTime.slice(0, 5))) {
-    throw createError('所選時段已不可申請，請重新選擇。', 409, 'BOOKING_SLOT_UNAVAILABLE');
-  }
-
-  const connection = await getPool().getConnection();
-  try {
-    await connection.beginTransaction();
-    const [appointmentResult] = await connection.query(
-      `INSERT INTO appointments
-         (shop_id, customer_id, appointment_date, appointment_time, status, note)
-       VALUES (?, ?, ?, ?, 'PENDING', ?)`,
-      [getCurrentShopId(), session.customer_id, appointmentDate, appointmentTime, '客戶線上預約申請，請店家確認。'],
-    );
-    const appointmentId = Number(appointmentResult.insertId);
-    const [appointmentPetResult] = await connection.query(
-      'INSERT INTO appointment_pets (shop_id, appointment_id, pet_id) VALUES (?, ?, ?)',
-      [getCurrentShopId(), appointmentId, pet.id],
-    );
-    await connection.query(
-      `INSERT INTO appointment_pet_services
-         (shop_id, appointment_pet_id, service_id, duration_minutes)
-       VALUES (?, ?, ?, ?)`,
-      [getCurrentShopId(), appointmentPetResult.insertId, service.id, service.duration_minutes],
-    );
-    await connection.query(
-      `INSERT INTO booking_request_details
-         (shop_id, appointment_id, service_type, requested_check_out)
-       VALUES (?, ?, ?, ?)`,
-      [getCurrentShopId(), appointmentId, service.type, checkOut?.dateTime || null],
-    );
-    await connection.commit();
-    return {
-      request: {
-        appointment_id: appointmentId,
-        status: 'PENDING',
-        service_type: service.type,
-        appointment_date: appointmentDate,
-        appointment_time: appointmentTime.slice(0, 5),
-        requested_check_out: checkOut?.dateTime || null,
-      },
-    };
-  } catch (error) {
-    await connection.rollback();
-    throw error;
-  } finally {
-    connection.release();
-  }
-}
-
-async function listPetsForBookingSession(token) {
-  const session = await getBookingSession(token);
-  return { pets: await petRepository.listActivePetsByCustomerId(session.customer_id) };
-}
-
-async function listServicesForBookingSession(token, petId) {
-  const session = await getBookingSession(token);
-  const pet = await validatePetForSession(session, petId);
-  return { services: await serviceRepository.listActiveServicesBySpecies(pet.species) };
-}
-
 module.exports = {
-  createBookingRequest,
-  listAvailability,
   listAvailabilityForService,
-  listPetsForBookingSession,
-  listServicesForBookingSession,
-  sendOtp,
-  verifyOtp,
 };

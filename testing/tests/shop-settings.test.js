@@ -29,6 +29,7 @@ const { getPool, closePool } = require('../../backend/src/config/database');
 const { getFoundationOwner } = require('../../database/seeds/staff-authentication-seed');
 const { hashPassword } = require('../../backend/src/utils/password');
 const shopSettingsService = require('../../backend/src/services/shop-settings.service');
+const { PRESERVE_TABLES, RESET_TABLES } = require('../../database/scripts/reset-operational-data');
 
 const owner = getFoundationOwner();
 
@@ -82,6 +83,11 @@ describe('Shop Settings API', () => {
   afterAll(async () => {
     await closePool();
     await fs.promises.rm(shopLogoStorageRoot, { recursive: true, force: true });
+  });
+
+  test('operational data reset preserves service definitions', () => {
+    expect(RESET_TABLES).not.toContain('services');
+    expect(PRESERVE_TABLES).toContain('services');
   });
 
   test('GET /api/shop-settings initializes default settings and seven business-hours rows', async () => {

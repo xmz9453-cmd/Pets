@@ -117,33 +117,36 @@ export default function GroomingPage() {
         grooming_result: saved.grooming_result || '',
         note: saved.note || '',
       });
+      return saved;
     } catch (saveError) {
       setError(getUserFacingErrorMessage(saveError, 500, '美容資料保存失敗'));
+      return null;
     } finally {
       setSubmitting(false);
     }
   }
 
   async function completeGrooming() {
-    if (!grooming) {
-      setError('請先儲存美容資料後再完成');
-      return;
+    const hasGroomingDetails = Object.values(form).some((value) => value.trim());
+    if (grooming || hasGroomingDetails) {
+      const saved = await saveGrooming();
+      if (!saved) return;
     }
 
     try {
       setSubmitting(true);
       setError('');
-      const response = await fetch(`${API_BASE_URL}/api/groomings/${grooming.id}/complete`, {
+      const response = await fetch(`${API_BASE_URL}/api/operations/${daily_operation_id}/complete-work`, {
         method: 'POST',
         credentials: 'include',
       });
       const body = await response.json();
       if (!response.ok || body.success === false) {
-        throw new Error(getUserFacingErrorMessage(body.error, response.status, '美容完成失敗'));
+        throw new Error(getUserFacingErrorMessage(body.error, response.status, '完成工作失敗'));
       }
       router.push('/operations');
     } catch (completeError) {
-      setError(getUserFacingErrorMessage(completeError, 500, '美容完成失敗'));
+      setError(getUserFacingErrorMessage(completeError, 500, '完成工作失敗'));
       setSubmitting(false);
     }
   }
@@ -186,7 +189,8 @@ export default function GroomingPage() {
 
       <div className="card mb-4">
         <div className="card-body">
-          <h2 className="h5 mb-3">美容執行內容</h2>
+          <h2 className="h5 mb-2">美容紀錄</h2>
+          <p className="text-muted mb-3">美容紀錄可在完成服務或結帳後補填，不影響完成工作與建立訂單。</p>
           <div className="row g-3">
             <div className="col-12">
               <label className="form-label">美容前</label>
@@ -211,7 +215,9 @@ export default function GroomingPage() {
       <div className="d-flex gap-2 justify-content-end">
         <button type="button" className="btn btn-secondary" onClick={() => router.push('/operations')} disabled={submitting}>取消</button>
         <button type="button" className="btn btn-primary" onClick={saveGrooming} disabled={submitting}>{submitting ? '處理中...' : '儲存'}</button>
-        <button type="button" className="btn btn-success" onClick={completeGrooming} disabled={submitting}>完成美容</button>
+        {operation.status !== 'COMPLETED' ? (
+          <button type="button" className="btn btn-success" onClick={completeGrooming} disabled={submitting}>完成工作</button>
+        ) : null}
       </div>
     </main>
   );

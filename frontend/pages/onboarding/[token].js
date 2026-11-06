@@ -210,8 +210,14 @@ export default function PublicOnboardingPage() {
     setError('');
     try {
       const action = kind === 'customer' ? resolveOnboardingCustomer : resolveOnboardingPet;
-      await action(token, { resolution, ...(candidateKey ? { candidate_key: candidateKey } : {}) });
-      if (kind === 'customer') setCustomerResolution(resolution);
+      const result = await action(token, { resolution, ...(candidateKey ? { candidate_key: candidateKey } : {}) });
+      if (kind === 'customer') {
+        setCustomerResolution(resolution);
+        setOnboarding((current) => ({
+          ...current,
+          has_current_contract_signature: Boolean(result.has_current_contract_signature),
+        }));
+      }
       else setPetResolution(resolution);
     } catch (resolveError) {
       setError(resolveError.message || '確認資料失敗，請稍後再試。');
@@ -261,8 +267,8 @@ export default function PublicOnboardingPage() {
       if (customerResolution === 'UNRESOLVED' || petResolution === 'UNRESOLVED') {
         throw new Error('請先確認客戶與寵物資料。');
       }
-      if (!signatureReady) throw new Error('請先簽署電子契約。');
-      await submitPublicOnboarding(token, canvasRef.current.toDataURL('image/png'));
+      if (!signatureReady && !onboarding.has_current_contract_signature) throw new Error('請先簽署電子契約。');
+      await submitPublicOnboarding(token, signatureReady ? canvasRef.current.toDataURL('image/png') : null);
       setSubmitted(true);
     } catch (submitError) {
       setError(submitError.message || '送出失敗');
@@ -279,7 +285,7 @@ export default function PublicOnboardingPage() {
   const unavailable = !onboarding || ['COMPLETED', 'EXPIRED'].includes(onboarding.status);
   return (
     <main className="container py-4" style={{ maxWidth: 900 }}>
-      <h1 className="mb-3">客戶資料與電子契約</h1>
+      <h1 className="mb-3">{onboarding?.has_current_contract_signature ? '預約資料確認' : '客戶資料與電子契約'}</h1>
       {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
       {unavailable ? (
         <div className="alert alert-warning">{onboarding?.status === 'COMPLETED' ? '此補件資料已完成。' : '此補件資料已過期或無法使用。'}</div>
@@ -287,7 +293,11 @@ export default function PublicOnboardingPage() {
         <>
           <p className="text-muted">請於 {String(onboarding.expires_at).replace('T', ' ').slice(0, 16)} 前完成。</p>
           <form onSubmit={handleSubmit}>
-            <section className="card mb-4">
+            {onboarding.is_member_booking && onboarding.customer_profile_complete ? (
+              <div className="alert alert-info" role="status">
+                客戶資料已沿用既有檔案，無需重複填寫。
+              </div>
+            ) : <section className="card mb-4">
               <div className="card-header fw-semibold">客戶資料</div>
               <div className="card-body row g-3">
                 {Object.entries(CUSTOMER_LABELS).map(([field, label]) => (
@@ -318,7 +328,7 @@ export default function PublicOnboardingPage() {
                   <span className="ms-2 small text-muted">資料連結狀態：{customerResolution === 'EXISTING' ? '已連結既有資料' : customerResolution === 'NEW' ? '新增資料' : '尚未確認'}</span>
                 </div> : <p className="col-12 small text-muted mb-0">這些資料已連結至您的會員預約，不會搜尋或自動合併其他客戶資料。</p>}
               </div>
-            </section>
+            </section>}
 
             <section className="card mb-4">
               <div className="card-header fw-semibold">寵物資料</div>
@@ -474,27 +484,33 @@ export default function PublicOnboardingPage() {
             </section>
             )}
 
-            <section className="card mb-4">
-              <div className="card-header fw-semibold">{contract?.service_type === 'BOARDING' ? '住宿電子契約' : contract?.service_type === 'GROOMING' ? '美容電子契約' : '電子契約'} {contract ? `（${contract.version}）` : ''}</div>
-              <div className="card-body">
-                {contract ? <iframe title="電子契約文件" src={`${API_BASE_URL}/api/public/onboardings/${encodeURIComponent(token)}/contract.pdf`} className="w-100 border mb-3" style={{ height: 480 }} /> : null}
-                <label className="form-label">請在下方簽名</label>
-                <canvas
-                  ref={canvasRef}
-                  width="800"
-                  height="240"
-                  className="w-100 border rounded"
-                  style={{ height: 240, touchAction: 'none', background: '#fff' }}
-                  onPointerDown={beginDrawing}
-                  onPointerMove={draw}
-                  onPointerUp={endDrawing}
-                  onPointerCancel={endDrawing}
-                />
-                <button type="button" className="btn btn-sm btn-outline-secondary mt-2" onClick={clearSignature}>清除簽名</button>
+            {onboarding.has_current_contract_signature ? (
+              <div className="alert alert-success" role="status">
+                此客戶已簽署目前版本的{contract?.service_type === 'BOARDING' ? '住宿' : contract?.service_type === 'GROOMING' ? '美容' : ''}電子契約{contract ? `（${contract.version}）` : ''}，本次預約不需重複簽署。
               </div>
-            </section>
+            ) : (
+              <section className="card mb-4">
+                <div className="card-header fw-semibold">{contract?.service_type === 'BOARDING' ? '住宿電子契約' : contract?.service_type === 'GROOMING' ? '美容電子契約' : '電子契約'} {contract ? `（${contract.version}）` : ''}</div>
+                <div className="card-body">
+                  {contract ? <iframe title="電子契約文件" src={`${API_BASE_URL}/api/public/onboardings/${encodeURIComponent(token)}/contract.pdf`} className="w-100 border mb-3" style={{ height: 480 }} /> : null}
+                  <label className="form-label">請在下方簽名</label>
+                  <canvas
+                    ref={canvasRef}
+                    width="800"
+                    height="240"
+                    className="w-100 border rounded"
+                    style={{ height: 240, touchAction: 'none', background: '#fff' }}
+                    onPointerDown={beginDrawing}
+                    onPointerMove={draw}
+                    onPointerUp={endDrawing}
+                    onPointerCancel={endDrawing}
+                  />
+                  <button type="button" className="btn btn-sm btn-outline-secondary mt-2" onClick={clearSignature}>清除簽名</button>
+                </div>
+              </section>
+            )}
             <div className="d-flex align-items-center gap-3">
-              <button type="submit" className="btn btn-dark" disabled={saving || !signatureReady || customerResolution === 'UNRESOLVED' || petResolution === 'UNRESOLVED'}>確認並送出</button>
+              <button type="submit" className="btn btn-dark" disabled={saving || (!signatureReady && !onboarding.has_current_contract_signature) || customerResolution === 'UNRESOLVED' || petResolution === 'UNRESOLVED'}>確認並送出</button>
               <span className="small text-muted">{saving ? '正在儲存...' : dirty ? '資料尚未儲存' : '自動儲存完成'}</span>
             </div>
           </form>

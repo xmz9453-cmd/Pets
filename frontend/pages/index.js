@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { API_BASE_URL, getPublicPortalBackground, getPublicShops } from '../api/client';
+import {
+  API_BASE_URL,
+  getPublicPortalBackground,
+  getPublicPortalSettings,
+  getPublicShops,
+} from '../api/client';
 
 function PortalIcon({ name }) {
   const paths = {
@@ -60,6 +65,8 @@ export default function Home() {
   const [error, setError] = useState('');
   const [backgroundUrl, setBackgroundUrl] = useState(null);
   const [backgroundError, setBackgroundError] = useState('');
+  const [footerText, setFooterText] = useState('');
+  const [footerError, setFooterError] = useState('');
 
   const loadShops = useCallback(async () => {
     setLoading(true);
@@ -87,6 +94,16 @@ export default function Home() {
       if (active) setBackgroundUrl(url || null);
     }).catch((loadError) => {
       if (active) setBackgroundError(loadError.message || '背景照片目前無法載入，已改用預設背景。');
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    getPublicPortalSettings().then(({ footer_text: text }) => {
+      if (active) setFooterText(text);
+    }).catch((loadError) => {
+      if (active) setFooterError(loadError.message || '入口版權資訊目前無法載入。');
     });
     return () => { active = false; };
   }, []);
@@ -177,7 +194,9 @@ export default function Home() {
         </section>
 
         <footer className="portal-footer">
-          <span>© 2026 毛孩生活服務｜保留所有權利</span>
+          {footerError
+            ? <span role="status">{footerError}</span>
+            : footerText ? <span>{footerText}</span> : null}
           <Link className="portal-staff-link" href="/login">
             <PortalIcon name="staff" />
             店家登入

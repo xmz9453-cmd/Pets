@@ -8,9 +8,11 @@ import {
   deletePortalBackground,
   getCurrentStaff,
   getPortalBackgrounds,
+  getPortalSettings,
   getShopStaff,
   resetOperationalData,
   updateShopStaffRoles,
+  updatePortalSettings,
   uploadPortalBackground,
 } from '../api/client';
 
@@ -178,6 +180,92 @@ function PortalBackgroundsPanel() {
   );
 }
 
+function PortalFooterSettingsPanel() {
+  const [footerText, setFooterText] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  async function loadSettings() {
+    setLoading(true);
+    setError('');
+    try {
+      const { footer_text: text } = await getPortalSettings();
+      setFooterText(text);
+      setLoaded(true);
+    } catch (loadError) {
+      setError(loadError.message || '無法載入入口版權文字。');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    let active = true;
+    getPortalSettings().then(({ footer_text: text }) => {
+      if (active) {
+        setFooterText(text);
+        setLoaded(true);
+      }
+    }).catch((loadError) => {
+      if (active) setError(loadError.message || '無法載入入口版權文字。');
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      const { footer_text: updatedText } = await updatePortalSettings({ footer_text: footerText });
+      setFooterText(updatedText);
+      setSuccess('入口版權文字已更新。');
+    } catch (saveError) {
+      setError(saveError.message || '無法更新入口版權文字。');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="card shadow-sm mb-4">
+      <div className="card-body">
+        <h2 className="h5">公開入口版權文字</h2>
+        <p className="text-muted">設定公開入口頁面底部顯示的文字；留空即可隱藏。最多 300 個字元。</p>
+        {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
+        {success ? <div className="alert alert-success" role="status">{success}</div> : null}
+        {loading ? <p className="text-muted mb-0">正在載入入口版權文字…</p> : (
+          loaded ? <form onSubmit={handleSubmit}>
+            <label htmlFor="portal-footer-text" className="form-label">版權文字</label>
+            <div className="input-group">
+              <input
+                id="portal-footer-text"
+                className="form-control"
+                value={footerText}
+                onChange={(event) => setFooterText(event.target.value)}
+                maxLength={300}
+              />
+              <button className="btn btn-primary" type="submit" disabled={saving}>
+                {saving ? '儲存中…' : '儲存'}
+              </button>
+            </div>
+          </form> : (
+            <button type="button" className="btn btn-outline-secondary" onClick={loadSettings}>
+              重新載入
+            </button>
+          )
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function ShopsPage() {
   const router = useRouter();
   const [isPlatformShopManager, setIsPlatformShopManager] = useState(false);
@@ -296,6 +384,7 @@ export default function ShopsPage() {
       {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
       {resetSuccess ? <div className="alert alert-success" role="status">{resetSuccess}</div> : null}
       {isPlatformShopManager ? <PortalBackgroundsPanel /> : null}
+      {isPlatformShopManager ? <PortalFooterSettingsPanel /> : null}
       <section className="card shadow-sm mb-4">
         <div className="card-body">
           <h2 className="h5">店家管理</h2>
@@ -443,8 +532,8 @@ export default function ShopsPage() {
           {selectedShop
             ? <p className="mb-2">目前選取店家：<strong>{selectedShop.name}</strong></p>
             : <p className="text-danger">無法確認目前店家，暫停清除功能。</p>}
-          <p className="text-muted">清除範圍只包含目前選取店家的客戶、寵物、服務、商品、預約、美容、住宿、訂單、付款及未完成的線上建檔資料。其他店家不受影響。</p>
-          <p className="small text-muted">店家設定、員工、登入資料、預約時段與合約版本會保留。若目前店家已有已簽署電子合約，系統會拒絕清除並保留合約及簽名證據。</p>
+          <p className="text-muted">清除範圍只包含目前選取店家的客戶、寵物、商品、預約、美容、住宿、訂單、付款及未完成的線上建檔資料。服務設定會保留；其他店家不受影響。</p>
+          <p className="small text-muted">店家設定、員工、登入資料、預約時段、服務設定與合約版本會保留。若目前店家已有已簽署電子合約，系統會拒絕清除並保留合約及簽名證據。</p>
           <p className="small text-danger fw-semibold">此操作會永久刪除資料，只允許在本機 Development／Test 環境執行。正式環境的 API 會拒絕此操作。</p>
           <button
             type="button"

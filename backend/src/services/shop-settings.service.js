@@ -282,7 +282,7 @@ async function resetOperationalData({ confirmation, expectedShopId } = {}) {
     reset: true,
     shop_id: result.shop_id,
     reset_counts: result.resetCounts,
-    message: '目前店家的測試／營運資料已清除；店家設定、員工資料與已簽署的合約紀錄均保留。',
+    message: '目前店家的測試／營運資料已清除；店家設定、服務設定、員工資料與已簽署的合約紀錄均保留。',
   };
 }
 
