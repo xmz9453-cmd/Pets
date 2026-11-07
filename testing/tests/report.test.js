@@ -33,6 +33,27 @@ async function createOrder(agent, customerId, item) {
   return response.body.data.order.id;
 }
 
+async function ensureService(agent, type, name, price) {
+  const [rows] = await getPool().query(
+    'SELECT id FROM services WHERE shop_id = 1 AND type = ? AND status = \'ACTIVE\' LIMIT 1',
+    [type],
+  );
+  if (rows[0]) return rows[0].id;
+
+  const response = await agent.post('/api/services').send({
+    name: `${name} ${sequence}`,
+    type,
+    description: 'Report test fixture',
+    price,
+    unit: type === 'BOARDING' ? '晚' : '次',
+    species: 'DOG',
+    duration_minutes: 60,
+    sort_order: 100,
+  });
+  expect(response.status).toBe(201);
+  return response.body.data.service.id;
+}
+
 async function setOrderDate(orderId, date) {
   await getPool().query('UPDATE orders SET created_at = ? WHERE id = ?', [`${date} 12:00:00`, orderId]);
 }
@@ -72,13 +93,12 @@ describe('Report API', () => {
   test('aggregates orders, payments, products, services, and boarding without void payments', async () => {
     const agent = await login();
     const customerId = await createCustomer(agent);
-    await agent.post('/api/pets').send({ name: `Report Pet ${sequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
-    const [serviceRows] = await getPool().query("SELECT id FROM services WHERE type = 'GROOMING' AND status = 'ACTIVE' LIMIT 1");
-    const [boardingServiceRows] = await getPool().query("SELECT id FROM services WHERE type = 'BOARDING' AND status = 'ACTIVE' LIMIT 1");
-    const [petRows] = await getPool().query('SELECT id FROM pets WHERE status = \'ACTIVE\' LIMIT 1');
+    const petResponse = await agent.post('/api/pets').send({ name: `Report Pet ${sequence}`, species: 'DOG', gender: 'MALE', customer_id: customerId });
+    expect(petResponse.status).toBe(201);
+    const serviceId = await ensureService(agent, 'GROOMING', 'Report Grooming', 800);
+    const boardingServiceId = await ensureService(agent, 'BOARDING', 'Report Boarding', 500);
     const product = await agent.post('/api/products').send({ name: `Report Product ${sequence}`, price: 150, unit: '件', species: 'DOG' });
-    const serviceId = serviceRows[0].id;
-    const boardingServiceId = boardingServiceRows[0].id;
+    expect(product.status).toBe(201);
     const productId = product.body.data.product.id;
     const serviceOrderId = await createOrder(agent, customerId, { service_id: serviceId, transaction_price: 800, quantity: 1 });
     const productOrderId = await createOrder(agent, customerId, { product_id: productId, transaction_price: 150, quantity: 2 });
@@ -94,7 +114,7 @@ describe('Report API', () => {
     const voidPayment = await agent.post(`/api/orders/${productOrderId}/payments`).send({ amount: 300, payment_method: 'CREDIT_CARD' });
     await setPaymentDate(voidPayment.body.data.payment.id, '2026-08-23');
     await agent.post(`/api/payments/${voidPayment.body.data.payment.id}/void`).send({ reason: '測試作廢' });
-    await getPool().query('INSERT INTO boardings (customer_id, pet_id, service_id, status, created_at) VALUES (?, ?, ?, \'PENDING\', ?)', [customerId, petRows[0].id, boardingServiceId, '2026-08-23 12:00:00']);
+    await getPool().query('INSERT INTO boardings (shop_id, customer_id, pet_id, service_id, status, created_at) VALUES (1, ?, ?, ?, \'PENDING\', ?)', [customerId, petResponse.body.data.pet.id, boardingServiceId, '2026-08-23 12:00:00']);
     await getPool().query('UPDATE products SET price = 999 WHERE id = ?', [productId]);
 
     const response = await agent.get('/api/reports?start_date=2026-08-23&end_date=2026-08-23');

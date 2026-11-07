@@ -4,7 +4,7 @@ const path = require('path');
 const { config } = require('../config/env');
 
 const MAX_PDF_SIZE = 10 * 1024 * 1024;
-const BACKUP_LOCK_NAME = 'pets_contract_pdf_storage';
+const BACKUP_LOCK_NAME = 'pets_media_backup';
 const PDF_SIGNATURE = Buffer.from('%PDF-');
 const STORAGE_KEY_PATTERN = /^contract-versions\/[a-f0-9]{32}\.pdf$/;
 

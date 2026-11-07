@@ -299,7 +299,7 @@ describe('Order API', () => {
     const created = await agent.post('/api/orders').send({ customer_id: customerId, business_unit: 'DOG', items: [{ service_id: serviceRows[0].id, transaction_price: 100, quantity: 1 }] });
     const orderId = created.body.data.order.id;
     const [staffRows] = await getPool().query('SELECT id FROM staff WHERE username = ? LIMIT 1', [owner.username]);
-    await getPool().query('INSERT INTO payments (order_id, amount, payment_method, operator_id, status) VALUES (?, 1, \'CASH\', ?, \'PAID\')', [orderId, staffRows[0].id]);
+    await getPool().query('INSERT INTO payments (shop_id, order_id, amount, payment_method, operator_id, status) VALUES (1, ?, 1, \'CASH\', ?, \'PAID\')', [orderId, staffRows[0].id]);
 
     const response = await agent.delete(`/api/orders/${orderId}`);
 
@@ -313,11 +313,11 @@ describe('Order API', () => {
   test('does not delete an order linked to an appointment', async () => {
     const agent = await login(); const customerId = await createCustomer(agent);
     const [appointmentResult] = await getPool().query(
-      'INSERT INTO appointments (customer_id, appointment_date, appointment_time) VALUES (?, \'2026-12-21\', \'11:00:00\')',
+      'INSERT INTO appointments (shop_id, customer_id, appointment_date, appointment_time) VALUES (1, ?, \'2026-12-21\', \'11:00:00\')',
       [customerId],
     );
     const [orderResult] = await getPool().query(
-      'INSERT INTO orders (customer_id, source_type, appointment_id, business_unit, status, total_amount) VALUES (?, \'APPOINTMENT\', ?, \'DOG\', \'UNPAID\', 0)',
+      'INSERT INTO orders (shop_id, customer_id, source_type, appointment_id, business_unit, status, total_amount) VALUES (1, ?, \'APPOINTMENT\', ?, \'DOG\', \'UNPAID\', 0)',
       [customerId, appointmentResult.insertId],
     );
 

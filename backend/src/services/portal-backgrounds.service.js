@@ -1,6 +1,7 @@
 const path = require('path');
 const repository = require('../data/portal-backgrounds.repository');
 const storage = require('../utils/portal-background-storage');
+const { withMediaStorageLock } = require('../utils/media-storage-lock');
 const { logError } = require('../utils/logger');
 
 function notFoundError() {
@@ -43,32 +44,36 @@ async function list(shopId) {
 }
 
 async function upload(file, createdBy, shopId) {
-  let storedKey;
-  let stored = false;
   try {
-    const inspected = await storage.inspectUploadedFile(file);
-    storedKey = storage.createStorageKey(inspected.extension);
-    await storage.moveTemporaryFile(file.path, storedKey);
-    stored = true;
-    const background = await repository.create({
-      shopId,
-      storageKey: storedKey,
-      originalFilename: normalizeFilename(file.originalname),
-      mimeType: inspected.mimeType,
-      fileSize: inspected.bytes.length,
-      createdBy,
-    });
-    if (!background) throw new Error('Failed to create portal background record');
-    return present(background);
-  } catch (error) {
-    if (storedKey && stored) {
+    return await withMediaStorageLock(async () => {
+      let storedKey;
+      let stored = false;
       try {
-        await storage.removeStoredBackground(storedKey);
-      } catch (cleanupError) {
-        logError('Failed to remove orphaned portal background after upload failure', cleanupError);
+        const inspected = await storage.inspectUploadedFile(file);
+        storedKey = storage.createStorageKey(inspected.extension);
+        await storage.moveTemporaryFile(file.path, storedKey);
+        stored = true;
+        const background = await repository.create({
+          shopId,
+          storageKey: storedKey,
+          originalFilename: normalizeFilename(file.originalname),
+          mimeType: inspected.mimeType,
+          fileSize: inspected.bytes.length,
+          createdBy,
+        });
+        if (!background) throw new Error('Failed to create portal background record');
+        return present(background);
+      } catch (error) {
+        if (storedKey && stored) {
+          try {
+            await storage.removeStoredBackground(storedKey);
+          } catch (cleanupError) {
+            logError('Failed to remove orphaned portal background after upload failure', cleanupError);
+          }
+        }
+        throw error;
       }
-    }
-    throw error;
+    });
   } finally {
     if (file?.path) {
       await storage.removeTemporaryFile(file.path).catch((cleanupError) => {
@@ -85,18 +90,20 @@ async function activate(id, shopId) {
 }
 
 async function remove(id, shopId) {
-  const background = await repository.remove(validateId(id), shopId);
-  if (!background) throw notFoundError();
-  try {
-    await storage.removeStoredBackground(background.storage_key);
-  } catch (error) {
-    logError('Failed to remove deleted portal background image file', {
-      backgroundId: background.id,
-      code: error.code,
-    });
-    throw error;
-  }
-  return { id: background.id };
+  return withMediaStorageLock(async () => {
+    const background = await repository.remove(validateId(id), shopId);
+    if (!background) throw notFoundError();
+    try {
+      await storage.removeStoredBackground(background.storage_key);
+    } catch (error) {
+      logError('Failed to remove deleted portal background image file', {
+        backgroundId: background.id,
+        code: error.code,
+      });
+      throw error;
+    }
+    return { id: background.id };
+  });
 }
 
 async function getActiveImage(shopId) {

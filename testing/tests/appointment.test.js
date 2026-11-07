@@ -64,8 +64,8 @@ async function createDurationSnapshotService({ name, species, durationMinutes })
   const uniqueName = `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const [result] = await getPool().query(
     `INSERT INTO services
-     (name, type, description, price, unit, species, duration_minutes, sort_order, status)
-     VALUES (?, 'GROOMING', NULL, 500, '次', ?, ?, 0, 'ACTIVE')`,
+     (shop_id, name, type, description, price, unit, species, duration_minutes, sort_order, status)
+     VALUES (1, ?, 'GROOMING', NULL, 500, '次', ?, ?, 0, 'ACTIVE')`,
     [uniqueName, species, durationMinutes],
   );
   durationSnapshotServiceIds.push(result.insertId);
@@ -422,7 +422,7 @@ describe('Appointment API', () => {
     });
 
     const [noPetInsertResult] = await getPool().query(
-      'INSERT INTO appointments (customer_id, appointment_date, appointment_time, status) VALUES (?, ?, ?, ?)',
+      'INSERT INTO appointments (shop_id, customer_id, appointment_date, appointment_time, status) VALUES (1, ?, ?, ?, ?)',
       [customerId, '2026-09-22', '10:00:00', 'SCHEDULED'],
     );
 
@@ -726,8 +726,8 @@ describe('Appointment API', () => {
     const boardingServiceName = `Test Boarding Service ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const [boardingServiceResult] = await getPool().query(
       `INSERT INTO services
-       (name, type, description, price, unit, species, duration_minutes, sort_order, status)
-       VALUES (?, 'BOARDING', NULL, 500, '次', 'DOG', 60, 0, 'ACTIVE')`,
+       (shop_id, name, type, description, price, unit, species, duration_minutes, sort_order, status)
+       VALUES (1, ?, 'BOARDING', NULL, 500, '晚', 'DOG', 60, 0, 'ACTIVE')`,
       [boardingServiceName],
     );
     const boardingService = { id: boardingServiceResult.insertId };
@@ -741,9 +741,9 @@ describe('Appointment API', () => {
     const appointmentId = createResponse.body.data.appointment.id;
     const [operationRows] = await getPool().query('SELECT id FROM daily_operations WHERE appointment_id = ?', [appointmentId]);
 
-    await getPool().query('INSERT INTO groomings (daily_operation_id, pet_id) VALUES (?, ?)', [operationRows[0].id, petResponse.body.data.pet.id]);
+    await getPool().query('INSERT INTO groomings (shop_id, daily_operation_id, pet_id) VALUES (1, ?, ?)', [operationRows[0].id, petResponse.body.data.pet.id]);
     await getPool().query(
-      'INSERT INTO boardings (customer_id, pet_id, service_id, appointment_id, status) VALUES (?, ?, ?, ?, \'PENDING\')',
+      'INSERT INTO boardings (shop_id, customer_id, pet_id, service_id, appointment_id, status) VALUES (1, ?, ?, ?, ?, \'PENDING\')',
       [customerResponse.body.data.customer.id, petResponse.body.data.pet.id, boardingService.id, appointmentId],
     );
 
@@ -765,7 +765,7 @@ describe('Appointment API', () => {
     });
     const appointmentId = createResponse.body.data.appointment.id;
     const [orderResult] = await getPool().query(
-      'INSERT INTO orders (customer_id, source_type, appointment_id, business_unit, status, total_amount) VALUES (?, \'APPOINTMENT\', ?, \'DOG\', \'UNPAID\', 0)',
+      'INSERT INTO orders (shop_id, customer_id, source_type, appointment_id, business_unit, status, total_amount) VALUES (1, ?, \'APPOINTMENT\', ?, \'DOG\', \'UNPAID\', 0)',
       [customerResponse.body.data.customer.id, appointmentId],
     );
 
@@ -775,7 +775,7 @@ describe('Appointment API', () => {
 
     const [ownerRows] = await getPool().query('SELECT id FROM staff WHERE username = ? LIMIT 1', [owner.username]);
     await getPool().query(
-      'INSERT INTO payments (order_id, amount, payment_method, operator_id, status) VALUES (?, 1, \'CASH\', ?, \'PAID\')',
+      'INSERT INTO payments (shop_id, order_id, amount, payment_method, operator_id, status) VALUES (1, ?, 1, \'CASH\', ?, \'PAID\')',
       [orderResult.insertId, ownerRows[0].id],
     );
     const paymentDeleteResponse = await agent.delete(`/api/appointments/${appointmentId}`);

@@ -25,16 +25,24 @@ function createFixture({ schemaCount = '1', references = '', pdfFiles = [] } = {
   const backupScript = path.join(projectRoot, 'deploy', 'backup.sh');
   const backupGateScript = path.join(projectRoot, 'deploy', 'backup-gate.sh');
   const restoreScript = path.join(projectRoot, 'deploy', 'restore.sh');
+  const deployLibDirectory = path.join(projectRoot, 'deploy', 'lib');
   const restoreMarker = path.join(tempRoot, 'database-restored.txt');
   const queryLog = path.join(tempRoot, 'contract-reference-query.txt');
 
   fs.mkdirSync(path.dirname(backupScript), { recursive: true });
+  fs.mkdirSync(deployLibDirectory, { recursive: true });
   fs.mkdirSync(backupRoot, { recursive: true });
   fs.mkdirSync(storageRoot, { recursive: true });
   fs.mkdirSync(contractDirectory, { recursive: true });
   fs.mkdirSync(toolRoot, { recursive: true });
   fs.copyFileSync(path.resolve(__dirname, '..', '..', 'deploy', 'backup.sh'), backupScript);
   fs.copyFileSync(path.resolve(__dirname, '..', '..', 'deploy', 'restore.sh'), restoreScript);
+  for (const library of ['app-env.sh', 'backup-maintenance.sh', 'mysql-client.sh']) {
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', '..', 'deploy', 'lib', library),
+      path.join(deployLibDirectory, library),
+    );
+  }
 
   const toBashPath = (value) => (process.platform === 'win32'
     ? `/${value[0].toLowerCase()}${value.slice(2).replace(/\\/g, '/')}`
@@ -66,7 +74,17 @@ function createFixture({ schemaCount = '1', references = '', pdfFiles = [] } = {
 
   const mysqlMock = `#!/usr/bin/env bash
 set -e
-if [[ "$*" == *"information_schema.tables"* ]]; then
+  credentials_file=""
+  for argument in "$@"; do
+    case "$argument" in
+      --defaults-extra-file=*) credentials_file="\${argument#*=}" ;;
+    esac
+  done
+  credential_password=""
+  if [ -n "$credentials_file" ]; then
+    credential_password="$(sed -n 's/^password="\\(.*\\)"$/\\1/p' "$credentials_file")"
+  fi
+  if [[ "$*" == *"information_schema.tables"* ]]; then
   if [ "\${MOCK_SCHEMA_QUERY_ERROR:-0}" = "1" ]; then
     echo "schema query failed" >&2
     exit 9
@@ -80,11 +98,8 @@ if [[ "$*" == *"information_schema.tables"* ]]; then
 fi
 if [[ "$*" == *"SELECT storage_path"* ]]; then
   printf '%s\\n' "$*" > "$MOCK_QUERY_LOG"
-  if [ "\${MOCK_AUTH_ERROR:-0}" = "1" ]; then
-    echo "authentication failed" >&2
-    exit 7
-  fi
-  if [ "\${MYSQL_PWD:-}" != "$MOCK_EXPECTED_PASSWORD" ]; then
+  if [ "\${MOCK_AUTH_ERROR:-0}" = "1" ] \
+    || [ "$credential_password" != "$MOCK_EXPECTED_PASSWORD" ]; then
     echo "authentication failed" >&2
     exit 7
   fi
@@ -95,6 +110,26 @@ if [[ "$*" == *"SELECT storage_path"* ]]; then
   references="$MOCK_PDF_REFERENCES"
   if [ -f "$MOCK_RESTORE_MARKER" ] && [ "\${MOCK_RESTORED_REFERENCES_SET:-0}" = "1" ]; then
     references="$MOCK_RESTORED_PDF_REFERENCES"
+  fi
+  if [ -n "$references" ]; then
+    printf '%s\\n' "$references"
+  fi
+  exit 0
+fi
+if [[ "$*" == *"SELECT logo_storage_key"* ]]; then
+  references="$MOCK_LOGO_REFERENCES"
+  if [ -f "$MOCK_RESTORE_MARKER" ] && [ "\${MOCK_RESTORED_LOGO_REFERENCES_SET:-0}" = "1" ]; then
+    references="$MOCK_RESTORED_LOGO_REFERENCES"
+  fi
+  if [ -n "$references" ]; then
+    printf '%s\\n' "$references"
+  fi
+  exit 0
+fi
+if [[ "$*" == *"SELECT storage_key, file_size, mime_type"* ]]; then
+  references="$MOCK_BACKGROUND_REFERENCES"
+  if [ -f "$MOCK_RESTORE_MARKER" ] && [ "\${MOCK_RESTORED_BACKGROUND_REFERENCES_SET:-0}" = "1" ]; then
+    references="$MOCK_RESTORED_BACKGROUND_REFERENCES"
   fi
   if [ -n "$references" ]; then
     printf '%s\\n' "$references"
@@ -145,9 +180,12 @@ exec /usr/bin/find "$@"
 
   const env = {
     ...process.env,
+    APP_COMMIT: 'a'.repeat(40),
     BACKUP_DIR: toBashPath(backupRoot),
     BASH_ENV: toBashPath(bashEnv),
     MOCK_EXPECTED_PASSWORD: 'test-password',
+    MOCK_BACKGROUND_REFERENCES: '',
+    MOCK_LOGO_REFERENCES: '',
     MOCK_FIND_MARKER: toBashPath(path.join(tempRoot, 'find-failure-marker.txt')),
     MOCK_LOCK_MYSQL_ARGS: toBashPath(path.join(tempRoot, 'lock-mysql-args.txt')),
     MOCK_PDF_REFERENCES: references,
@@ -218,6 +256,43 @@ function removeFixture(fixture) {
   fs.rmSync(fixture.tempRoot, { recursive: true, force: true });
 }
 
+function createLegacyBackup(fixture, backupFile) {
+  const toBashPath = (value) => (process.platform === 'win32'
+    ? `/${value[0].toLowerCase()}${value.slice(2).replace(/\\/g, '/')}`
+    : value);
+  const extractedRoot = path.join(fixture.tempRoot, 'legacy-backup');
+  const legacyBackup = path.join(fixture.tempRoot, 'legacy-pets-backup.tar.gz');
+  fs.mkdirSync(extractedRoot);
+  const extract = spawnSync(gitBash, ['-c', `tar -xzf '${toBashPath(backupFile)}' -C '${toBashPath(extractedRoot)}'`], {
+    encoding: 'utf8',
+  });
+  if (extract.status !== 0) {
+    throw new Error(`Could not extract test backup: ${extract.stdout}\n${extract.stderr}`);
+  }
+
+  const manifestPath = path.join(extractedRoot, 'manifest.txt');
+  const manifest = fs.readFileSync(manifestPath, 'utf8')
+    .replace('format=pets-contract-backup-v2', 'format=pets-contract-backup-v1')
+    .split('\n')
+    .filter((line) => !line.startsWith('app_commit=') && !line.startsWith('media_count='))
+    .join('\n');
+  fs.writeFileSync(manifestPath, manifest);
+  fs.rmSync(path.join(extractedRoot, 'MEDIA_MANIFEST.tsv'));
+  fs.rmSync(path.join(extractedRoot, 'media-files.tar.gz'));
+
+  const bashRoot = toBashPath(extractedRoot);
+  const bashBackup = toBashPath(legacyBackup);
+  const repack = spawnSync(gitBash, ['-c', [
+    `cd '${bashRoot}'`,
+    'sha256sum database.sql.gz contract-pdfs.tar.gz PDF_MANIFEST.tsv manifest.txt > SHA256SUMS',
+    `tar -czf '${bashBackup}' database.sql.gz contract-pdfs.tar.gz PDF_MANIFEST.tsv manifest.txt SHA256SUMS`,
+  ].join(' && ')], { encoding: 'utf8' });
+  if (repack.status !== 0) {
+    throw new Error(`Could not create legacy test backup: ${repack.stdout}\n${repack.stderr}`);
+  }
+  return legacyBackup;
+}
+
 function referenceFor(pdf) {
   return `${pdf.storageKey}\t${pdf.bytes.length}\t${pdf.hash}`;
 }
@@ -233,7 +308,9 @@ describe('Contract PDF backup and restore scripts', () => {
     const fixture = createFixture({ schemaCount: '0' });
     try {
       const backup = fixture.runBackup();
-      expect(backup.status).toBe(0);
+      if (backup.status !== 0) {
+        throw new Error(`Backup failed (${backup.status}): ${backup.stdout}\n${backup.stderr}`);
+      }
       const backupFile = fixture.backupPathFor(backup);
       expect(backupFile).not.toBeNull();
 
@@ -288,6 +365,73 @@ describe('Contract PDF backup and restore scripts', () => {
       expectRestoreSuccess(restore);
       expect(fs.existsSync(fixture.queryLog)).toBe(true);
       expect(restore.stdout).toContain('restored and verified');
+    } finally {
+      removeFixture(fixture);
+    }
+  });
+
+  test('backs up and restores Shop Logos and Portal Background files with their database references', () => {
+    const fixture = createFixture({ schemaCount: '1' });
+    const logoKey = `${'4'.repeat(32)}.png`;
+    const backgroundKey = `${'5'.repeat(32)}.webp`;
+    const logoBytes = Buffer.from('shop logo');
+    const backgroundBytes = Buffer.from('portal background');
+    const logoRoot = path.join(path.dirname(fixture.storageRoot), 'shop-logos');
+    const backgroundRoot = path.join(path.dirname(fixture.storageRoot), 'portal-backgrounds');
+    fs.mkdirSync(logoRoot, { recursive: true });
+    fs.mkdirSync(backgroundRoot, { recursive: true });
+    fs.writeFileSync(path.join(logoRoot, logoKey), logoBytes);
+    fs.writeFileSync(path.join(backgroundRoot, backgroundKey), backgroundBytes);
+    fixture.env.MOCK_LOGO_REFERENCES = logoKey;
+    fixture.env.MOCK_BACKGROUND_REFERENCES = `${backgroundKey}\t${backgroundBytes.length}\timage/webp`;
+    try {
+      const backup = fixture.runBackup();
+      if (backup.status !== 0) {
+        throw new Error(`Media backup failed (${backup.status}): ${backup.stdout}\n${backup.stderr}`);
+      }
+      expect(backup.stdout).toContain('a'.repeat(40));
+
+      fs.writeFileSync(path.join(logoRoot, logoKey), 'changed logo');
+      fs.writeFileSync(path.join(backgroundRoot, backgroundKey), 'changed background');
+      fs.writeFileSync(path.join(logoRoot, `${'6'.repeat(32)}.png`), 'extra file');
+
+      const restore = fixture.runRestore(fixture.backupPathFor(backup));
+      expectRestoreSuccess(restore);
+      expect(fs.readFileSync(path.join(logoRoot, logoKey))).toEqual(logoBytes);
+      expect(fs.readFileSync(path.join(backgroundRoot, backgroundKey))).toEqual(backgroundBytes);
+      expect(fs.readdirSync(logoRoot)).toEqual([logoKey]);
+    } finally {
+      removeFixture(fixture);
+    }
+  });
+
+  test('retains existing media when restoring a legacy bundle without media files', () => {
+    const fixture = createFixture({ schemaCount: '1' });
+    const logoKey = `${'7'.repeat(32)}.png`;
+    const backgroundKey = `${'8'.repeat(32)}.webp`;
+    const logoBytes = Buffer.from('existing logo');
+    const backgroundBytes = Buffer.from('existing background');
+    const logoRoot = path.join(path.dirname(fixture.storageRoot), 'shop-logos');
+    const backgroundRoot = path.join(path.dirname(fixture.storageRoot), 'portal-backgrounds');
+    fs.mkdirSync(logoRoot, { recursive: true });
+    fs.mkdirSync(backgroundRoot, { recursive: true });
+    fs.writeFileSync(path.join(logoRoot, logoKey), logoBytes);
+    fs.writeFileSync(path.join(backgroundRoot, backgroundKey), backgroundBytes);
+    fixture.env.MOCK_LOGO_REFERENCES = logoKey;
+    fixture.env.MOCK_BACKGROUND_REFERENCES = `${backgroundKey}\t${backgroundBytes.length}\timage/webp`;
+    try {
+      const backup = fixture.runBackup();
+      expect(backup.status).toBe(0);
+      const legacyBackup = createLegacyBackup(fixture, fixture.backupPathFor(backup));
+      const additionalLogoKey = `${'9'.repeat(32)}.png`;
+      fs.writeFileSync(path.join(logoRoot, additionalLogoKey), 'retain this file');
+
+      const restore = fixture.runRestore(legacyBackup);
+      expectRestoreSuccess(restore);
+      expect(restore.stdout).toContain('does not contain uploaded media');
+      expect(fs.readFileSync(path.join(logoRoot, logoKey))).toEqual(logoBytes);
+      expect(fs.readFileSync(path.join(backgroundRoot, backgroundKey))).toEqual(backgroundBytes);
+      expect(fs.readFileSync(path.join(logoRoot, additionalLogoKey), 'utf8')).toBe('retain this file');
     } finally {
       removeFixture(fixture);
     }
@@ -473,6 +617,7 @@ if [[ "\${source_path##*/}" == .pets_backup_*.tar.gz.tmp \
   && "\${destination##*/}" == pets_backup_*.tar.gz ]]; then
   printf 'archive-publish-race\\n' > "$MOCK_ARCHIVE_RACE_MARKER"
   printf 'competing archive\\n' > "$destination"
+  printf 'competing checksum\\n' > "\${destination}.sha256"
   /usr/bin/stat -c '%d:%i' -- "\${destination}.sha256" > "$MOCK_CHECKSUM_IDENTITY"
   rm -- "\${destination}.sha256"
   printf 'competing checksum\\n' > "\${destination}.sha256"

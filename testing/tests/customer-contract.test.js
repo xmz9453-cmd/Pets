@@ -41,6 +41,10 @@ async function clearData() {
   await getPool().query('DELETE FROM contract_history');
   await getPool().query('DELETE FROM onboardings');
   await getPool().query('DELETE FROM auth_sessions');
+  await getPool().query('DELETE FROM boardings');
+  await getPool().query('DELETE FROM payments');
+  await getPool().query('DELETE FROM order_items');
+  await getPool().query('DELETE FROM orders');
   await getPool().query('DELETE FROM daily_operations');
   await getPool().query('DELETE FROM appointment_pet_services');
   await getPool().query('DELETE FROM appointment_pets');
@@ -60,8 +64,8 @@ async function createContractFixture({ customerId, staffId, version, agreedAt, p
 
   const [versionResult] = await getPool().query(
     `INSERT INTO contract_versions
-     (version_label, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
-     VALUES (?, 'PUBLISHED', FALSE, ?, 'application/pdf', ?, ?, ?)`,
+     (shop_id, version_label, status, is_current, file_name, mime_type, file_size, storage_path, file_hash)
+     VALUES (1, ?, 'PUBLISHED', FALSE, ?, 'application/pdf', ?, ?, ?)`,
     [
       `Customer-${version}-${crypto.randomBytes(3).toString('hex')}`,
       `${version}.pdf`,
@@ -71,19 +75,19 @@ async function createContractFixture({ customerId, staffId, version, agreedAt, p
     ],
   );
   const [petResult] = await getPool().query(
-    `INSERT INTO pets (name, species, gender)
-     VALUES (?, 'DOG', 'UNKNOWN')`,
+    `INSERT INTO pets (shop_id, name, species, gender)
+     VALUES (1, ?, 'DOG', 'UNKNOWN')`,
     [`Contract pet ${version}`],
   );
   const [appointmentResult] = await getPool().query(
-    `INSERT INTO appointments (customer_id, appointment_date, appointment_time)
-     VALUES (?, '2026-10-06', '10:00:00')`,
+    `INSERT INTO appointments (shop_id, customer_id, appointment_date, appointment_time)
+     VALUES (1, ?, '2026-10-06', '10:00:00')`,
     [customerId],
   );
   const [onboardingResult] = await getPool().query(
     `INSERT INTO onboardings
-     (public_token_hash, contract_version_id, status, matched_customer_id, created_by_staff_id, completed_at)
-     VALUES (?, ?, 'COMPLETED', ?, ?, ?)`,
+     (shop_id, public_token_hash, contract_version_id, status, matched_customer_id, created_by_staff_id, completed_at)
+     VALUES (1, ?, ?, 'COMPLETED', ?, ?, ?)`,
     [
       crypto.randomBytes(32).toString('hex'),
       versionResult.insertId,
@@ -94,9 +98,9 @@ async function createContractFixture({ customerId, staffId, version, agreedAt, p
   );
   const [historyResult] = await getPool().query(
     `INSERT INTO contract_history
-     (onboarding_id, customer_id, pet_id, appointment_id, contract_version_id, version,
+     (shop_id, onboarding_id, customer_id, pet_id, appointment_id, contract_version_id, version,
       pdf_hash, storage_path, agreed_at, signature_evidence, signature_hash)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       onboardingResult.insertId,
       customerId,
@@ -127,11 +131,11 @@ describe('Customer completed contract history API', () => {
     await clearData();
     const [[staff]] = await getPool().query('SELECT id FROM staff WHERE username = ?', [owner.username]);
     const [customerA] = await getPool().query(
-      'INSERT INTO customers (name, phone) VALUES (?, ?)',
+      'INSERT INTO customers (shop_id, name, phone) VALUES (1, ?, ?)',
       ['Contract Customer A', '09120000001'],
     );
     const [customerB] = await getPool().query(
-      'INSERT INTO customers (name, phone) VALUES (?, ?)',
+      'INSERT INTO customers (shop_id, name, phone) VALUES (1, ?, ?)',
       ['Contract Customer B', '09120000002'],
     );
     customerAId = customerA.insertId;

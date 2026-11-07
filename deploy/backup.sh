@@ -15,13 +15,60 @@ DB_NAME="psop_one"
 DB_USER="psop_dev_user"
 DB_PASSWORD=""
 CONTRACT_STORAGE_ROOT=""
+SHOP_LOGO_STORAGE_ROOT=""
+PORTAL_BACKGROUND_STORAGE_ROOT=""
 
 if [ -f "${ENV_FILE}" ]; then
   load_deployment_env "${ENV_FILE}"
 fi
 
+if [ -z "${APP_COMMIT:-}" ]; then
+  if [ -n "$(git -C "${PROJECT_ROOT}" status --porcelain)" ]; then
+    echo "[backup.sh ERROR] Application source must have a clean Git working tree before backup." >&2
+    exit 1
+  fi
+  APP_COMMIT="$(git -C "${PROJECT_ROOT}" rev-parse HEAD)"
+fi
+if [[ ! "${APP_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "[backup.sh ERROR] APP_COMMIT must be a 40-character lowercase Git commit SHA." >&2
+  exit 1
+fi
+
 if [ -z "${CONTRACT_STORAGE_ROOT}" ] || [ ! -d "${CONTRACT_STORAGE_ROOT}" ] || [ -L "${CONTRACT_STORAGE_ROOT}" ]; then
   echo "[backup.sh ERROR] CONTRACT_STORAGE_ROOT must identify an existing contract storage directory." >&2
+  exit 1
+fi
+MEDIA_PARENT="$(dirname "${CONTRACT_STORAGE_ROOT}")"
+SHOP_LOGO_STORAGE_ROOT="${SHOP_LOGO_STORAGE_ROOT:-${MEDIA_PARENT}/shop-logos}"
+PORTAL_BACKGROUND_STORAGE_ROOT="${PORTAL_BACKGROUND_STORAGE_ROOT:-${MEDIA_PARENT}/portal-backgrounds}"
+
+ensure_media_root() {
+  local root="$1" label="$2"
+  mkdir -p -- "${root}"
+  if [ -L "${root}" ] || [ ! -d "${root}" ]; then
+    echo "[backup.sh ERROR] ${label} storage root must be a real directory, not a symbolic link." >&2
+    exit 1
+  fi
+  if find "${root}" -type l -print -quit | grep -q .; then
+    echo "[backup.sh ERROR] ${label} storage must not contain symbolic links." >&2
+    exit 1
+  fi
+}
+
+ensure_media_root "${SHOP_LOGO_STORAGE_ROOT}" "Shop Logo"
+ensure_media_root "${PORTAL_BACKGROUND_STORAGE_ROOT}" "Portal Background"
+
+canonical_path() {
+  (cd -P -- "$1" && pwd)
+}
+
+CONTRACT_STORAGE_ROOT="$(canonical_path "${CONTRACT_STORAGE_ROOT}")"
+SHOP_LOGO_STORAGE_ROOT="$(canonical_path "${SHOP_LOGO_STORAGE_ROOT}")"
+PORTAL_BACKGROUND_STORAGE_ROOT="$(canonical_path "${PORTAL_BACKGROUND_STORAGE_ROOT}")"
+if [ "${SHOP_LOGO_STORAGE_ROOT}" = "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] \
+  || [ "${SHOP_LOGO_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ] \
+  || [ "${PORTAL_BACKGROUND_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ]; then
+  echo "[backup.sh ERROR] Contract, Logo, and Portal Background storage roots must be different directories." >&2
   exit 1
 fi
 
@@ -42,7 +89,7 @@ LOCK_READ_FD=""
 LOCK_WRITE_FD=""
 cleanup() {
   if [ -n "${LOCK_PID}" ]; then
-    printf "SELECT RELEASE_LOCK('pets_contract_pdf_storage');\n" >&"${LOCK_WRITE_FD}" 2>/dev/null || true
+    printf "SELECT RELEASE_LOCK('pets_media_backup');\n" >&"${LOCK_WRITE_FD}" 2>/dev/null || true
     exec {LOCK_WRITE_FD}>&-
     exec {LOCK_READ_FD}<&-
     wait "${LOCK_PID}" 2>/dev/null || true
@@ -66,7 +113,8 @@ if [ -e "${BACKUP_FILE}" ] || [ -L "${BACKUP_FILE}" ] \
   exit 1
 fi
 
-mkdir -p "${STAGE_DIR}/pdf-root/contract-versions"
+mkdir -p "${STAGE_DIR}/pdf-root/contract-versions" \
+  "${STAGE_DIR}/media/shop-logos" "${STAGE_DIR}/media/portal-backgrounds"
 SYMLINK_LIST="${STAGE_DIR}/contract-storage-symlinks.txt"
 if ! find "${CONTRACT_STORAGE_ROOT}" -type l -print > "${SYMLINK_LIST}"; then
   echo "[backup.sh ERROR] Could not scan Contract PDF storage for symbolic links." >&2
@@ -84,7 +132,7 @@ coproc PDF_STORAGE_LOCK {
 LOCK_PID="${PDF_STORAGE_LOCK_PID}"
 LOCK_READ_FD="${PDF_STORAGE_LOCK[0]}"
 LOCK_WRITE_FD="${PDF_STORAGE_LOCK[1]}"
-printf "SELECT GET_LOCK('pets_contract_pdf_storage', 30);\n" >&"${LOCK_WRITE_FD}"
+printf "SELECT GET_LOCK('pets_media_backup', 30);\n" >&"${LOCK_WRITE_FD}"
 if ! IFS= read -r -t 35 LOCK_RESULT <&"${LOCK_READ_FD}" || [ "${LOCK_RESULT}" != "1" ]; then
   echo "[backup.sh ERROR] Could not acquire the Contract PDF storage backup lock." >&2
   exit 1
@@ -173,6 +221,79 @@ if [ -d "${CONTRACT_STORAGE_ROOT}/contract-versions" ]; then
     echo "[backup.sh WARNING] Unreferenced PDF files were excluded from the database-consistent backup."
   fi
 fi
+
+copy_media_files() {
+  local source_root="$1" media_name="$2" max_size="$3" source_file storage_key target_file size hash
+  for source_file in "${source_root}"/* "${source_root}"/.[!.]* "${source_root}"/..?*; do
+    [ -e "${source_file}" ] || [ -L "${source_file}" ] || continue
+    storage_key="${source_file##*/}"
+    if [ "${storage_key}" = ".tmp" ] && [ -d "${source_file}" ]; then
+      continue
+    fi
+    if [ ! -f "${source_file}" ] || [ -L "${source_file}" ]; then
+      echo "[backup.sh ERROR] ${media_name} storage contains an unexpected directory or file." >&2
+      return 1
+    fi
+    if [[ ! "${storage_key}" =~ ^[a-f0-9]{32}\.(png|jpg|webp)$ ]]; then
+      echo "[backup.sh ERROR] ${media_name} storage contains an invalid storage key." >&2
+      return 1
+    fi
+    size="$(wc -c < "${source_file}" | tr -d ' ')"
+    if [ "${size}" -le 0 ] || [ "${size}" -gt "${max_size}" ]; then
+      echo "[backup.sh ERROR] ${media_name} storage contains an invalid file size." >&2
+      return 1
+    fi
+    target_file="${STAGE_DIR}/media/${media_name}/${storage_key}"
+    cp -- "${source_file}" "${target_file}"
+    chmod 600 "${target_file}"
+    hash="$(sha256sum "${target_file}" | cut -d' ' -f1)"
+    printf '%s/%s\t%s\t%s\n' "${media_name}" "${storage_key}" "${size}" "${hash}" \
+      >> "${STAGE_DIR}/MEDIA_MANIFEST.tsv"
+  done
+}
+
+: > "${STAGE_DIR}/MEDIA_MANIFEST.tsv"
+if ! copy_media_files "${SHOP_LOGO_STORAGE_ROOT}" shop-logos 2097152 \
+  || ! copy_media_files "${PORTAL_BACKGROUND_STORAGE_ROOT}" portal-backgrounds 10485760; then
+  exit 1
+fi
+sort -o "${STAGE_DIR}/MEDIA_MANIFEST.tsv" "${STAGE_DIR}/MEDIA_MANIFEST.tsv"
+
+mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+  --batch --skip-column-names \
+  -e "SELECT logo_storage_key FROM shop_settings WHERE logo_storage_key IS NOT NULL ORDER BY logo_storage_key;" \
+  > "${STAGE_DIR}/database-logo-references.txt"
+while IFS= read -r storage_key; do
+  [ -n "${storage_key}" ] || continue
+  if [[ ! "${storage_key}" =~ ^[a-f0-9]{32}\.(png|jpg|webp)$ ]] \
+    || [ ! -f "${STAGE_DIR}/media/shop-logos/${storage_key}" ]; then
+    echo "[backup.sh ERROR] A database-referenced Shop Logo is missing or unsafe." >&2
+    exit 1
+  fi
+done < "${STAGE_DIR}/database-logo-references.txt"
+
+mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+  --batch --skip-column-names \
+  -e "SELECT storage_key, file_size, mime_type FROM portal_backgrounds ORDER BY storage_key;" \
+  > "${STAGE_DIR}/database-background-references.tsv"
+while IFS=$'\t' read -r storage_key expected_size mime_type; do
+  [ -n "${storage_key}" ] || continue
+  if [[ ! "${storage_key}" =~ ^[a-f0-9]{32}\.(png|jpg|webp)$ ]] \
+    || [ ! -f "${STAGE_DIR}/media/portal-backgrounds/${storage_key}" ]; then
+    echo "[backup.sh ERROR] A database-referenced Portal Background is missing or unsafe." >&2
+    exit 1
+  fi
+  actual_size="$(wc -c < "${STAGE_DIR}/media/portal-backgrounds/${storage_key}" | tr -d ' ')"
+  case "${storage_key##*.}:${mime_type}" in
+    png:image/png|jpg:image/jpeg|webp:image/webp) ;;
+    *) echo "[backup.sh ERROR] A Portal Background has mismatched media metadata." >&2; exit 1 ;;
+  esac
+  if [ "${actual_size}" != "${expected_size}" ]; then
+    echo "[backup.sh ERROR] A database-referenced Portal Background has an invalid file size." >&2
+    exit 1
+  fi
+done < "${STAGE_DIR}/database-background-references.tsv"
+
 (
   cd "${STAGE_DIR}/pdf-root"
   find contract-versions -type f -name '*.pdf' -print0 \
@@ -187,24 +308,28 @@ fi
 tar -czf "${STAGE_DIR}/contract-pdfs.tar.gz" -C "${STAGE_DIR}/pdf-root" contract-versions
 
 {
-  printf 'format=pets-contract-backup-v1\n'
+  printf 'format=pets-contract-backup-v2\n'
   printf 'timestamp=%s\n' "${TIMESTAMP}"
   printf 'database=%s\n' "${DB_NAME}"
+  printf 'app_commit=%s\n' "${APP_COMMIT}"
   printf 'pdf_count=%s\n' "$(find "${STAGE_DIR}/pdf-root/contract-versions" -type f -name '*.pdf' | wc -l | tr -d ' ')"
+  printf 'media_count=%s\n' "$(wc -l < "${STAGE_DIR}/MEDIA_MANIFEST.tsv" | tr -d ' ')"
 } > "${STAGE_DIR}/manifest.txt"
 
+tar -czf "${STAGE_DIR}/media-files.tar.gz" -C "${STAGE_DIR}/media" shop-logos portal-backgrounds
 (
   cd "${STAGE_DIR}"
-  sha256sum database.sql.gz contract-pdfs.tar.gz PDF_MANIFEST.tsv manifest.txt > SHA256SUMS
+  sha256sum database.sql.gz contract-pdfs.tar.gz PDF_MANIFEST.tsv media-files.tar.gz MEDIA_MANIFEST.tsv manifest.txt > SHA256SUMS
 )
 chmod 600 "${STAGE_DIR}/database.sql.gz" "${STAGE_DIR}/contract-pdfs.tar.gz" \
-  "${STAGE_DIR}/PDF_MANIFEST.tsv" "${STAGE_DIR}/manifest.txt" "${STAGE_DIR}/SHA256SUMS"
+  "${STAGE_DIR}/PDF_MANIFEST.tsv" "${STAGE_DIR}/media-files.tar.gz" \
+  "${STAGE_DIR}/MEDIA_MANIFEST.tsv" "${STAGE_DIR}/manifest.txt" "${STAGE_DIR}/SHA256SUMS"
 tar -czf "${ARCHIVE_TMP}" -C "${STAGE_DIR}" \
-  database.sql.gz contract-pdfs.tar.gz PDF_MANIFEST.tsv manifest.txt SHA256SUMS
+  database.sql.gz contract-pdfs.tar.gz PDF_MANIFEST.tsv media-files.tar.gz MEDIA_MANIFEST.tsv manifest.txt SHA256SUMS
 chmod 600 "${ARCHIVE_TMP}"
 gzip -t "${ARCHIVE_TMP}"
 tar -tzf "${ARCHIVE_TMP}" | sort > "${STAGE_DIR}/archive-contents.txt"
-printf '%s\n' PDF_MANIFEST.tsv SHA256SUMS contract-pdfs.tar.gz database.sql.gz manifest.txt \
+printf '%s\n' PDF_MANIFEST.tsv SHA256SUMS contract-pdfs.tar.gz database.sql.gz manifest.txt media-files.tar.gz MEDIA_MANIFEST.tsv \
   | sort > "${STAGE_DIR}/expected-contents.txt"
 if ! cmp -s "${STAGE_DIR}/archive-contents.txt" "${STAGE_DIR}/expected-contents.txt"; then
   echo "[backup.sh ERROR] Backup archive contents failed verification." >&2
@@ -221,5 +346,5 @@ if [ ! -f "${BACKUP_FILE}" ] || [ -L "${BACKUP_FILE}" ] ||
   echo "[backup.sh ERROR] Published backup bundle is missing or failed final checksum verification." >&2
   exit 1
 fi
-echo "[backup.sh SUCCESS] Verified database + contract PDF bundle: ${BACKUP_FILE}"
+echo "[backup.sh SUCCESS] Verified database, Contract PDFs, Shop Logos, and Portal Backgrounds for ${APP_COMMIT}: ${BACKUP_FILE}"
 echo "BACKUP_FILE=${BACKUP_FILE}"

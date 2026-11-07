@@ -228,7 +228,7 @@ describe('Customer API', () => {
     const { agent } = await loginAsOwner();
     const createResponse = await createCustomerRecord(agent, { name: 'Protected Customer', phone: '0912-999-002' });
     const customerId = createResponse.body.data.customer.id;
-    await getPool().query('INSERT INTO orders (customer_id, business_unit, status, total_amount) VALUES (?, \'DOG\', \'UNPAID\', 0)', [customerId]);
+    await getPool().query('INSERT INTO orders (shop_id, customer_id, business_unit, status, total_amount) VALUES (1, ?, \'DOG\', \'UNPAID\', 0)', [customerId]);
 
     const deleteResponse = await agent.delete(`/api/customers/${customerId}`);
     expect(deleteResponse.status).toBe(409);
@@ -261,7 +261,7 @@ describe('Customer API', () => {
     const customerResponse = await createCustomerRecord(agent, { name: 'Appointment Owner', phone: '0912-999-004' });
     const customerId = customerResponse.body.data.customer.id;
     const [appointmentResult] = await getPool().query(
-      'INSERT INTO appointments (customer_id, appointment_date, appointment_time) VALUES (?, \'2026-12-20\', \'10:00:00\')',
+      'INSERT INTO appointments (shop_id, customer_id, appointment_date, appointment_time) VALUES (1, ?, \'2026-12-20\', \'10:00:00\')',
       [customerId],
     );
     const appointmentId = appointmentResult.insertId;

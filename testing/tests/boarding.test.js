@@ -45,11 +45,13 @@ async function getBoardingService(agent) {
     type: 'BOARDING',
     description: 'Overnight stay',
     price: 1200,
-    unit: '天',
+    unit: '晚',
     species: 'DOG',
     duration_minutes: 1440,
     sort_order: 50,
   });
+  expect(response.status).toBe(201);
+  expect(response.body.data.service).toBeDefined();
   return response.body.data.service.id;
 }
 

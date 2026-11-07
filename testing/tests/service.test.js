@@ -129,11 +129,11 @@ describe('Service API', () => {
     const petResponse = await agent.post('/api/pets').send({ name: 'Service History Pet', species: 'DOG', gender: 'UNKNOWN', customer_id: customerId });
     const petId = petResponse.body.data.pet.id;
 
-    await getPool().query('INSERT INTO appointments (customer_id, appointment_date, appointment_time) VALUES (?, ?, ?)', [customerId, '2026-12-01', '10:00:00']);
+    await getPool().query('INSERT INTO appointments (shop_id, customer_id, appointment_date, appointment_time) VALUES (1, ?, ?, ?)', [customerId, '2026-12-01', '10:00:00']);
     const [appointments] = await getPool().query('SELECT id FROM appointments ORDER BY id DESC LIMIT 1');
-    await getPool().query('INSERT INTO appointment_pets (appointment_id, pet_id) VALUES (?, ?)', [appointments[0].id, petId]);
+    await getPool().query('INSERT INTO appointment_pets (shop_id, appointment_id, pet_id) VALUES (1, ?, ?)', [appointments[0].id, petId]);
     const [appointmentPets] = await getPool().query('SELECT id FROM appointment_pets ORDER BY id DESC LIMIT 1');
-    await getPool().query('INSERT INTO appointment_pet_services (appointment_pet_id, service_id) VALUES (?, ?)', [appointmentPets[0].id, serviceId]);
+    await getPool().query('INSERT INTO appointment_pet_services (shop_id, appointment_pet_id, service_id) VALUES (1, ?, ?)', [appointmentPets[0].id, serviceId]);
 
     const response = await agent.delete(`/api/services/${serviceId}`);
     expect(response.status).toBe(409);

@@ -4,6 +4,7 @@ const { getPool } = require('../config/database');
 const { getCurrentShopId } = require('../utils/shop-context');
 const { resetOperationalDataForApplication } = require('../../../database/scripts/reset-operational-data');
 const shopLogoStorage = require('../utils/shop-logo-storage');
+const { withMediaStorageLock } = require('../utils/media-storage-lock');
 const { logError } = require('../utils/logger');
 
 const WEEKDAYS = shopSettingsRepository.WEEKDAYS;
@@ -200,35 +201,39 @@ async function updateShopSettings(payload = {}) {
 }
 
 async function saveShopLogo(file) {
-  let storedKey = null;
-  let storedFileCreated = false;
   try {
-    const { extension } = await shopLogoStorage.inspectUploadedFile(file);
-    storedKey = shopLogoStorage.createStorageKey(extension);
-    await shopLogoStorage.moveTemporaryFile(file.path, storedKey);
-    storedFileCreated = true;
+    return await withMediaStorageLock(async () => {
+      let storedKey = null;
+      let storedFileCreated = false;
+      try {
+        const { extension } = await shopLogoStorage.inspectUploadedFile(file);
+        storedKey = shopLogoStorage.createStorageKey(extension);
+        await shopLogoStorage.moveTemporaryFile(file.path, storedKey);
+        storedFileCreated = true;
 
-    const result = await withTransaction(async (connection) => {
-      await shopSettingsRepository.getShopSettingsWithHours(connection);
-      const current = await shopSettingsRepository.getShopSettingsForUpdate(connection);
-      const previousKey = await shopSettingsRepository.getShopLogoStorageKey(current.id, connection);
-      const shop = await shopSettingsRepository.updateShopLogo(current.id, storedKey, connection);
-      return { shop, previousKey };
+        const result = await withTransaction(async (connection) => {
+          await shopSettingsRepository.getShopSettingsWithHours(connection);
+          const current = await shopSettingsRepository.getShopSettingsForUpdate(connection);
+          const previousKey = await shopSettingsRepository.getShopLogoStorageKey(current.id, connection);
+          const shop = await shopSettingsRepository.updateShopLogo(current.id, storedKey, connection);
+          return { shop, previousKey };
+        });
+
+        if (result.previousKey && result.previousKey !== storedKey) {
+          await shopLogoStorage.removeStoredLogo(result.previousKey).catch((cleanupError) => {
+            logError('Failed to remove replaced shop logo', { code: cleanupError.code });
+          });
+        }
+        return { shop: result.shop };
+      } catch (error) {
+        if (storedFileCreated) {
+          await shopLogoStorage.removeStoredLogo(storedKey).catch((cleanupError) => {
+            logError('Failed to remove unreferenced shop logo', { code: cleanupError.code });
+          });
+        }
+        throw error;
+      }
     });
-
-    if (result.previousKey && result.previousKey !== storedKey) {
-      await shopLogoStorage.removeStoredLogo(result.previousKey).catch((cleanupError) => {
-        logError('Failed to remove replaced shop logo', { code: cleanupError.code });
-      });
-    }
-    return { shop: result.shop };
-  } catch (error) {
-    if (storedFileCreated) {
-      await shopLogoStorage.removeStoredLogo(storedKey).catch((cleanupError) => {
-        logError('Failed to remove unreferenced shop logo', { code: cleanupError.code });
-      });
-    }
-    throw error;
   } finally {
     if (file?.path) {
       await shopLogoStorage.removeTemporaryFile(file.path).catch((cleanupError) => {
@@ -239,20 +244,22 @@ async function saveShopLogo(file) {
 }
 
 async function removeShopLogo() {
-  const result = await withTransaction(async (connection) => {
-    await shopSettingsRepository.getShopSettingsWithHours(connection);
-    const current = await shopSettingsRepository.getShopSettingsForUpdate(connection);
-    const previousKey = await shopSettingsRepository.getShopLogoStorageKey(current.id, connection);
-    const shop = await shopSettingsRepository.updateShopLogo(current.id, null, connection);
-    return { shop, previousKey };
-  });
-
-  if (result.previousKey) {
-    await shopLogoStorage.removeStoredLogo(result.previousKey).catch((cleanupError) => {
-      logError('Failed to remove deleted shop logo', { code: cleanupError.code });
+  return withMediaStorageLock(async () => {
+    const result = await withTransaction(async (connection) => {
+      await shopSettingsRepository.getShopSettingsWithHours(connection);
+      const current = await shopSettingsRepository.getShopSettingsForUpdate(connection);
+      const previousKey = await shopSettingsRepository.getShopLogoStorageKey(current.id, connection);
+      const shop = await shopSettingsRepository.updateShopLogo(current.id, null, connection);
+      return { shop, previousKey };
     });
-  }
-  return { shop: result.shop };
+
+    if (result.previousKey) {
+      await shopLogoStorage.removeStoredLogo(result.previousKey).catch((cleanupError) => {
+        logError('Failed to remove deleted shop logo', { code: cleanupError.code });
+      });
+    }
+    return { shop: result.shop };
+  });
 }
 
 async function getPublicShopLogo(storageKey) {

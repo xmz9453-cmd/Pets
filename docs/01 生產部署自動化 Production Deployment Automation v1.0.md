@@ -768,7 +768,7 @@ Production Database Backup 必須在 Pending Migration 之前建立。
 
 
 
-&#x20;   /home/zhe/pets-backups/
+&#x20;   /home/zhe/pets-backups/pets_backup_*.tar.gz
 
 
 
@@ -2412,23 +2412,17 @@ Restore 不由：
 
 
 
-&#x20;   /home/zhe/pets-backups/
+&#x20;   /home/zhe/pets-backups/pets_backup_*.tar.gz
 
 
 
-內符合：
+完整備份包含 Database dump、Contract PDFs、Shop Logos、Portal Backgrounds、
+SHA-256 manifests 與 application Git commit SHA。Application source must be
+checked out at that commit for recovery. `.env` secrets are excluded and must be
+stored separately in an encrypted, access-controlled backup; this is not a VM image.
 
-
-
-&#x20;   psop\_one\_\*.sql.gz
-
-
-
-格式的 Backup。
-
-
-
-不得接受任意外部路徑作為 Production Restore Source。
+Restore accepts the bundle path as an explicit argument. Operators must verify that
+the selected file is the intended Production backup before proceeding.
 
 
 
@@ -2444,17 +2438,15 @@ Restore 修改 Production Database 前必須先：
 
 
 
-1\. 確認 Backup Path
+1\. 確認 archive members 與 file types
 
-2\. 確認 Backup Filename
+2\. 驗證 bundle checksums、database archive、PDF/media manifests
 
-3\. 確認 File Exists
+3\. 確認 database references match the archived files
 
-4\. 確認 File Readable
+4\. 顯示 target database、backup path、application commit
 
-5\. 執行 gzip Integrity Check
-
-6\. 驗證通過後才要求 Human Confirmation
+5\. 驗證通過後才要求 Human Confirmation
 
 
 
@@ -2979,4 +2971,3 @@ CODING READY                    PASS
 
 
 END
-

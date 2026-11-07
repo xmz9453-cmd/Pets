@@ -33,15 +33,15 @@ This document provides standard operating procedures (SOP) for **Pets 2.0 Produc
 - **Logs**: `/home/zhe/pets-deploy-state/logs/deploy-YYYYMMDD-HHMMSS.log`
 - **Contract PDF Storage Root**: configured per environment; the Production candidate is `/home/zhe/pets-data/contracts/`. Provision it separately with access restricted to the Backend service account; do not expose it through Nginx.
 
-### Contract PDF Backup and Restore
+### Complete Application Backup and Restore
 
-Contract PDFs and their database metadata form one recoverable contract history. Configure `CONTRACT_STORAGE_ROOT` in the Backend environment and in the repository `.env` used by the maintenance scripts. The root must already exist and be private; backup and restore refuse an unset or missing root.
+The verified backup bundle contains the compressed MySQL dump, Contract PDFs, Shop Logos, Portal Backgrounds, SHA-256 manifests, and the Git commit SHA for the application version. Configure `CONTRACT_STORAGE_ROOT` in the Backend environment and repository `.env` used by maintenance scripts; the root must already exist and be private. Logo and background roots may be configured with `SHOP_LOGO_STORAGE_ROOT` and `PORTAL_BACKGROUND_STORAGE_ROOT`; by default they are next to the contract root.
 
-Shop Logo files are stored separately from MySQL in `SHOP_LOGO_STORAGE_ROOT` (by default, alongside the contract storage root). They must be backed up and restored with the database so logo references remain valid. The current `deploy/backup.sh` bundle includes the database and Contract PDFs, but not Shop Logo files; include the logo directory separately until that backup bundle is extended.
+`deploy/backup.sh` requires a clean Git working tree so the recorded commit identifies the code version used for recovery. It creates a timestamped `pets_backup_YYYYMMDD_HHMMSS.tar.gz` bundle and checksum sidecar. Completed bundles are verified and stored with mode `600`; bundles older than 30 days are removed. Keep the bundle and its `.sha256` sidecar together.
 
-Portal background images are stored separately from MySQL in `PORTAL_BACKGROUND_STORAGE_ROOT` (by default, alongside the contract storage root). Back up and restore this directory together with the database so the administrator's image library and selected background remain available. The current `deploy/backup.sh` bundle does not include shop logos or portal backgrounds; include both media directories separately.
+Application source is recovered by checking out the recorded `app_commit` from the private Git repository. The bundle does not include `.env` or other secrets: store those separately in an encrypted, access-controlled backup. This is an application-level recovery set, not a full VM or operating-system image.
 
-`deploy/backup.sh` creates a timestamped `pets_backup_YYYYMMDD_HHMMSS.tar.gz` bundle containing the compressed MySQL dump, contract PDF archive, PDF manifest, and checksums. Completed bundles are verified and stored with mode `600`; bundles older than 30 days are removed. Keep the bundle as one unit.
+The migration sequence snapshots existing portal footer and background metadata before migration 034 and restores it after the shop-scoping changes; do not edit migration 034 in place.
 
 Restore a complete bundle with:
 
@@ -49,7 +49,7 @@ Restore a complete bundle with:
 bash deploy/restore.sh /home/zhe/pets-backups/pets_backup_YYYYMMDD_HHMMSS.tar.gz
 ```
 
-The restore script validates the archive members, checksums, PDF manifest, storage keys, and then verifies that restored database references match PDF files by size and SHA-256. Stop the application services before restore to prevent reads/writes during the filesystem and database replacement; the storage coordination lock serializes uploads and backup/restore. Type `RESTORE` only after confirming the target environment and bundle. A failed database restore may leave the new PDF directory installed and the prior directory preserved as `.contract-versions-before-restore-*` for manual recovery; investigate before restarting application services.
+The restore script validates archive members, checksums, PDF and media manifests, and verifies that restored database references match files before reporting success. It displays the application commit recorded in the bundle; check out that commit when rebuilding the application. Older v1 bundles do not include Logo or Background files: restore keeps existing media in place and verifies database references against it. Stop the application services before restore to prevent reads/writes during filesystem and database replacement; the storage coordination lock serializes media changes and backup/restore. Type `RESTORE` only after confirming the target environment and bundle. A failed database restore may leave the new storage directories installed and the previous directories preserved as `.before-restore-*` for manual recovery; investigate before restarting application services.
 
 ### Formal State Transition Flow (Decision 20)
 ```
