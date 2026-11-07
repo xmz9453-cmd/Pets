@@ -232,7 +232,7 @@ function Test-ProductionDeploymentTarget {
 }
 function Get-ProductionState {
     $remoteCommand = "if [ -L '$script:StateFile' ]; then echo 'Production deployment state is a symbolic link.' >&2; exit 45; elif [ -f '$script:StateFile' ]; then cat -- '$script:StateFile'; elif [ ! -e '$script:StateFile' ]; then printf '%s\n' PETS_DEPLOY_STATE_NONE; else echo 'Production deployment state is not a regular file.' >&2; exit 46; fi"
-    $lines = Invoke-ReadOnlySsh -RemoteCommand $remoteCommand
+    $lines = @(Invoke-ReadOnlySsh -RemoteCommand $remoteCommand)
     if ($lines.Count -eq 1 -and $lines[0] -ceq 'PETS_DEPLOY_STATE_NONE') {
         return $null
     }

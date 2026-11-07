@@ -406,6 +406,13 @@ test('Production deployment target preflight runs read-only before freeze author
   assert.ok(mutationFlag > mutationStart && sshInvocation > mutationFlag);
 });
 
+test('Production state parser preserves a single SSH output line', () => {
+  const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy-production.ps1'), 'utf8');
+  const stateFunction = deployment.slice(deployment.indexOf('function Get-ProductionState'), deployment.indexOf('function Assert-ProductionState'));
+  assert.match(stateFunction, /\$lines = @\(Invoke-ReadOnlySsh -RemoteCommand \$remoteCommand\)/);
+  assert.match(stateFunction, /\$lines\.Count -eq 1 -and \$lines\[0\] -ceq 'PETS_DEPLOY_STATE_NONE'/);
+});
+
 test('GitHub 推送結果未確認時不會誤報為 Production 部署已開始', () => {
   const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy-production.ps1'), 'utf8');
   const operations = fs.readFileSync(path.join(__dirname, '..', 'operations.js'), 'utf8');
