@@ -18,6 +18,10 @@ function normalizeShop(row) {
   };
 }
 
+function createPublicEntryCode() {
+  return crypto.randomBytes(8).toString('hex');
+}
+
 async function ensurePublicEntryCode(shopId) {
   const pool = getPool();
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -29,7 +33,7 @@ async function ensurePublicEntryCode(shopId) {
     if (rows[0].public_entry_code) return rows[0].public_entry_code;
 
     try {
-      const code = crypto.randomBytes(16).toString('hex');
+      const code = createPublicEntryCode();
       const [result] = await pool.query(
         'UPDATE shops SET public_entry_code = ? WHERE id = ? AND public_entry_code IS NULL',
         [code, shopId],
@@ -84,7 +88,7 @@ async function listPublicShops() {
 }
 
 async function getPublicShopByEntryCode(code) {
-  if (typeof code !== 'string' || !/^[a-f0-9]{32}$/.test(code)) return null;
+  if (typeof code !== 'string' || !/^[a-f0-9]{16}$/.test(code)) return null;
   const [rows] = await getPool().query(
     `SELECT s.name,
             (SELECT ss.logo_storage_key
@@ -154,7 +158,7 @@ async function getShopById(shopId) {
 }
 
 async function getActiveShopIdByPublicEntryCode(code) {
-  if (typeof code !== 'string' || !/^[a-f0-9]{32}$/.test(code)) return null;
+  if (typeof code !== 'string' || !/^[a-f0-9]{16}$/.test(code)) return null;
   const [rows] = await getPool().query(
     "SELECT id FROM shops WHERE public_entry_code = ? AND status = 'ACTIVE' LIMIT 1",
     [code],
@@ -299,6 +303,7 @@ async function countActiveOwnersAtShop(shopId, connection = getPool()) {
 }
 
 module.exports = {
+  createPublicEntryCode,
   addMembership,
   countActiveOwnersAtShop,
   countMembershipsForStaff,

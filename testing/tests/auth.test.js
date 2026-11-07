@@ -158,8 +158,8 @@ describe('Staff authentication API', () => {
     const shops = loginResponse.body.data.staff.shops;
     const newShop = shops.find((shop) => Number(shop.id) === Number(shopResult.insertId));
     const existingShop = shops.find((shop) => Number(shop.id) === 1);
-    expect(newShop.public_entry_code).toMatch(/^[a-f0-9]{32}$/);
-    expect(existingShop.public_entry_code).toMatch(/^[a-f0-9]{32}$/);
+    expect(newShop.public_entry_code).toMatch(/^[a-f0-9]{16}$/);
+    expect(existingShop.public_entry_code).toMatch(/^[a-f0-9]{16}$/);
     expect(newShop.public_entry_code).not.toBe(existingShop.public_entry_code);
     const [entryRows] = await getPool().query(
       'SELECT id FROM shops WHERE public_entry_code = ?',
@@ -178,7 +178,7 @@ describe('Staff authentication API', () => {
       logo_url: null,
     });
     expect(Object.keys(shopEntry.body.data.shop).sort()).toEqual(['announcement', 'logo_url', 'name']);
-    const unknownEntry = await request(app).get(`/api/public/shops/entry/${'0'.repeat(32)}`);
+    const unknownEntry = await request(app).get(`/api/public/shops/entry/${'0'.repeat(16)}`);
     expect(unknownEntry.status).toBe(404);
 
     const publicShops = await request(app).get('/api/public/shops');
@@ -203,7 +203,7 @@ describe('Staff authentication API', () => {
     });
 
     expect(response.status).toBe(201);
-    expect(response.body.data.shop.public_entry_code).toMatch(/^[a-f0-9]{32}$/);
+    expect(response.body.data.shop.public_entry_code).toMatch(/^[a-f0-9]{16}$/);
     createdShopIds.push(response.body.data.shop.id);
   });
 

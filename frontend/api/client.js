@@ -211,7 +211,7 @@ export async function createOnboarding() {
 }
 
 function publicShopOptions(shopId) {
-  if (typeof shopId === 'string' && /^[a-f0-9]{32}$/.test(shopId)) {
+  if (typeof shopId === 'string' && /^[a-f0-9]{16}$/.test(shopId)) {
     return { headers: { 'X-Shop-Entry-Code': shopId } };
   }
   return shopId ? { headers: { 'X-Shop-Id': String(shopId) } } : {};
@@ -239,7 +239,7 @@ export async function logoutCustomerMember(shopId) {
 
 export function getCustomerMemberAuthUrl(provider, shopId, intent = 'LOGIN') {
   const action = intent === 'LINK' ? `/${encodeURIComponent(provider)}/link` : `/${encodeURIComponent(provider)}`;
-  const isEntryCode = typeof shopId === 'string' && /^[a-f0-9]{32}$/.test(shopId);
+  const isEntryCode = typeof shopId === 'string' && /^[a-f0-9]{16}$/.test(shopId);
   const query = new URLSearchParams(isEntryCode
     ? { entry_code: shopId }
     : { shop_id: String(shopId || 1) });

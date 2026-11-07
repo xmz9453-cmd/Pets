@@ -141,7 +141,7 @@ export default function ShopEntryPage() {
           <section className="shop-home-panel" role="alert">
             <h1>目前無法開啟店家入口</h1>
             <p>{error}</p>
-            <Link href="/" className="btn btn-outline-dark">回到入口首頁</Link>
+            <p>請確認網址正確，或向店家索取最新的專屬連結。</p>
           </section>
         ) : null}
         {!loading && shop ? (

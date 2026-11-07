@@ -33,8 +33,8 @@ const { hashPassword } = require('../../backend/src/utils/password');
 const owner = getFoundationOwner();
 const pngBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
 const createdStaffIds = [];
-const primaryEntryCode = crypto.randomBytes(16).toString('hex');
-const secondaryEntryCode = crypto.randomBytes(16).toString('hex');
+const primaryEntryCode = crypto.randomBytes(8).toString('hex');
+const secondaryEntryCode = crypto.randomBytes(8).toString('hex');
 let secondaryShopId;
 
 async function login(username, password) {

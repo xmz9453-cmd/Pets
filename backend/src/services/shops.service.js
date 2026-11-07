@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const shopsRepository = require('../data/shops.repository');
 const shopSettingsRepository = require('../data/shop-settings.repository');
 const { getPool } = require('../config/database');
@@ -46,7 +45,7 @@ async function createShop(payload = {}) {
     const shop = await shopsRepository.createShop({
       name,
       slug,
-      publicEntryCode: crypto.randomBytes(16).toString('hex'),
+      publicEntryCode: shopsRepository.createPublicEntryCode(),
     }, connection);
     await connection.query(
       'INSERT INTO portal_settings (shop_id, footer_text) VALUES (?, ?)',
