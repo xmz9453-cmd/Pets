@@ -1,10 +1,11 @@
 const { getPool } = require('../config/database');
 
-async function list() {
+async function list(shopId) {
   const [rows] = await getPool().query(
     `SELECT id, storage_key, original_filename, mime_type, file_size, is_active, created_by, created_at
-     FROM portal_backgrounds
+     FROM portal_backgrounds WHERE shop_id = ?
      ORDER BY created_at DESC, id DESC`,
+    [shopId],
   );
   return rows.map((row) => ({
     id: Number(row.id),
@@ -18,17 +19,17 @@ async function list() {
   }));
 }
 
-async function create({ storageKey, originalFilename, mimeType, fileSize, createdBy }) {
+async function create({ shopId, storageKey, originalFilename, mimeType, fileSize, createdBy }) {
   const [result] = await getPool().query(
     `INSERT INTO portal_backgrounds
-       (storage_key, original_filename, mime_type, file_size, created_by)
-     VALUES (?, ?, ?, ?, ?)`,
-    [storageKey, originalFilename, mimeType, fileSize, createdBy],
+       (shop_id, storage_key, original_filename, mime_type, file_size, created_by)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [shopId, storageKey, originalFilename, mimeType, fileSize, createdBy],
   );
   const [rows] = await getPool().query(
     `SELECT id, storage_key, original_filename, mime_type, file_size, is_active, created_by, created_at
-     FROM portal_backgrounds WHERE id = ? LIMIT 1`,
-    [result.insertId],
+     FROM portal_backgrounds WHERE id = ? AND shop_id = ? LIMIT 1`,
+    [result.insertId, shopId],
   );
   return rows[0] ? {
     id: Number(rows[0].id),
@@ -42,11 +43,11 @@ async function create({ storageKey, originalFilename, mimeType, fileSize, create
   } : null;
 }
 
-async function getById(id, connection = getPool(), lock = false) {
+async function getById(id, shopId, connection = getPool(), lock = false) {
   const [rows] = await connection.query(
     `SELECT id, storage_key, original_filename, mime_type, file_size, is_active
-     FROM portal_backgrounds WHERE id = ? LIMIT 1${lock ? ' FOR UPDATE' : ''}`,
-    [id],
+     FROM portal_backgrounds WHERE id = ? AND shop_id = ? LIMIT 1${lock ? ' FOR UPDATE' : ''}`,
+    [id, shopId],
   );
   return rows[0] ? {
     id: Number(rows[0].id),
@@ -58,10 +59,11 @@ async function getById(id, connection = getPool(), lock = false) {
   } : null;
 }
 
-async function getActive() {
+async function getActive(shopId) {
   const [rows] = await getPool().query(
     `SELECT id, storage_key, mime_type
-     FROM portal_backgrounds WHERE is_active = 1 LIMIT 1`,
+     FROM portal_backgrounds WHERE shop_id = ? AND is_active = 1 LIMIT 1`,
+    [shopId],
   );
   return rows[0] ? {
     id: Number(rows[0].id),
@@ -70,18 +72,18 @@ async function getActive() {
   } : null;
 }
 
-async function activate(id) {
+async function activate(id, shopId) {
   const connection = await getPool().getConnection();
   try {
     await connection.beginTransaction();
-    await connection.query('SELECT id FROM portal_backgrounds ORDER BY id FOR UPDATE');
-    const background = await getById(id, connection, true);
+    await connection.query('SELECT id FROM portal_backgrounds WHERE shop_id = ? ORDER BY id FOR UPDATE', [shopId]);
+    const background = await getById(id, shopId, connection, true);
     if (!background) {
       await connection.rollback();
       return null;
     }
-    await connection.query('UPDATE portal_backgrounds SET is_active = 0 WHERE is_active = 1');
-    await connection.query('UPDATE portal_backgrounds SET is_active = 1 WHERE id = ?', [id]);
+    await connection.query('UPDATE portal_backgrounds SET is_active = 0 WHERE shop_id = ? AND is_active = 1', [shopId]);
+    await connection.query('UPDATE portal_backgrounds SET is_active = 1 WHERE id = ? AND shop_id = ?', [id, shopId]);
     await connection.commit();
     return { ...background, is_active: true };
   } catch (error) {
@@ -92,16 +94,16 @@ async function activate(id) {
   }
 }
 
-async function remove(id) {
+async function remove(id, shopId) {
   const connection = await getPool().getConnection();
   try {
     await connection.beginTransaction();
-    const background = await getById(id, connection, true);
+    const background = await getById(id, shopId, connection, true);
     if (!background) {
       await connection.rollback();
       return null;
     }
-    await connection.query('DELETE FROM portal_backgrounds WHERE id = ?', [id]);
+    await connection.query('DELETE FROM portal_backgrounds WHERE id = ? AND shop_id = ?', [id, shopId]);
     await connection.commit();
     return background;
   } catch (error) {

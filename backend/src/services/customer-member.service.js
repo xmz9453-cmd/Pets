@@ -285,6 +285,18 @@ async function consumeOAuthState(state, cookieState, providerName) {
   return rows[0];
 }
 
+async function getOAuthEntryCode(state, providerName) {
+  if (typeof state !== 'string' || !state) return null;
+  const [rows] = await getPool().query(
+    `SELECT shop_id FROM customer_member_oauth_states
+     WHERE state_hash = ? AND provider = ? AND expires_at > UTC_TIMESTAMP()
+     LIMIT 1`,
+    [hashSessionToken(state), providerName],
+  );
+  if (!rows[0]) return null;
+  return shopsRepository.getPublicEntryCodeByShopId(rows[0].shop_id);
+}
+
 async function createMemberSession(connection, shopId, memberId) {
   const token = createSessionToken();
   const [result] = await connection.query(
@@ -325,7 +337,12 @@ async function finishOAuth(providerName, state, cookieState, code) {
           throw createError('此登入方式已連結至其他會員，無法自動合併。', 409, 'CUSTOMER_AUTH_IDENTITY_IN_USE');
         }
         await connection.commit();
-        return { intent: 'LINK', shop_id: Number(pending.shop_id), token: null };
+        return {
+          intent: 'LINK',
+          shop_id: Number(pending.shop_id),
+          entry_code: await shopsRepository.getPublicEntryCodeByShopId(pending.shop_id),
+          token: null,
+        };
       }
       const [memberIdentity] = await connection.query(
         `SELECT id FROM customer_member_identities
@@ -341,7 +358,12 @@ async function finishOAuth(providerName, state, cookieState, code) {
         [pending.customer_member_id, provider.name, claims.sub],
       );
       await connection.commit();
-      return { intent: 'LINK', shop_id: Number(pending.shop_id), token: null };
+      return {
+        intent: 'LINK',
+        shop_id: Number(pending.shop_id),
+        entry_code: await shopsRepository.getPublicEntryCodeByShopId(pending.shop_id),
+        token: null,
+      };
     }
 
     const [identities] = await connection.query(
@@ -377,6 +399,7 @@ async function finishOAuth(providerName, state, cookieState, code) {
     return {
       intent: 'LOGIN',
       shop_id: Number(pending.shop_id),
+      entry_code: await shopsRepository.getPublicEntryCodeByShopId(pending.shop_id),
       token: session.token,
       member: { id: Number(member.id), display_name: member.display_name },
     };
@@ -520,6 +543,7 @@ module.exports = {
   finishOAuth,
   findActiveSession,
   getAvailableProviders,
+  getOAuthEntryCode,
   getMember,
   linkCustomerRecord,
   logout,

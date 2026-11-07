@@ -50,7 +50,10 @@ function getMemberErrorMessage(code) {
 
 export default function BookingPage() {
   const router = useRouter();
-  const shopId = router.isReady ? String(router.query.shop_id || '1') : '1';
+  const entryCode = router.isReady && typeof router.query.entry_code === 'string'
+    ? router.query.entry_code
+    : '';
+  const shopId = router.isReady ? entryCode || String(router.query.shop_id || '1') : '1';
   const [providers, setProviders] = useState({ LINE: false, GOOGLE: false });
   const [member, setMember] = useState(null);
   const [customer, setCustomer] = useState(null);
@@ -69,6 +72,7 @@ export default function BookingPage() {
   const [weight, setWeight] = useState('');
   const [serviceId, setServiceId] = useState('');
   const [bookingType, setBookingType] = useState('');
+  const [hasPresetBookingType, setHasPresetBookingType] = useState(false);
   const [appointmentDate, setAppointmentDate] = useState('');
   const [checkOutDate, setCheckOutDate] = useState('');
   const [checkOutTime, setCheckOutTime] = useState('');
@@ -89,6 +93,14 @@ export default function BookingPage() {
   const selectedSpecies = selectedPet?.species || species;
   const selectedService = services.find((service) => String(service.id) === serviceId);
   const visibleServices = services.filter((service) => service.type === bookingType);
+
+  useEffect(() => {
+    if (!router.isReady) return;
+    const requestedType = String(router.query.type || '');
+    const isValidRequestedType = requestedType === 'GROOMING' || requestedType === 'BOARDING';
+    setHasPresetBookingType(isValidRequestedType);
+    setBookingType(isValidRequestedType ? requestedType : '');
+  }, [router.isReady, router.query.type]);
 
   useEffect(() => {
     if (!router.isReady) return;
@@ -230,7 +242,10 @@ export default function BookingPage() {
     setError('');
     try {
       const result = await getCustomerBookingOnboardingToken(appointmentId, shopId);
-      await router.push(`/onboarding/${encodeURIComponent(result.token)}?shop_id=${encodeURIComponent(shopId)}`);
+      const shopQuery = entryCode
+        ? `entry_code=${encodeURIComponent(entryCode)}`
+        : `shop_id=${encodeURIComponent(shopId)}`;
+      await router.push(`/onboarding/${encodeURIComponent(result.token)}?${shopQuery}`);
     } catch (onboardingError) {
       setError(onboardingError.message || '目前無法開啟補件資料，請稍後再試。');
     } finally {
@@ -359,36 +374,38 @@ export default function BookingPage() {
                 </div>
               </section>
 
-              <section className="card shadow-sm mb-4" aria-labelledby="booking-type-title">
-                <div className="card-body">
-                  <h2 className="h5 mb-3" id="booking-type-title">選擇預約項目</h2>
-                  <div className="d-flex flex-wrap gap-3" role="group" aria-label="預約類型">
-                    {[
-                      { type: 'GROOMING', label: '預約美容' },
-                      { type: 'BOARDING', label: '預約住宿' },
-                    ].map(({ type, label }) => (
-                      <button
-                        key={type}
-                        type="button"
-                        className={`btn btn-lg ${bookingType === type ? 'btn-primary' : 'btn-outline-primary'}`}
-                        aria-pressed={bookingType === type}
-                        onClick={() => {
-                          setBookingType(type);
-                          setServiceId('');
-                          setAppointmentDate('');
-                          setCheckOutDate('');
-                          setCheckOutTime('');
-                          setSlots([]);
-                          setSelectedTime('');
-                          setAddOns({});
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
+              {!hasPresetBookingType ? (
+                <section className="card shadow-sm mb-4" aria-labelledby="booking-type-title">
+                  <div className="card-body">
+                    <h2 className="h5 mb-3" id="booking-type-title">選擇預約項目</h2>
+                    <div className="d-flex flex-wrap gap-3" role="group" aria-label="預約類型">
+                      {[
+                        { type: 'GROOMING', label: '預約美容' },
+                        { type: 'BOARDING', label: '預約住宿' },
+                      ].map(({ type, label }) => (
+                        <button
+                          key={type}
+                          type="button"
+                          className={`btn btn-lg ${bookingType === type ? 'btn-primary' : 'btn-outline-primary'}`}
+                          aria-pressed={bookingType === type}
+                          onClick={() => {
+                            setBookingType(type);
+                            setServiceId('');
+                            setAppointmentDate('');
+                            setCheckOutDate('');
+                            setCheckOutTime('');
+                            setSlots([]);
+                            setSelectedTime('');
+                            setAddOns({});
+                          }}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              </section>
+                </section>
+              ) : null}
 
               {submittedRequest ? (
                 <div className="alert alert-success" role="status">

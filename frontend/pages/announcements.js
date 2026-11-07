@@ -40,7 +40,7 @@ export default function AnnouncementsPage() {
             <h1>店家公告</h1>
             <p className="portal-announcements-description">查看各店家最新消息與服務資訊。</p>
           </div>
-          <Link className="portal-staff-link portal-announcements-home" href="/">挑選店家預約</Link>
+          <Link className="portal-staff-link portal-announcements-home" href="/">回到入口首頁</Link>
         </header>
 
         {loading ? <p className="portal-status" role="status">正在載入店家公告…</p> : null}
@@ -68,13 +68,9 @@ export default function AnnouncementsPage() {
                   <h2>{shop.name}</h2>
                 </div>
                 <p className="portal-announcement-card-content">{shop.announcement}</p>
-                <Link
-                  className="portal-announcement-booking"
-                  href={`/booking?shop_id=${encodeURIComponent(shop.id)}`}
-                >
-                  前往預約
-                  <span aria-hidden="true">→</span>
-                </Link>
+                <p className="portal-announcements-description mb-0">
+                  請使用店家提供的專屬網址，直接進入登入與預約。
+                </p>
               </article>
             ))}
           </div>

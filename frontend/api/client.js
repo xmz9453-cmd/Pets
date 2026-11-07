@@ -72,12 +72,16 @@ export async function getPublicShops() {
   return request('/api/public/shops');
 }
 
-export async function getPublicPortalBackground() {
-  return request('/api/public/portal-background');
+export async function getPublicShopEntry(code) {
+  return request(`/api/public/shops/entry/${encodeURIComponent(code)}`);
 }
 
-export async function getPublicPortalSettings() {
-  return request('/api/public/portal-settings');
+export async function getPublicPortalBackground(entryCode) {
+  return request(`/api/public/portal-background/${encodeURIComponent(entryCode)}`);
+}
+
+export async function getPublicPortalSettings(entryCode) {
+  return request(`/api/public/portal-settings/${encodeURIComponent(entryCode)}`);
 }
 
 export async function getPortalSettings() {
@@ -207,6 +211,9 @@ export async function createOnboarding() {
 }
 
 function publicShopOptions(shopId) {
+  if (typeof shopId === 'string' && /^[a-f0-9]{32}$/.test(shopId)) {
+    return { headers: { 'X-Shop-Entry-Code': shopId } };
+  }
   return shopId ? { headers: { 'X-Shop-Id': String(shopId) } } : {};
 }
 
@@ -232,7 +239,10 @@ export async function logoutCustomerMember(shopId) {
 
 export function getCustomerMemberAuthUrl(provider, shopId, intent = 'LOGIN') {
   const action = intent === 'LINK' ? `/${encodeURIComponent(provider)}/link` : `/${encodeURIComponent(provider)}`;
-  const query = new URLSearchParams({ shop_id: String(shopId || 1) });
+  const isEntryCode = typeof shopId === 'string' && /^[a-f0-9]{32}$/.test(shopId);
+  const query = new URLSearchParams(isEntryCode
+    ? { entry_code: shopId }
+    : { shop_id: String(shopId || 1) });
   return `${API_BASE_URL}/api/public/member/auth${action}?${query}`;
 }
 

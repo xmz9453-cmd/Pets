@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const shopsRepository = require('../data/shops.repository');
 const shopSettingsRepository = require('../data/shop-settings.repository');
 const { getPool } = require('../config/database');
@@ -21,6 +22,10 @@ async function listPublicShops() {
   return shopsRepository.listPublicShops();
 }
 
+async function getPublicShopByEntryCode(code) {
+  return shopsRepository.getPublicShopByEntryCode(code);
+}
+
 async function listStaffForPlatformManager(shopId) {
   return shopsRepository.listAllStaffWithRolesAtShop(shopId);
 }
@@ -38,7 +43,15 @@ async function createShop(payload = {}) {
   const connection = await getPool().getConnection();
   try {
     await connection.beginTransaction();
-    const shop = await shopsRepository.createShop({ name, slug }, connection);
+    const shop = await shopsRepository.createShop({
+      name,
+      slug,
+      publicEntryCode: crypto.randomBytes(16).toString('hex'),
+    }, connection);
+    await connection.query(
+      'INSERT INTO portal_settings (shop_id, footer_text) VALUES (?, ?)',
+      [shop.id, ''],
+    );
     await connection.query(
       'INSERT INTO shop_settings (shop_id, name) VALUES (?, ?)',
       [shop.id, name],
@@ -64,6 +77,7 @@ async function createShop(payload = {}) {
 
 module.exports = {
   createShop,
+  getPublicShopByEntryCode,
   listAccessibleShops,
   listPublicShops,
   listStaffForPlatformManager,

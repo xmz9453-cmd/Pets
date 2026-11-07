@@ -1,19 +1,12 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import {
-  activatePortalBackground,
-  API_BASE_URL,
   createShop,
   createStaffAccount,
-  deletePortalBackground,
   getCurrentStaff,
-  getPortalBackgrounds,
-  getPortalSettings,
   getShopStaff,
   resetOperationalData,
   updateShopStaffRoles,
-  updatePortalSettings,
-  uploadPortalBackground,
 } from '../api/client';
 
 const ROLE_LABELS = {
@@ -21,250 +14,6 @@ const ROLE_LABELS = {
   GROOMER: '美容師',
   OWNER: '店家管理者',
 };
-
-function PortalBackgroundsPanel() {
-  const [backgrounds, setBackgrounds] = useState([]);
-  const [file, setFile] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [processingId, setProcessingId] = useState(null);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-
-  async function loadBackgrounds() {
-    setError('');
-    try {
-      const result = await getPortalBackgrounds();
-      setBackgrounds(result.backgrounds || []);
-    } catch (loadError) {
-      setError(loadError.message || '無法載入入口背景圖庫。');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    loadBackgrounds();
-  }, []);
-
-  async function handleUpload(event) {
-    event.preventDefault();
-    if (!file) return;
-    setUploading(true);
-    setError('');
-    setSuccess('');
-    const form = event.currentTarget;
-    try {
-      await uploadPortalBackground(file);
-      setFile(null);
-      form.reset();
-      setSuccess('背景圖片已加入圖庫；目前使用的圖片沒有變更。');
-      await loadBackgrounds();
-    } catch (uploadError) {
-      setError(uploadError.message || '無法上傳入口背景圖片。');
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  async function handleActivate(background) {
-    setProcessingId(background.id);
-    setError('');
-    setSuccess('');
-    try {
-      await activatePortalBackground(background.id);
-      setSuccess(`已將「${background.original_filename}」設為入口背景。`);
-      await loadBackgrounds();
-    } catch (activateError) {
-      setError(activateError.message || '無法切換入口背景。');
-    } finally {
-      setProcessingId(null);
-    }
-  }
-
-  async function handleDelete(background) {
-    const message = background.is_active
-      ? '這是目前入口使用的背景，刪除後入口會回到預設底色。確定要刪除嗎？'
-      : `確定要刪除「${background.original_filename}」嗎？`;
-    if (!window.confirm(message)) return;
-    setProcessingId(background.id);
-    setError('');
-    setSuccess('');
-    try {
-      await deletePortalBackground(background.id);
-      setSuccess('背景圖片已刪除。');
-      await loadBackgrounds();
-    } catch (deleteError) {
-      setError(deleteError.message || '無法刪除入口背景圖片。');
-    } finally {
-      setProcessingId(null);
-    }
-  }
-
-  return (
-    <section className="card shadow-sm mb-4">
-      <div className="card-body">
-        <h2 className="h5">公開入口背景圖庫</h2>
-        <p className="text-muted">
-          管理所有店家共用的入口背景。上傳的照片會加入圖庫，不會自動取代目前使用的圖片；請選擇橫向、貓在左側且狗在右側的照片，以呈現理想版面。
-        </p>
-        {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
-        {success ? <div className="alert alert-success" role="status">{success}</div> : null}
-        <form className="row g-3 align-items-end mb-4" onSubmit={handleUpload}>
-          <div className="col-md-9">
-            <label htmlFor="portal-background-file" className="form-label">新增背景照片</label>
-            <input
-              id="portal-background-file"
-              className="form-control"
-              type="file"
-              accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-              onChange={(event) => setFile(event.target.files?.[0] || null)}
-            />
-            <div className="form-text">只接受 PNG、JPG 或 WebP，單張上限 10 MiB。照片會保存在伺服器的私有媒體目錄。</div>
-          </div>
-          <div className="col-md-3">
-            <button className="btn btn-primary w-100" type="submit" disabled={!file || uploading}>
-              {uploading ? '上傳中…' : '加入圖庫'}
-            </button>
-          </div>
-        </form>
-        {loading ? <p className="text-muted mb-0">正在載入背景圖庫…</p> : null}
-        {!loading && !backgrounds.length ? (
-          <p className="text-muted mb-0">圖庫目前是空的。上傳並選取一張照片後，公開入口就會使用它；在此之前入口會顯示中性底色。</p>
-        ) : null}
-        {backgrounds.length ? (
-          <div className="row g-3">
-            {backgrounds.map((background) => (
-              <div className="col-sm-6 col-xl-4" key={background.id}>
-                <article className="h-100 rounded border p-3">
-                  <img
-                    className="portal-background-card-preview mb-3"
-                    src={`${API_BASE_URL}/api/portal-backgrounds/${background.id}/image`}
-                    alt={`背景預覽：${background.original_filename}`}
-                    crossOrigin="use-credentials"
-                  />
-                  <div className="d-flex align-items-start justify-content-between gap-2">
-                    <strong className="text-break">{background.original_filename}</strong>
-                    {background.is_active ? <span className="badge text-bg-success flex-shrink-0">目前使用</span> : null}
-                  </div>
-                  <p className="small text-muted mt-2 mb-3">
-                    {(background.file_size / (1024 * 1024)).toFixed(2)} MiB
-                  </p>
-                  <div className="d-flex flex-wrap gap-2">
-                    {!background.is_active ? (
-                      <button
-                        className="btn btn-sm btn-outline-primary"
-                        type="button"
-                        disabled={processingId !== null}
-                        onClick={() => handleActivate(background)}
-                      >
-                        設為入口背景
-                      </button>
-                    ) : null}
-                    <button
-                      className="btn btn-sm btn-outline-danger"
-                      type="button"
-                      disabled={processingId !== null}
-                      onClick={() => handleDelete(background)}
-                    >
-                      刪除
-                    </button>
-                  </div>
-                </article>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function PortalFooterSettingsPanel() {
-  const [footerText, setFooterText] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-
-  async function loadSettings() {
-    setLoading(true);
-    setError('');
-    try {
-      const { footer_text: text } = await getPortalSettings();
-      setFooterText(text);
-      setLoaded(true);
-    } catch (loadError) {
-      setError(loadError.message || '無法載入入口版權文字。');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    let active = true;
-    getPortalSettings().then(({ footer_text: text }) => {
-      if (active) {
-        setFooterText(text);
-        setLoaded(true);
-      }
-    }).catch((loadError) => {
-      if (active) setError(loadError.message || '無法載入入口版權文字。');
-    }).finally(() => {
-      if (active) setLoading(false);
-    });
-    return () => { active = false; };
-  }, []);
-
-  async function handleSubmit(event) {
-    event.preventDefault();
-    setSaving(true);
-    setError('');
-    setSuccess('');
-    try {
-      const { footer_text: updatedText } = await updatePortalSettings({ footer_text: footerText });
-      setFooterText(updatedText);
-      setSuccess('入口版權文字已更新。');
-    } catch (saveError) {
-      setError(saveError.message || '無法更新入口版權文字。');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <section className="card shadow-sm mb-4">
-      <div className="card-body">
-        <h2 className="h5">公開入口版權文字</h2>
-        <p className="text-muted">設定公開入口頁面底部顯示的文字；留空即可隱藏。最多 300 個字元。</p>
-        {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
-        {success ? <div className="alert alert-success" role="status">{success}</div> : null}
-        {loading ? <p className="text-muted mb-0">正在載入入口版權文字…</p> : (
-          loaded ? <form onSubmit={handleSubmit}>
-            <label htmlFor="portal-footer-text" className="form-label">版權文字</label>
-            <div className="input-group">
-              <input
-                id="portal-footer-text"
-                className="form-control"
-                value={footerText}
-                onChange={(event) => setFooterText(event.target.value)}
-                maxLength={300}
-              />
-              <button className="btn btn-primary" type="submit" disabled={saving}>
-                {saving ? '儲存中…' : '儲存'}
-              </button>
-            </div>
-          </form> : (
-            <button type="button" className="btn btn-outline-secondary" onClick={loadSettings}>
-              重新載入
-            </button>
-          )
-        )}
-      </div>
-    </section>
-  );
-}
 
 export default function ShopsPage() {
   const router = useRouter();
@@ -383,8 +132,6 @@ export default function ShopsPage() {
       </div>
       {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
       {resetSuccess ? <div className="alert alert-success" role="status">{resetSuccess}</div> : null}
-      {isPlatformShopManager ? <PortalBackgroundsPanel /> : null}
-      {isPlatformShopManager ? <PortalFooterSettingsPanel /> : null}
       <section className="card shadow-sm mb-4">
         <div className="card-body">
           <h2 className="h5">店家管理</h2>
@@ -412,8 +159,18 @@ export default function ShopsPage() {
             <ul className="list-group list-group-flush">
               {shops.map((shop) => (
                 <li className="list-group-item d-flex justify-content-between" key={shop.id}>
-                  <span>{shop.name}{Number(shop.id) === Number(selectedShop?.id) ? <span className="badge text-bg-primary ms-2">目前選取</span> : null}</span>
-                  <code>{shop.slug}</code>
+                  <span>
+                    {shop.name}
+                    {Number(shop.id) === Number(selectedShop?.id) ? <span className="badge text-bg-primary ms-2">目前選取</span> : null}
+                  </span>
+                  <span className="d-flex flex-column align-items-end">
+                    <code>{shop.slug}</code>
+                    {shop.public_entry_code ? (
+                      <a href={`/s/${shop.public_entry_code}`} target="_blank" rel="noreferrer">
+                        顧客專屬入口
+                      </a>
+                    ) : null}
+                  </span>
                 </li>
               ))}
             </ul>

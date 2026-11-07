@@ -2,6 +2,7 @@ const customerMemberService = require('../services/customer-member.service');
 const { config } = require('../config/env');
 const { getCustomerSessionToken } = require('../middleware/authenticate-customer-member');
 const { getCurrentShopId } = require('../utils/shop-context');
+const shopsRepository = require('../data/shops.repository');
 
 function stateCookieName(provider) {
   return `customer_oauth_state_${String(provider).toUpperCase()}`;
@@ -17,8 +18,9 @@ function setSessionCookie(res, token) {
   });
 }
 
-function redirectWithResult(res, key, value) {
-  const destination = new URL(process.env.CUSTOMER_AUTH_RETURN_URL || 'http://localhost:3000/booking');
+function redirectWithResult(res, key, value, entryCode = null) {
+  const returnUrl = process.env.CUSTOMER_AUTH_RETURN_URL || 'http://localhost:3000/booking';
+  const destination = entryCode ? new URL(`/s/${encodeURIComponent(entryCode)}`, returnUrl) : new URL(returnUrl);
   destination.searchParams.set(key, value);
   res.redirect(303, destination.toString());
 }
@@ -32,9 +34,12 @@ function getProviders(req, res) {
 
 async function startLogin(req, res, next) {
   try {
+    const shopId = req.query.entry_code
+      ? await shopsRepository.getActiveShopIdByPublicEntryCode(String(req.query.entry_code))
+      : req.query.shop_id || req.get('x-shop-id');
     const result = await customerMemberService.startOAuth(
       req.params.provider,
-      req.query.shop_id || req.get('x-shop-id'),
+      shopId,
     );
     res.cookie(stateCookieName(result.provider), result.state, {
       httpOnly: true,
@@ -51,9 +56,12 @@ async function startLogin(req, res, next) {
 
 async function startLink(req, res, next) {
   try {
+    const shopId = req.query.entry_code
+      ? await shopsRepository.getActiveShopIdByPublicEntryCode(String(req.query.entry_code))
+      : req.query.shop_id || req.get('x-shop-id');
     const result = await customerMemberService.startOAuth(
       req.params.provider,
-      req.query.shop_id || req.get('x-shop-id'),
+      shopId,
       getCustomerSessionToken(req),
       'LINK',
     );
@@ -84,8 +92,15 @@ async function callback(req, res, next) {
     secure: config.nodeEnv === 'production',
     path: '/api/public/member',
   });
+  let entryCode;
+  try {
+    entryCode = await customerMemberService.getOAuthEntryCode(req.query.state, provider);
+  } catch (error) {
+    next(error);
+    return;
+  }
   if (req.query.error) {
-    redirectWithResult(res, 'member_error', 'login_cancelled');
+    redirectWithResult(res, 'member_error', 'login_cancelled', entryCode);
     return;
   }
   try {
@@ -96,14 +111,14 @@ async function callback(req, res, next) {
       req.query.code,
     );
     if (result.intent === 'LINK') {
-      redirectWithResult(res, 'member_linked', '1');
+      redirectWithResult(res, 'member_linked', '1', result.entry_code || entryCode);
       return;
     }
     setSessionCookie(res, result.token);
-    redirectWithResult(res, 'member_login', '1');
+    redirectWithResult(res, 'member_login', '1', result.entry_code || entryCode);
   } catch (error) {
     if (error.code) {
-      redirectWithResult(res, 'member_error', error.code);
+      redirectWithResult(res, 'member_error', error.code, entryCode);
       return;
     }
     next(error);

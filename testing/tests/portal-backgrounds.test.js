@@ -1,4 +1,5 @@
 const fs = require('fs');
+const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
 const request = require('supertest');
@@ -32,6 +33,9 @@ const { hashPassword } = require('../../backend/src/utils/password');
 const owner = getFoundationOwner();
 const pngBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
 const createdStaffIds = [];
+const primaryEntryCode = crypto.randomBytes(16).toString('hex');
+const secondaryEntryCode = crypto.randomBytes(16).toString('hex');
+let secondaryShopId;
 
 async function login(username, password) {
   const agent = request.agent(app);
@@ -39,14 +43,23 @@ async function login(username, password) {
   return { agent, response };
 }
 
-describe('Portal background library API', () => {
+describe('Shop portal appearance API', () => {
   beforeAll(async () => {
     await setup();
     await getPool().query('DELETE FROM auth_sessions');
     await getPool().query('DELETE FROM portal_backgrounds');
     await getPool().query(
-      'UPDATE portal_settings SET footer_text = ? WHERE id = 1',
-      ['© 2026 毛孩生活服務｜保留所有權利'],
+      "UPDATE portal_settings SET footer_text = '' WHERE shop_id = 1",
+    );
+    await getPool().query('UPDATE shops SET public_entry_code = ? WHERE id = 1', [primaryEntryCode]);
+    const [shop] = await getPool().query(
+      'INSERT INTO shops (name, slug, public_entry_code, status) VALUES (?, ?, ?, "ACTIVE")',
+      ['Portal Test Shop', `portal-test-${process.pid}`, secondaryEntryCode],
+    );
+    secondaryShopId = shop.insertId;
+    await getPool().query(
+      "INSERT INTO portal_settings (shop_id, footer_text) VALUES (?, '')",
+      [secondaryShopId],
     );
     await getPool().query('UPDATE staff SET status = "ACTIVE" WHERE username = ?', [owner.username]);
   });
@@ -55,8 +68,8 @@ describe('Portal background library API', () => {
     await getPool().query('DELETE FROM auth_sessions');
     await getPool().query('DELETE FROM portal_backgrounds');
     await getPool().query(
-      'UPDATE portal_settings SET footer_text = ? WHERE id = 1',
-      ['© 2026 毛孩生活服務｜保留所有權利'],
+      "UPDATE portal_settings SET footer_text = '' WHERE shop_id IN (1, ?)",
+      [secondaryShopId],
     );
     if (createdStaffIds.length) {
       await getPool().query('DELETE FROM staff WHERE id IN (?)', [createdStaffIds]);
@@ -65,52 +78,62 @@ describe('Portal background library API', () => {
   });
 
   afterAll(async () => {
+    await getPool().query('DELETE FROM portal_settings WHERE shop_id = ?', [secondaryShopId]);
+    await getPool().query('DELETE FROM shops WHERE id = ?', [secondaryShopId]);
     await closePool();
     await fs.promises.rm(portalBackgroundStorageRoot, { recursive: true, force: true });
   });
 
-  test('public entry returns a neutral fallback until a manager selects an image', async () => {
-    const selection = await request(app).get('/api/public/portal-background');
-    const image = await request(app).get('/api/public/portal-background/image');
-    const settings = await request(app).get('/api/public/portal-settings');
+  test('each public entry starts without a background or footer text', async () => {
+    const selection = await request(app).get(`/api/public/portal-background/${primaryEntryCode}`);
+    const image = await request(app).get(`/api/public/portal-background/${primaryEntryCode}/image`);
+    const settings = await request(app).get(`/api/public/portal-settings/${primaryEntryCode}`);
+    const otherSelection = await request(app).get(`/api/public/portal-background/${secondaryEntryCode}`);
+    const otherSettings = await request(app).get(`/api/public/portal-settings/${secondaryEntryCode}`);
 
     expect(selection.status).toBe(200);
     expect(selection.body.data.background_url).toBeNull();
     expect(settings.status).toBe(200);
-    expect(settings.body.data.footer_text).toBe('© 2026 毛孩生活服務｜保留所有權利');
+    expect(settings.body.data.footer_text).toBe('');
+    expect(otherSelection.body.data.background_url).toBeNull();
+    expect(otherSettings.body.data.footer_text).toBe('');
     expect(image.status).toBe(404);
+    expect((await request(app).get('/api/public/portal-background/invalid-code')).status).toBe(404);
   });
 
-  test('only the platform manager can update the public entry footer text', async () => {
+  test('a shop owner can update only that shop public footer text', async () => {
     expect((await request(app).get('/api/portal-settings')).status).toBe(401);
     const { agent, response: loginResponse } = await login(owner.username, owner.password);
     expect(loginResponse.status).toBe(200);
 
-    const settings = await agent.get('/api/portal-settings');
+    const settings = await agent.get('/api/portal-settings').set('X-Shop-Id', '1');
     expect(settings.status).toBe(200);
-    expect(settings.body.data.footer_text).toBe('© 2026 毛孩生活服務｜保留所有權利');
+    expect(settings.body.data.footer_text).toBe('');
 
-    const updated = await agent.put('/api/portal-settings').send({
+    const updated = await agent.put('/api/portal-settings').set('X-Shop-Id', '1').send({
       footer_text: '© 2027 毛孩生活服務',
     });
     expect(updated.status).toBe(200);
     expect(updated.body.data.footer_text).toBe('© 2027 毛孩生活服務');
-    expect((await request(app).get('/api/public/portal-settings')).body.data.footer_text)
+    expect((await request(app).get(`/api/public/portal-settings/${primaryEntryCode}`)).body.data.footer_text)
       .toBe('© 2027 毛孩生活服務');
+    expect((await agent.get('/api/portal-settings').set('X-Shop-Id', String(secondaryShopId))).body.data.footer_text)
+      .toBe('');
+    expect((await request(app).get(`/api/public/portal-settings/${secondaryEntryCode}`)).body.data.footer_text).toBe('');
 
-    const invalid = await agent.put('/api/portal-settings').send({
+    const invalid = await agent.put('/api/portal-settings').set('X-Shop-Id', '1').send({
       footer_text: '字'.repeat(301),
     });
     expect(invalid.status).toBe(400);
     expect(invalid.body.success).toBe(false);
   });
 
-  test('only the platform manager can upload, select, preview, and delete library images', async () => {
+  test('each shop owner can manage only their own background library', async () => {
     const { agent, response: loginResponse } = await login(owner.username, owner.password);
     expect(loginResponse.status).toBe(200);
     expect((await request(app).get('/api/portal-backgrounds')).status).toBe(401);
 
-    const uploaded = await agent.post('/api/portal-backgrounds')
+    const uploaded = await agent.post('/api/portal-backgrounds').set('X-Shop-Id', '1')
       .attach('file', pngBytes, { filename: 'cat-dog.png', contentType: 'image/png' });
     expect(uploaded.status).toBe(201);
     expect(uploaded.body.data.background).toMatchObject({
@@ -121,41 +144,47 @@ describe('Portal background library API', () => {
     expect(uploaded.body.data.background.storage_key).toBeUndefined();
 
     const id = uploaded.body.data.background.id;
-    const library = await agent.get('/api/portal-backgrounds');
+    const library = await agent.get('/api/portal-backgrounds').set('X-Shop-Id', '1');
     expect(library.status).toBe(200);
     expect(library.body.data.backgrounds).toHaveLength(1);
     expect(library.body.data.backgrounds[0].storage_key).toBeUndefined();
 
-    const managedPreview = await agent.get(`/api/portal-backgrounds/${id}/image`);
+    const managedPreview = await agent.get(`/api/portal-backgrounds/${id}/image?shop_id=1`);
     expect(managedPreview.status).toBe(200);
     expect(managedPreview.headers['content-type']).toContain('image/png');
     expect(managedPreview.body).toEqual(pngBytes);
 
-    const activated = await agent.put(`/api/portal-backgrounds/${id}/active`);
+    const activated = await agent.put(`/api/portal-backgrounds/${id}/active`).set('X-Shop-Id', '1');
     expect(activated.status).toBe(200);
     expect(activated.body.data.background.is_active).toBe(true);
 
-    const selection = await request(app).get('/api/public/portal-background');
-    expect(selection.body.data.background_url).toBe('/api/public/portal-background/image');
+    const selection = await request(app).get(`/api/public/portal-background/${primaryEntryCode}`);
+    expect(selection.body.data.background_url).toBe(`/api/public/portal-background/${primaryEntryCode}/image`);
     const publicImage = await request(app).get(selection.body.data.background_url);
     expect(publicImage.status).toBe(200);
     expect(publicImage.body).toEqual(pngBytes);
+    expect((await request(app).get(`/api/public/portal-background/${secondaryEntryCode}`)).body.data.background_url)
+      .toBeNull();
+    expect((await agent.get('/api/portal-backgrounds').set('X-Shop-Id', String(secondaryShopId)))
+      .body.data.backgrounds).toHaveLength(0);
+    expect((await agent.put(`/api/portal-backgrounds/${id}/active`)
+      .set('X-Shop-Id', String(secondaryShopId))).status).toBe(404);
 
-    const secondUpload = await agent.post('/api/portal-backgrounds')
+    const secondUpload = await agent.post('/api/portal-backgrounds').set('X-Shop-Id', '1')
       .attach('file', pngBytes, { filename: 'new-cat-dog.png', contentType: 'image/png' });
     expect(secondUpload.status).toBe(201);
     expect(secondUpload.body.data.background.is_active).toBe(false);
-    const updatedLibrary = await agent.get('/api/portal-backgrounds');
+    const updatedLibrary = await agent.get('/api/portal-backgrounds').set('X-Shop-Id', '1');
     expect(updatedLibrary.body.data.backgrounds.find((background) => background.is_active).id).toBe(id);
-    expect((await request(app).get('/api/public/portal-background')).body.data.background_url)
-      .toBe('/api/public/portal-background/image');
+    expect((await request(app).get(`/api/public/portal-background/${primaryEntryCode}`)).body.data.background_url)
+      .toBe(`/api/public/portal-background/${primaryEntryCode}/image`);
 
-    const deleted = await agent.delete(`/api/portal-backgrounds/${id}`);
+    const deleted = await agent.delete(`/api/portal-backgrounds/${id}`).set('X-Shop-Id', '1');
     expect(deleted.status).toBe(200);
-    expect((await request(app).get('/api/public/portal-background')).body.data.background_url).toBeNull();
+    expect((await request(app).get(`/api/public/portal-background/${primaryEntryCode}`)).body.data.background_url).toBeNull();
   });
 
-  test('store staff cannot manage the global background library', async () => {
+  test('non-owner shop staff cannot manage portal appearance', async () => {
     const username = `background-staff-${Date.now()}`;
     const [staff] = await getPool().query(
       'INSERT INTO staff (username, password_hash, display_name, status) VALUES (?, ?, ?, "ACTIVE")',
@@ -170,7 +199,7 @@ describe('Portal background library API', () => {
     );
     const { agent, response: loginResponse } = await login(username, 'background-pass-123');
     expect(loginResponse.status).toBe(200);
-    expect((await agent.get('/api/portal-backgrounds')).status).toBe(403);
-    expect((await agent.get('/api/portal-settings')).status).toBe(403);
+    expect((await agent.get('/api/portal-backgrounds').set('X-Shop-Id', '1')).status).toBe(403);
+    expect((await agent.get('/api/portal-settings').set('X-Shop-Id', '1')).status).toBe(403);
   });
 });

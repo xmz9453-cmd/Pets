@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { API_BASE_URL, changeOwnPassword, createBookingResource, createBookingResourceBlock, createBookingScheduleOverride, createBookingScheduleRule, createContractVersion, deleteBookingResource, deleteBookingResourceBlock, deleteBookingScheduleOverride, deleteBookingScheduleRule, deleteContractVersion, deleteShopLogo, getBookingResources, getBookingSchedule, getContractVersions, getCurrentStaff, getShopSettings, getStaffAccounts, publishContractVersion, removeStaffMembership, resetStaffPassword, setCurrentContractVersion, updateBookingResource, updateBookingResourceHours, updateBookingScheduleOverride, updateBookingScheduleRule, updateContractVersion, updateShopSettings, updateStaffRoles, updateStaffStatus, uploadContractVersionPdf, uploadShopLogo } from '../api/client';
 import { getRoleLabel } from '../utils/staff-display';
+import ShopPortalAppearanceSettings from '../components/ShopPortalAppearanceSettings';
 
 const WEEKDAY_ORDER = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 const WEEKDAY_LABELS = {
@@ -362,15 +363,15 @@ function BookingScheduleSettings() {
   );
 }
 
-function PublicBookingLink({ shopId }) {
+function PublicBookingLink({ entryCode }) {
   const [url, setUrl] = useState('');
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (shopId) {
-      setUrl(`${window.location.origin}/booking?shop_id=${encodeURIComponent(shopId)}`);
+    if (entryCode) {
+      setUrl(`${window.location.origin}/s/${encodeURIComponent(entryCode)}`);
     }
-  }, [shopId]);
+  }, [entryCode]);
 
   async function copyUrl() {
     if (!url) return;
@@ -388,8 +389,8 @@ function PublicBookingLink({ shopId }) {
       <div className="card-body py-3">
         <div className="d-flex flex-wrap align-items-center gap-2">
           <div className="me-auto">
-            <h2 className="h6 mb-1">公開預約網址</h2>
-            <p className="small text-muted mb-0">可複製到 LINE，讓客戶直接進入預約。</p>
+            <h2 className="h6 mb-1">店家專屬顧客入口</h2>
+            <p className="small text-muted mb-0">此網址直接進入本店登入與預約，可複製分享給客戶。</p>
           </div>
           <input className="form-control form-control-sm" style={{ maxWidth: 440 }} value={url} readOnly aria-label="公開預約網址" />
           <button type="button" className="btn btn-sm btn-outline-dark" onClick={copyUrl} disabled={!url}>
@@ -1200,7 +1201,11 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {canEdit ? <PublicBookingLink shopId={staff?.shop_id} /> : null}
+      {canEdit ? (
+        <PublicBookingLink
+          entryCode={staff?.shops?.find((shop) => Number(shop.id) === Number(staff.shop_id))?.public_entry_code}
+        />
+      ) : null}
 
       {error ? <div className="alert alert-danger">{error}</div> : null}
       {success ? <div className="alert alert-success">{success}</div> : null}
@@ -1366,6 +1371,7 @@ export default function SettingsPage() {
         </div>
       </form>
 
+      {canEdit && staff.shop_id ? <ShopPortalAppearanceSettings shopId={staff.shop_id} /> : null}
       {canEdit ? <BookingScheduleSettings /> : null}
       {canEdit ? <BookingResourceSettings /> : null}
 

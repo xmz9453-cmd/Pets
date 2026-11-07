@@ -25,6 +25,22 @@ async function listPublic(req, res, next) {
   }
 }
 
+async function getPublicByEntryCode(req, res, next) {
+  try {
+    const shop = await shopsService.getPublicShopByEntryCode(req.params.code);
+    if (!shop) {
+      res.status(404).json({
+        success: false,
+        error: { message: 'Shop is unavailable' },
+      });
+      return;
+    }
+    res.json({ success: true, data: { shop } });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function create(req, res, next) {
   try {
     res.status(201).json({
@@ -53,4 +69,4 @@ async function updateStaffRoles(req, res, next) {
   }
 }
 
-module.exports = { create, list, listPublic, listStaff, updateStaffRoles };
+module.exports = { create, getPublicByEntryCode, list, listPublic, listStaff, updateStaffRoles };

@@ -20,7 +20,7 @@ function readCookie(req, name) {
 async function requireAuthentication(req, res, next) {
   try {
     const token = readCookie(req, authService.SESSION_COOKIE_NAME);
-    const requestedShopId = req.get('x-shop-id');
+    const requestedShopId = req.get('x-shop-id') || req.query.shop_id;
     const staff = await authService.authenticateToken(token, requestedShopId);
     req.auth = { staff };
     next();

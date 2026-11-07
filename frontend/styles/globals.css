@@ -1670,7 +1670,182 @@ body {
   .portal-page {
     padding-top: 10px;
   }
+}
 
+.shop-home-page {
+  display: flex;
+  align-items: center;
+}
+
+.shop-home-page .portal-content {
+  padding-bottom: 24px;
+}
+
+.shop-home-logo {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(121, 86, 56, 0.18);
+  border-radius: 50%;
+  background: rgba(255, 253, 249, 0.88);
+  color: var(--warm-brown);
+  font-size: 1.35rem;
+}
+
+.shop-home-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.shop-home-announcement {
+  cursor: default;
+}
+
+.shop-home-announcement:hover {
+  border-color: rgba(121, 86, 56, 0.13);
+  box-shadow: 0 8px 24px rgba(73, 54, 36, 0.045);
+}
+
+.shop-home-hero {
+  min-height: 180px;
+  margin-bottom: 18px;
+}
+
+.shop-home-panel {
+  width: min(100%, 880px);
+  margin: 0 auto;
+  padding: clamp(24px, 4vw, 42px);
+  border: 1px solid rgba(121, 86, 56, 0.15);
+  border-radius: 24px;
+  background: rgba(255, 253, 249, 0.93);
+  box-shadow: 0 18px 48px rgba(73, 54, 36, 0.12);
+  text-align: center;
+  backdrop-filter: blur(12px);
+}
+
+.shop-home-panel h1,
+.shop-home-panel h2 {
+  color: var(--warm-text);
+  font-weight: 750;
+}
+
+.shop-home-panel h2 {
+  margin-bottom: 8px;
+  font-size: clamp(1.25rem, 2.4vw, 1.65rem);
+}
+
+.shop-home-panel > p {
+  color: var(--warm-muted);
+}
+
+.shop-home-auth-actions,
+.shop-home-booking-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  max-width: 600px;
+  margin: 22px auto 0;
+}
+
+.shop-home-auth-actions .btn {
+  min-height: 52px;
+  display: grid;
+  place-items: center;
+  font-weight: 650;
+}
+
+.shop-home-welcome {
+  margin-bottom: 6px;
+  color: var(--warm-brown) !important;
+  font-weight: 700;
+}
+
+.shop-home-booking-card {
+  display: flex;
+  min-height: 170px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid rgba(121, 86, 56, 0.2);
+  border-radius: 18px;
+  background: linear-gradient(145deg, #fffdfa, #f3ece2);
+  color: var(--warm-text);
+  text-decoration: none;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.shop-home-booking-card:hover,
+.shop-home-booking-card:focus-visible {
+  transform: translateY(-3px);
+  border-color: #b89a7b;
+  box-shadow: 0 12px 28px rgba(73, 54, 36, 0.12);
+  color: var(--warm-text);
+}
+
+.shop-home-booking-card:focus-visible {
+  outline: 3px solid rgba(121, 86, 56, 0.28);
+  outline-offset: 3px;
+}
+
+.shop-home-booking-card > span:first-child {
+  color: var(--warm-brown);
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.shop-home-booking-card strong {
+  font-size: 1.12rem;
+}
+
+.shop-home-booking-card > span:last-child {
+  color: var(--warm-muted);
+  font-size: 0.88rem;
+}
+
+.shop-home-footer {
+  padding: 18px 0 4px;
+  color: var(--warm-muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+@media (max-width: 575.98px) {
+  .shop-home-page {
+    align-items: flex-start;
+  }
+
+  .shop-home-page .portal-content {
+    padding-bottom: 12px;
+  }
+
+  .shop-home-hero {
+    min-height: 145px;
+  }
+
+  .shop-home-panel {
+    padding: 22px 16px;
+    border-radius: 18px;
+  }
+
+  .shop-home-auth-actions,
+  .shop-home-booking-actions {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-top: 16px;
+  }
+
+  .shop-home-booking-card {
+    min-height: 130px;
+  }
+}
+
+@media (max-height: 720px) {
   .portal-announcement {
     margin-top: 8px;
   }

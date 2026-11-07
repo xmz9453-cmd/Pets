@@ -38,11 +38,11 @@ function present(background) {
   };
 }
 
-async function list() {
-  return (await repository.list()).map(present);
+async function list(shopId) {
+  return (await repository.list(shopId)).map(present);
 }
 
-async function upload(file, createdBy) {
+async function upload(file, createdBy, shopId) {
   let storedKey;
   let stored = false;
   try {
@@ -51,6 +51,7 @@ async function upload(file, createdBy) {
     await storage.moveTemporaryFile(file.path, storedKey);
     stored = true;
     const background = await repository.create({
+      shopId,
       storageKey: storedKey,
       originalFilename: normalizeFilename(file.originalname),
       mimeType: inspected.mimeType,
@@ -77,14 +78,14 @@ async function upload(file, createdBy) {
   }
 }
 
-async function activate(id) {
-  const background = await repository.activate(validateId(id));
+async function activate(id, shopId) {
+  const background = await repository.activate(validateId(id), shopId);
   if (!background) throw notFoundError();
   return present(background);
 }
 
-async function remove(id) {
-  const background = await repository.remove(validateId(id));
+async function remove(id, shopId) {
+  const background = await repository.remove(validateId(id), shopId);
   if (!background) throw notFoundError();
   try {
     await storage.removeStoredBackground(background.storage_key);
@@ -98,21 +99,21 @@ async function remove(id) {
   return { id: background.id };
 }
 
-async function getActiveImage() {
-  const active = await repository.getActive();
+async function getActiveImage(shopId) {
+  const active = await repository.getActive(shopId);
   if (!active) throw notFoundError();
   return storage.readStoredBackground(active.storage_key);
 }
 
-async function getManagedImage(id) {
-  const background = await repository.getById(validateId(id));
+async function getManagedImage(id, shopId) {
+  const background = await repository.getById(validateId(id), shopId);
   if (!background) throw notFoundError();
   return storage.readStoredBackground(background.storage_key);
 }
 
-async function getPublicSelection() {
-  const active = await repository.getActive();
-  return { background_url: active ? '/api/public/portal-background/image' : null };
+async function getPublicSelection(shopId, entryCode) {
+  const active = await repository.getActive(shopId);
+  return { background_url: active ? `/api/public/portal-background/${encodeURIComponent(entryCode)}/image` : null };
 }
 
 module.exports = {

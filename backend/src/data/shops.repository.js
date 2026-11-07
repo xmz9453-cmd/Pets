@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { getPool } = require('../config/database');
 
 const SHOP_LOGO_SELECT = `(SELECT ss.logo_storage_key
@@ -11,19 +12,50 @@ function normalizeShop(row) {
     id: Number(row.id),
     name: row.name,
     slug: row.slug,
+    ...(row.public_entry_code ? { public_entry_code: row.public_entry_code } : {}),
     status: row.status,
     logo_url: row.logo_storage_key ? `/api/public/shop-logos/${row.logo_storage_key}` : null,
   };
 }
 
+async function ensurePublicEntryCode(shopId) {
+  const pool = getPool();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const [rows] = await pool.query(
+      'SELECT public_entry_code FROM shops WHERE id = ? LIMIT 1',
+      [shopId],
+    );
+    if (!rows[0]) return null;
+    if (rows[0].public_entry_code) return rows[0].public_entry_code;
+
+    try {
+      const code = crypto.randomBytes(16).toString('hex');
+      const [result] = await pool.query(
+        'UPDATE shops SET public_entry_code = ? WHERE id = ? AND public_entry_code IS NULL',
+        [code, shopId],
+      );
+      if (result.affectedRows) return code;
+    } catch (error) {
+      if (error.code !== 'ER_DUP_ENTRY') throw error;
+    }
+  }
+
+  const error = new Error('Unable to allocate a unique public shop entry code');
+  error.code = 'SHOP_ENTRY_CODE_ALLOCATION_FAILED';
+  throw error;
+}
+
 async function listAllShops() {
   const [rows] = await getPool().query(
-    `SELECT s.id, s.name, s.slug, s.status, ${SHOP_LOGO_SELECT}
+    `SELECT s.id, s.name, s.slug, s.public_entry_code, s.status, ${SHOP_LOGO_SELECT}
      FROM shops s
      WHERE s.status = 'ACTIVE'
      ORDER BY s.id ASC`,
   );
-  return rows.map(normalizeShop);
+  return Promise.all(rows.map(async (row) => {
+    const publicEntryCode = row.public_entry_code || await ensurePublicEntryCode(row.id);
+    return normalizeShop({ ...row, public_entry_code: publicEntryCode });
+  }));
 }
 
 async function listPublicShops() {
@@ -51,16 +83,46 @@ async function listPublicShops() {
   }));
 }
 
+async function getPublicShopByEntryCode(code) {
+  if (typeof code !== 'string' || !/^[a-f0-9]{32}$/.test(code)) return null;
+  const [rows] = await getPool().query(
+    `SELECT s.name,
+            (SELECT ss.logo_storage_key
+             FROM shop_settings ss
+             WHERE ss.shop_id = s.id
+             ORDER BY ss.id DESC
+             LIMIT 1) AS logo_storage_key,
+            (SELECT ss.portal_announcement
+             FROM shop_settings ss
+             WHERE ss.shop_id = s.id
+             ORDER BY ss.id DESC
+             LIMIT 1) AS announcement
+     FROM shops s
+     WHERE s.public_entry_code = ? AND s.status = 'ACTIVE'
+     LIMIT 1`,
+    [code],
+  );
+  if (!rows[0]) return null;
+  return {
+    name: rows[0].name,
+    logo_url: rows[0].logo_storage_key ? `/api/public/shop-logos/${rows[0].logo_storage_key}` : null,
+    announcement: rows[0].announcement || '',
+  };
+}
+
 async function listShopsForStaff(staffId) {
   const [rows] = await getPool().query(
-    `SELECT s.id, s.name, s.slug, s.status, ${SHOP_LOGO_SELECT}
+    `SELECT s.id, s.name, s.slug, s.public_entry_code, s.status, ${SHOP_LOGO_SELECT}
      FROM shops s
      INNER JOIN staff_shop_memberships m ON m.shop_id = s.id
      WHERE m.staff_id = ? AND s.status = 'ACTIVE'
      ORDER BY s.id ASC`,
     [staffId],
   );
-  return rows.map(normalizeShop);
+  return Promise.all(rows.map(async (row) => {
+    const publicEntryCode = row.public_entry_code || await ensurePublicEntryCode(row.id);
+    return normalizeShop({ ...row, public_entry_code: publicEntryCode });
+  }));
 }
 
 async function isPlatformShopManager(staffId) {
@@ -91,13 +153,26 @@ async function getShopById(shopId) {
   return rows[0] ? normalizeShop(rows[0]) : null;
 }
 
-async function createShop({ name, slug }, connection = getPool()) {
+async function getActiveShopIdByPublicEntryCode(code) {
+  if (typeof code !== 'string' || !/^[a-f0-9]{32}$/.test(code)) return null;
+  const [rows] = await getPool().query(
+    "SELECT id FROM shops WHERE public_entry_code = ? AND status = 'ACTIVE' LIMIT 1",
+    [code],
+  );
+  return rows[0] ? Number(rows[0].id) : null;
+}
+
+async function getPublicEntryCodeByShopId(shopId) {
+  return ensurePublicEntryCode(shopId);
+}
+
+async function createShop({ name, slug, publicEntryCode }, connection = getPool()) {
   const [result] = await connection.query(
-    "INSERT INTO shops (name, slug, status) VALUES (?, ?, 'ACTIVE')",
-    [name, slug],
+    "INSERT INTO shops (name, slug, public_entry_code, status) VALUES (?, ?, ?, 'ACTIVE')",
+    [name, slug, publicEntryCode],
   );
   const [rows] = await connection.query(
-    'SELECT id, name, slug, status FROM shops WHERE id = ? LIMIT 1',
+    'SELECT id, name, slug, public_entry_code, status FROM shops WHERE id = ? LIMIT 1',
     [result.insertId],
   );
   return rows[0] ? normalizeShop(rows[0]) : null;
@@ -228,6 +303,10 @@ module.exports = {
   countActiveOwnersAtShop,
   countMembershipsForStaff,
   createShop,
+  ensurePublicEntryCode,
+  getActiveShopIdByPublicEntryCode,
+  getPublicShopByEntryCode,
+  getPublicEntryCodeByShopId,
   getShopById,
   hasMembership,
   isPlatformShopManager,

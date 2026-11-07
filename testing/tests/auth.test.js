@@ -73,6 +73,8 @@ describe('Staff authentication API', () => {
       createdStaffIds.length = 0;
     }
     if (createdShopIds.length) {
+      await getPool().query('DELETE FROM shop_business_hours WHERE shop_id IN (?)', [createdShopIds]);
+      await getPool().query('DELETE FROM shop_settings WHERE shop_id IN (?)', [createdShopIds]);
       await getPool().query('DELETE FROM shops WHERE id IN (?)', [createdShopIds]);
       createdShopIds.length = 0;
     }
@@ -141,6 +143,68 @@ describe('Staff authentication API', () => {
     }));
     expect(response.body.data.shops.every((shop) =>
       Object.keys(shop).sort().join(',') === 'announcement,id,logo_url,name')).toBe(true);
+  });
+
+  test('shop entry codes are unique, withheld from the public shop list, and resolve the intended shop', async () => {
+    const shopSlug = `entry-code-${Date.now()}`;
+    const [shopResult] = await getPool().query(
+      "INSERT INTO shops (name, slug, status) VALUES ('Entry Code Shop', ?, 'ACTIVE')",
+      [shopSlug],
+    );
+    createdShopIds.push(shopResult.insertId);
+
+    const { response: loginResponse } = await loginAgent();
+    expect(loginResponse.status).toBe(200);
+    const shops = loginResponse.body.data.staff.shops;
+    const newShop = shops.find((shop) => Number(shop.id) === Number(shopResult.insertId));
+    const existingShop = shops.find((shop) => Number(shop.id) === 1);
+    expect(newShop.public_entry_code).toMatch(/^[a-f0-9]{32}$/);
+    expect(existingShop.public_entry_code).toMatch(/^[a-f0-9]{32}$/);
+    expect(newShop.public_entry_code).not.toBe(existingShop.public_entry_code);
+    const [entryRows] = await getPool().query(
+      'SELECT id FROM shops WHERE public_entry_code = ?',
+      [newShop.public_entry_code],
+    );
+    expect(Number(entryRows[0].id)).toBe(Number(newShop.id));
+    await getPool().query(
+      'INSERT INTO shop_settings (shop_id, name, portal_announcement) VALUES (?, ?, ?)',
+      [newShop.id, newShop.name, '本週日正常營業'],
+    );
+    const shopEntry = await request(app).get(`/api/public/shops/entry/${newShop.public_entry_code}`);
+    expect(shopEntry.status).toBe(200);
+    expect(shopEntry.body.data.shop).toMatchObject({
+      name: newShop.name,
+      announcement: '本週日正常營業',
+      logo_url: null,
+    });
+    expect(Object.keys(shopEntry.body.data.shop).sort()).toEqual(['announcement', 'logo_url', 'name']);
+    const unknownEntry = await request(app).get(`/api/public/shops/entry/${'0'.repeat(32)}`);
+    expect(unknownEntry.status).toBe(404);
+
+    const publicShops = await request(app).get('/api/public/shops');
+    expect(publicShops.body.data.shops.every((shop) => !shop.public_entry_code)).toBe(true);
+
+    const validEntry = await request(app)
+      .get('/api/public/member/me')
+      .set('X-Shop-Entry-Code', newShop.public_entry_code);
+    expect(validEntry.status).toBe(401);
+
+    const invalidEntry = await request(app)
+      .get('/api/public/member/me')
+      .set('X-Shop-Entry-Code', 'a'.repeat(32));
+    expect(invalidEntry.status).toBe(404);
+  });
+
+  test('newly created shops receive a random customer entry code', async () => {
+    const { agent } = await loginAgent();
+    const response = await agent.post('/api/shops').send({
+      name: 'New Entry Code Shop',
+      slug: `new-entry-${Date.now()}`,
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.shop.public_entry_code).toMatch(/^[a-f0-9]{32}$/);
+    createdShopIds.push(response.body.data.shop.id);
   });
 
   test('system administrator creates accounts and store OWNER manages only store membership and roles', async () => {

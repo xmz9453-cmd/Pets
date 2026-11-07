@@ -3,7 +3,18 @@ const { setCurrentShopId } = require('../utils/shop-context');
 
 async function publicShopContext(req, res, next) {
   try {
-    const requestedShopId = req.get('x-shop-id') || '1';
+    const requestedEntryCode = req.get('x-shop-entry-code');
+    let requestedShopId;
+    if (requestedEntryCode) {
+      requestedShopId = await shopsRepository.getActiveShopIdByPublicEntryCode(requestedEntryCode);
+      if (!requestedShopId) {
+        const error = new Error('Shop is unavailable');
+        error.statusCode = 404;
+        return next(error);
+      }
+    } else {
+      requestedShopId = req.get('x-shop-id') || '1';
+    }
     if (!/^\d+$/.test(String(requestedShopId))) {
       const error = new Error('Shop is unavailable');
       error.statusCode = 404;
