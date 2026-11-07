@@ -64,7 +64,7 @@ async function listAllShops() {
 
 async function listPublicShops() {
   const [rows] = await getPool().query(
-    `SELECT s.id, s.name,
+    `SELECT s.id, s.name, s.public_entry_code,
             (SELECT ss.logo_storage_key
              FROM shop_settings ss
              WHERE ss.shop_id = s.id
@@ -79,12 +79,13 @@ async function listPublicShops() {
      WHERE s.status = 'ACTIVE'
      ORDER BY s.id ASC`,
   );
-  return rows.map((row) => ({
+  return Promise.all(rows.map(async (row) => ({
     id: Number(row.id),
     name: row.name,
+    public_entry_code: row.public_entry_code || await ensurePublicEntryCode(row.id),
     logo_url: row.logo_storage_key ? `/api/public/shop-logos/${row.logo_storage_key}` : null,
     announcement: row.announcement || '',
-  }));
+  })));
 }
 
 async function getPublicShopByEntryCode(code) {

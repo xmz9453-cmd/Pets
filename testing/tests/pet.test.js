@@ -44,7 +44,7 @@ async function ensureCustomer(name, phone) {
   }
 
   const [result] = await getPool().query(
-    'INSERT INTO customers (name, phone, status) VALUES (?, ?, "ACTIVE")',
+    'INSERT INTO customers (shop_id, name, phone, status) VALUES (1, ?, ?, "ACTIVE")',
     [name, phone],
   );
 

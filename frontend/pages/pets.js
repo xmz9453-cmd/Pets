@@ -7,7 +7,7 @@ const emptyForm = {
   name: '',
   species: 'DOG',
   breed: '',
-  gender: 'UNKNOWN',
+  gender: '',
   weight: '',
   chip_number: '',
   personality: [],
@@ -140,7 +140,7 @@ export default function PetsPage() {
       name: pet.name || '',
       species: pet.species || 'DOG',
       breed: pet.breed || '',
-      gender: pet.gender || 'UNKNOWN',
+      gender: pet.gender === 'MALE' || pet.gender === 'FEMALE' ? pet.gender : '',
       weight: pet.weight !== null && pet.weight !== undefined ? String(pet.weight) : '',
       chip_number: pet.chip_number || '',
       personality: filterPersonalityOptions(pet.species || 'DOG', pet.personality || []),
@@ -267,7 +267,7 @@ export default function PetsPage() {
               <input className="form-control mb-3" required maxLength="100" value={formData.name} onChange={(event) => updateField('name', event.target.value)} />
               <div className="row g-2">
                 <div className="col-6"><label className="form-label">種類</label><select className="form-select" value={formData.species} onChange={(event) => handleSpeciesChange(event.target.value)}><option value="DOG">狗</option><option value="CAT">貓</option></select></div>
-                <div className="col-6"><label className="form-label">性別</label><select className="form-select" value={formData.gender} onChange={(event) => updateField('gender', event.target.value)}><option value="UNKNOWN">未設定</option><option value="MALE">公</option><option value="FEMALE">母</option></select></div>
+                <div className="col-6"><label className="form-label">性別</label><select className="form-select" required value={formData.gender} onChange={(event) => updateField('gender', event.target.value)}><option value="">請選擇性別</option><option value="MALE">公</option><option value="FEMALE">母</option></select></div>
               </div>
               <label className="form-label mt-3">品種</label>
               <input className="form-control" maxLength="100" value={formData.breed} onChange={(event) => updateField('breed', event.target.value)} />

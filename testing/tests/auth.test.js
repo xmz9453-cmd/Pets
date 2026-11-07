@@ -142,10 +142,10 @@ describe('Staff authentication API', () => {
       id: inactiveResult.insertId,
     }));
     expect(response.body.data.shops.every((shop) =>
-      Object.keys(shop).sort().join(',') === 'announcement,id,logo_url,name')).toBe(true);
+      Object.keys(shop).sort().join(',') === 'announcement,id,logo_url,name,public_entry_code')).toBe(true);
   });
 
-  test('shop entry codes are unique, withheld from the public shop list, and resolve the intended shop', async () => {
+  test('shop entry codes are unique, listed for the public portal, and resolve the intended shop', async () => {
     const shopSlug = `entry-code-${Date.now()}`;
     const [shopResult] = await getPool().query(
       "INSERT INTO shops (name, slug, status) VALUES ('Entry Code Shop', ?, 'ACTIVE')",
@@ -182,7 +182,10 @@ describe('Staff authentication API', () => {
     expect(unknownEntry.status).toBe(404);
 
     const publicShops = await request(app).get('/api/public/shops');
-    expect(publicShops.body.data.shops.every((shop) => !shop.public_entry_code)).toBe(true);
+    expect(publicShops.body.data.shops).toContainEqual(expect.objectContaining({
+      id: newShop.id,
+      public_entry_code: newShop.public_entry_code,
+    }));
 
     const validEntry = await request(app)
       .get('/api/public/member/me')

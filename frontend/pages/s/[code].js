@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import AnnouncementMarquee from '../../components/AnnouncementMarquee';
 import {
   API_BASE_URL,
   getCustomerMember,
@@ -19,31 +20,6 @@ const MEMBER_ERRORS = {
   CUSTOMER_AUTH_STATE_INVALID: '登入要求已失效，請重新開始。',
   CUSTOMER_SESSION_INVALID: '登入工作階段已失效，請重新登入。',
 };
-
-function AnnouncementMarquee({ shop }) {
-  const announcement = shop.announcement?.trim() || `歡迎來到${shop.name}，立即登入會員開始預約。`;
-  return (
-    <div className="portal-announcement shop-home-announcement" aria-label="店家公告">
-      <div className="portal-announcement-label">
-        <span aria-hidden="true">✦</span>
-        <span>店家公告</span>
-      </div>
-      <div className="portal-marquee">
-        <div className="portal-marquee-track">
-          {[0, 1].map((copy) => (
-            <div className="portal-marquee-group" key={copy} aria-hidden={copy === 1}>
-              <span className="portal-marquee-item">
-                <strong>{shop.name}</strong>
-                <span>{announcement}</span>
-                <span className="portal-marquee-separator" aria-hidden="true">✦</span>
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function ShopEntryPage() {
   const router = useRouter();
@@ -151,11 +127,17 @@ export default function ShopEntryPage() {
                 <span className={`shop-home-logo${shop.logo_url ? ' has-logo' : ''}`}>
                   {shop.logo_url ? <img src={`${API_BASE_URL}${shop.logo_url}`} alt="" /> : <span aria-hidden="true">🐾</span>}
                 </span>
-                <span>{shop.name}</span>
+                <span className="portal-brand-name">{shop.name}</span>
               </div>
             </header>
 
-            <AnnouncementMarquee shop={shop} />
+            <AnnouncementMarquee
+              announcements={[{
+                id: code,
+                name: shop.name,
+                announcement: shop.announcement?.trim() || `歡迎來到${shop.name}，立即登入會員開始預約。`,
+              }]}
+            />
 
             <section className="portal-hero shop-home-hero">
               <div className="portal-hero-copy">
@@ -210,10 +192,11 @@ export default function ShopEntryPage() {
                 </>
               )}
             </section>
-            <footer className="shop-home-footer">
-              <span>本頁為{shop.name}專屬顧客入口</span>
-              {footerError ? <span role="status">{footerError}</span> : footerText ? <span>{footerText}</span> : null}
-            </footer>
+            {footerError || footerText ? (
+              <footer className="shop-home-footer">
+                {footerError ? <span role="status">{footerError}</span> : <span>{footerText}</span>}
+              </footer>
+            ) : null}
           </>
         ) : null}
       </div>

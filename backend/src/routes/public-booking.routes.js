@@ -4,9 +4,7 @@ const { publicShopContext } = require('../middleware/public-shop-context');
 
 const router = express.Router();
 
-router.use(publicShopContext);
-
-router.post('/public/booking/otp', publicBookingController.rejectOtp);
-router.post('/public/booking/otp/verify', publicBookingController.rejectOtp);
+router.post('/public/booking/otp', publicShopContext, publicBookingController.rejectOtp);
+router.post('/public/booking/otp/verify', publicShopContext, publicBookingController.rejectOtp);
 
 module.exports = router;

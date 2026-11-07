@@ -66,6 +66,7 @@ function AppShell({ Component, pageProps }) {
     '/forgot-password',
     '/onboarding/[token]',
     '/booking',
+    '/announcements',
     '/s/[code]',
   ].includes(router.pathname);
   const visibleNavItems = NAV_ITEMS.filter((item) =>
@@ -291,10 +292,19 @@ function AppShell({ Component, pageProps }) {
               {selectedShop?.public_entry_code ? (
                 <a href={`/s/${encodeURIComponent(selectedShop.public_entry_code)}`} className="app-sidebar-home-link">
                   <AppIcon name="home" />
-                  本店顧客入口
+                  <span className="app-sidebar-home-label">
+                    <span>返回</span>
+                    <span>入口</span>
+                  </span>
                 </a>
               ) : null}
-              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={handleLogout}>登出</button>
+              <button
+                type="button"
+                className="btn btn-outline-secondary btn-sm app-sidebar-logout"
+                onClick={handleLogout}
+              >
+                登出
+              </button>
             </div>
           </aside>
           <div className="app-main">
