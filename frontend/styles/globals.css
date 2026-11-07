@@ -1691,7 +1691,7 @@ body {
   }
 
   .app-sidebar {
-    position: sticky;
+    position: static;
     width: 100%;
     padding: 14px 16px 12px;
     border-right: 0;
