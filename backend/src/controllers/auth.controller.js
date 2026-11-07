@@ -45,6 +45,24 @@ async function listStaff(req, res, next) {
   }
 }
 
+async function listOnlineStaff(req, res, next) {
+  try {
+    const staff = await authService.listOnlineStaff(req.auth.staff.shop_id);
+    res.json({ success: true, data: { staff } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function recordSessionActivity(req, res, next) {
+  try {
+    await authService.recordSessionActivity(readCookie(req, authService.SESSION_COOKIE_NAME));
+    res.json({ success: true, data: { recorded: true } });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function updateStaffRoles(req, res, next) {
   try {
     const staff = await authService.updateStaffRoles(req.auth.staff, req.params.id, req.body?.roles, req.auth.staff.shop_id);
@@ -120,8 +138,10 @@ module.exports = {
   changeOwnPassword,
   createStaff,
   login,
+  listOnlineStaff,
   listStaff,
   logout,
+  recordSessionActivity,
   removeStaffMembership,
   resetOtherPassword,
   updateStaffRoles,

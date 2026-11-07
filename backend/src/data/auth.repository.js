@@ -140,6 +140,45 @@ async function createSession({ staffId, tokenHash, expiresAt }) {
   );
 }
 
+async function recordSessionActivity(tokenHash) {
+  const [result] = await getPool().query(
+    `UPDATE auth_sessions
+     SET last_seen_at = CURRENT_TIMESTAMP
+     WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP`,
+    [tokenHash],
+  );
+  return result.affectedRows > 0;
+}
+
+async function listRecentlyActiveStaffByShop(shopId) {
+  const [rows] = await getPool().query(
+    `SELECT st.id, st.username, st.display_name,
+            MAX(s.last_seen_at) AS last_seen_at,
+            GROUP_CONCAT(
+              DISTINCT IF(pm.staff_id IS NOT NULL, 'OWNER', r.code)
+              ORDER BY IF(pm.staff_id IS NOT NULL, 'OWNER', r.code)
+              SEPARATOR ','
+            ) AS roles
+     FROM auth_sessions s
+     INNER JOIN staff st ON st.id = s.staff_id
+     LEFT JOIN staff_shop_memberships m ON m.staff_id = st.id AND m.shop_id = ?
+     LEFT JOIN staff_shop_roles sr ON sr.staff_id = m.staff_id AND sr.shop_id = m.shop_id
+     LEFT JOIN roles r ON r.id = sr.role_id
+     LEFT JOIN platform_shop_managers pm ON pm.staff_id = st.id
+     WHERE (m.staff_id IS NOT NULL OR pm.staff_id IS NOT NULL)
+       AND st.status = 'ACTIVE'
+       AND s.expires_at > CURRENT_TIMESTAMP
+       AND s.last_seen_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 5 MINUTE)
+     GROUP BY st.id, st.username, st.display_name
+     ORDER BY MAX(s.last_seen_at) DESC, st.display_name ASC`,
+    [shopId],
+  );
+  return rows.map((row) => ({
+    ...row,
+    roles: row.roles ? row.roles.split(',') : [],
+  }));
+}
+
 async function findSessionByTokenHash(tokenHash) {
   const [rows] = await getPool().query(
     `SELECT s.id, s.staff_id, s.expires_at, st.username, st.display_name, st.status
@@ -166,6 +205,8 @@ module.exports = {
   deleteSessionByTokenHash,
   deleteSessionsForStaff,
   findSessionByTokenHash,
+  listRecentlyActiveStaffByShop,
+  recordSessionActivity,
   findStaffById,
   findStaffByIdForUpdate,
   findStaffWithPasswordById,

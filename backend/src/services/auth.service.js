@@ -352,6 +352,16 @@ async function logout(token) {
   await authRepository.deleteSessionByTokenHash(hashSessionToken(token));
 }
 
+async function recordSessionActivity(token) {
+  if (!token || !(await authRepository.recordSessionActivity(hashSessionToken(token)))) {
+    throw createAuthError();
+  }
+}
+
+async function listOnlineStaff(shopId) {
+  return authRepository.listRecentlyActiveStaffByShop(shopId);
+}
+
 function normalizePasswordPayload(payload = {}) {
   return {
     currentPassword: typeof payload.current_password === 'string' ? payload.current_password : '',
@@ -435,8 +445,10 @@ module.exports = {
   createAuthError,
   createStaff,
   login,
+  listOnlineStaff,
   listStaff,
   logout,
+  recordSessionActivity,
   removeStaffMembership,
   resetOtherPassword,
   updateStaffRoles,

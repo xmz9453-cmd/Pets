@@ -105,6 +105,40 @@ describe('Staff authentication API', () => {
     expect(rows).toHaveLength(1);
   });
 
+  test('員工活動只讓 OWNER 查看最近五分鐘在線且屬於目前店家的員工', async () => {
+    const { agent: ownerAgent } = await loginAgent();
+    const staffAccount = await createRoleStaff('FRONT_DESK');
+    const staffAgent = request.agent(app);
+    const staffLogin = await staffAgent.post('/api/auth/login').send({
+      username: staffAccount.username,
+      password: staffAccount.password,
+    });
+    expect(staffLogin.status).toBe(200);
+
+    expect((await staffAgent.post('/api/auth/activity')).status).toBe(200);
+    expect((await ownerAgent.post('/api/auth/activity')).status).toBe(200);
+
+    const online = await ownerAgent.get('/api/auth/online-staff');
+    expect(online.status).toBe(200);
+    expect(online.body.data.staff).toEqual(expect.arrayContaining([
+      expect.objectContaining({ username: owner.username, roles: ['OWNER'] }),
+      expect.objectContaining({ username: staffAccount.username, roles: ['FRONT_DESK'] }),
+    ]));
+
+    const [sessionRows] = await getPool().query(
+      'SELECT id FROM auth_sessions WHERE staff_id = ?',
+      [staffAccount.id],
+    );
+    await getPool().query(
+      'UPDATE auth_sessions SET last_seen_at = DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 6 MINUTE) WHERE id = ?',
+      [sessionRows[0].id],
+    );
+    const refreshedOnline = await ownerAgent.get('/api/auth/online-staff');
+    expect(refreshedOnline.status).toBe(200);
+    expect(refreshedOnline.body.data.staff.map((member) => member.username)).not.toContain(staffAccount.username);
+    expect((await staffAgent.get('/api/auth/online-staff')).status).toBe(403);
+  });
+
   test('public staff registration is unavailable', async () => {
     const response = await request(app).post('/api/auth/register').send({
       username: 'public-registration-blocked',

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { getApplicationHealth, getCurrentStaff, getDatabaseHealth, getShopIdentity, getShopSettings, logout } from '../api/client';
+import { getApplicationHealth, getCurrentStaff, getDatabaseHealth, getOnlineStaff, getShopIdentity, getShopSettings, logout, recordStaffActivity } from '../api/client';
 import { getRoleLabel } from '../utils/staff-display';
 
 export default function Dashboard() {
@@ -8,6 +8,9 @@ export default function Dashboard() {
   const [applicationHealth, setApplicationHealth] = useState(null);
   const [databaseHealth, setDatabaseHealth] = useState(null);
   const [staff, setStaff] = useState(null);
+  const [onlineStaff, setOnlineStaff] = useState([]);
+  const [onlineStaffError, setOnlineStaffError] = useState('');
+  const [onlineStaffLoading, setOnlineStaffLoading] = useState(false);
   const [shopName, setShopName] = useState('店家');
   const [error, setError] = useState('');
 
@@ -44,6 +47,34 @@ export default function Dashboard() {
       active = false;
     };
   }, [router]);
+
+  useEffect(() => {
+    if (!staff?.roles.includes('OWNER')) return undefined;
+    let active = true;
+
+    async function refreshOnlineStaff() {
+      setOnlineStaffLoading(true);
+      try {
+        await recordStaffActivity();
+        const result = await getOnlineStaff();
+        if (active) {
+          setOnlineStaff(result.staff || []);
+          setOnlineStaffError('');
+        }
+      } catch (loadError) {
+        if (active) setOnlineStaffError(loadError.message || '在線員工名單載入失敗。');
+      } finally {
+        if (active) setOnlineStaffLoading(false);
+      }
+    }
+
+    refreshOnlineStaff();
+    const timer = window.setInterval(refreshOnlineStaff, 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [staff?.id, staff?.shop_id, staff?.roles]);
 
   const displayHealthStatus = (value) => ({
     checking: '檢查中',
@@ -110,11 +141,40 @@ export default function Dashboard() {
             <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M20 21a8 8 0 0 0-16 0 M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
             </svg>
-            <div className="dashboard-card-label">已登入員工</div>
+            <div className="dashboard-card-label">目前登入帳號</div>
           </div>
           <div className="dashboard-status">{staff ? staff.username : '檢查中'}</div>
           <p className="dashboard-card-note">{roleText}</p>
         </article>
+        {staff?.roles.includes('OWNER') ? (
+          <article className="dashboard-card dashboard-card-staff">
+            <div className="dashboard-card-heading">
+              <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m17-10a4 4 0 0 1 0 8m-7-13a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm5 1a4 4 0 0 1 0 8" />
+              </svg>
+              <div className="dashboard-card-label">目前在線員工</div>
+              <span className="dashboard-online-count">{onlineStaff.length}</span>
+            </div>
+            <p className="dashboard-card-note">最近 5 分鐘有操作的本店員工</p>
+            {onlineStaffError ? <div className="alert alert-warning mt-3 mb-0" role="alert">{onlineStaffError}</div> : null}
+            {!onlineStaffError && onlineStaffLoading && onlineStaff.length === 0
+              ? <p className="dashboard-online-empty">載入中…</p>
+              : null}
+            {!onlineStaffError && !onlineStaffLoading && onlineStaff.length === 0
+              ? <p className="dashboard-online-empty">目前沒有在線員工。</p>
+              : null}
+            {onlineStaff.length ? (
+              <ul className="dashboard-online-staff-list">
+                {onlineStaff.map((member) => (
+                  <li key={member.id}>
+                    <span><strong>{member.display_name}</strong><small>{member.username}</small></span>
+                    <span>{member.roles.map((role) => getRoleLabel(role)).join('、')}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </article>
+        ) : null}
       </section>
 
       {error ? <div className="alert alert-warning mt-4" role="alert">{error}</div> : null}

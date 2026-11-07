@@ -206,6 +206,14 @@ export async function getCurrentStaff() {
   return request('/api/auth/me');
 }
 
+export async function recordStaffActivity() {
+  return request('/api/auth/activity', { method: 'POST' });
+}
+
+export async function getOnlineStaff() {
+  return request('/api/auth/online-staff');
+}
+
 export async function createOnboarding() {
   return request('/api/onboardings', { method: 'POST', body: '{}' });
 }

@@ -9,9 +9,11 @@ import {
   logout,
   markAllShopNotificationsRead,
   markShopNotificationRead,
+  recordStaffActivity,
 } from '../api/client';
 
 const NAV_ITEMS = [
+  { href: '/dashboard', label: '儀表板', icon: 'home', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
   { href: '/customers', label: '客戶', icon: 'user', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
   { href: '/pets', label: '寵物', icon: 'paw', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
   { href: '/services', label: '服務', icon: 'scissors', allowedRoles: ['OWNER', 'FRONT_DESK', 'GROOMER'] },
@@ -155,6 +157,49 @@ function AppShell({ Component, pageProps }) {
       window.clearInterval(timer);
     };
   }, [router.pathname, shouldShowNav, staff]);
+
+  useEffect(() => {
+    if (!shouldShowNav || !staff) return undefined;
+    let active = true;
+    let lastInteractionAt = Date.now();
+    let lastReportedAt = 0;
+
+    async function reportActivity() {
+      const now = Date.now();
+      if (!active || document.visibilityState === 'hidden' || now - lastReportedAt < 60_000) return;
+      lastReportedAt = now;
+      try {
+        await recordStaffActivity();
+        if (active) {
+          setError((current) => (
+            current.startsWith('員工在線狀態更新失敗：') ? '' : current
+          ));
+        }
+      } catch (activityError) {
+        if (active) setError(`員工在線狀態更新失敗：${activityError.message || '請重新登入後再試。'}`);
+      }
+    }
+
+    function noteInteraction() {
+      lastInteractionAt = Date.now();
+      reportActivity();
+    }
+
+    reportActivity();
+    const timer = window.setInterval(() => {
+      if (Date.now() - lastInteractionAt < 5 * 60_000) reportActivity();
+    }, 60_000);
+    window.addEventListener('pointerdown', noteInteraction, { passive: true });
+    window.addEventListener('keydown', noteInteraction);
+    window.addEventListener('touchstart', noteInteraction, { passive: true });
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('pointerdown', noteInteraction);
+      window.removeEventListener('keydown', noteInteraction);
+      window.removeEventListener('touchstart', noteInteraction);
+    };
+  }, [shouldShowNav, staff?.id, staff?.shop_id]);
 
   async function playNotificationSound() {
     const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;

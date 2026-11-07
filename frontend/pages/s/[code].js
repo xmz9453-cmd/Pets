@@ -192,13 +192,21 @@ export default function ShopEntryPage() {
                 </>
               )}
             </section>
-            {footerError || footerText ? (
-              <footer className="shop-home-footer">
-                {footerError ? <span role="status">{footerError}</span> : <span>{footerText}</span>}
-              </footer>
-            ) : null}
           </>
         ) : null}
+        <footer className="portal-footer shop-home-staff-footer">
+          <Link className="portal-staff-link" href="/login">
+            <svg className="portal-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 9a8 8 0 0 1 16 0M18 5l2 2 3-3" />
+            </svg>
+            店家登入
+          </Link>
+          {footerError || footerText ? (
+            <span className="shop-home-footer shop-home-footer-text" role={footerError ? 'status' : undefined}>
+              {footerError || footerText}
+            </span>
+          ) : null}
+        </footer>
       </div>
     </main>
   );
