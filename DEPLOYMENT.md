@@ -39,6 +39,8 @@ The verified backup bundle contains the compressed MySQL dump, Contract PDFs, Sh
 
 `deploy/backup.sh` requires a clean Git working tree so the recorded commit identifies the code version used for recovery. It creates a timestamped `pets_backup_YYYYMMDD_HHMMSS.tar.gz` bundle and checksum sidecar. Completed bundles are verified and stored with mode `600`; bundles older than 30 days are removed. Keep the bundle and its `.sha256` sidecar together.
 
+Deployment creates this backup before applying pending migrations. The backup script checks whether optional Logo and Portal Background reference columns exist, so a valid pre-migration database can still be backed up; when a reference column is absent, its files are included but cannot be cross-checked against that column. The database account does not need the MySQL `PROCESS` privilege for tablespace metadata.
+
 Application source is recovered by checking out the recorded `app_commit` from the private Git repository. The bundle does not include `.env` or other secrets: store those separately in an encrypted, access-controlled backup. This is an application-level recovery set, not a full VM or operating-system image.
 
 The migration sequence snapshots existing portal footer and background metadata before migration 034 and restores it after the shop-scoping changes; do not edit migration 034 in place.

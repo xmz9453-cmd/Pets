@@ -470,11 +470,23 @@ if ! cmp -s "${STAGE_DIR}/PDF_MANIFEST.tsv" "${STAGE_DIR}/restored-PDF_MANIFEST.
   exit 1
 fi
 
-if ! mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" -D "${DB_NAME}" \
-  -N -B -e "SELECT logo_storage_key FROM shop_settings WHERE logo_storage_key IS NOT NULL ORDER BY logo_storage_key;" \
-  > "${STAGE_DIR}/restored-logo-references.txt"; then
-  echo "[restore.sh ERROR] Could not verify restored Shop Logo references." >&2
+SHOP_LOGO_COLUMN_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+  --batch --skip-column-names \
+  -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'shop_settings' AND column_name = 'logo_storage_key';")"
+if [[ ! "${SHOP_LOGO_COLUMN_COUNT}" =~ ^[01]$ ]]; then
+  echo "[restore.sh ERROR] Could not determine whether restored shop_settings.logo_storage_key exists." >&2
   exit 1
+fi
+: > "${STAGE_DIR}/restored-logo-references.txt"
+if [ "${SHOP_LOGO_COLUMN_COUNT}" = "1" ]; then
+  if ! mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" -D "${DB_NAME}" \
+    -N -B -e "SELECT logo_storage_key FROM shop_settings WHERE logo_storage_key IS NOT NULL ORDER BY logo_storage_key;" \
+    > "${STAGE_DIR}/restored-logo-references.txt"; then
+    echo "[restore.sh ERROR] Could not verify restored Shop Logo references." >&2
+    exit 1
+  fi
+else
+  echo "[restore.sh] Restored schema has no shop_settings.logo_storage_key; skipping Logo reference checks."
 fi
 while IFS= read -r storage_key; do
   [ -n "${storage_key}" ] || continue
@@ -486,11 +498,23 @@ while IFS= read -r storage_key; do
   fi
 done < "${STAGE_DIR}/restored-logo-references.txt"
 
-if ! mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" -D "${DB_NAME}" \
-  -N -B -e "SELECT storage_key, file_size, mime_type FROM portal_backgrounds ORDER BY storage_key;" \
-  > "${STAGE_DIR}/restored-background-references.tsv"; then
-  echo "[restore.sh ERROR] Could not verify restored Portal Background references." >&2
+BACKGROUND_COLUMN_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+  --batch --skip-column-names \
+  -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'portal_backgrounds' AND column_name IN ('storage_key', 'file_size', 'mime_type');")"
+if [[ ! "${BACKGROUND_COLUMN_COUNT}" =~ ^(0|3)$ ]]; then
+  echo "[restore.sh ERROR] Restored Portal Background schema is incomplete; expected all required reference columns or none." >&2
   exit 1
+fi
+: > "${STAGE_DIR}/restored-background-references.tsv"
+if [ "${BACKGROUND_COLUMN_COUNT}" = "3" ]; then
+  if ! mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" -D "${DB_NAME}" \
+    -N -B -e "SELECT storage_key, file_size, mime_type FROM portal_backgrounds ORDER BY storage_key;" \
+    > "${STAGE_DIR}/restored-background-references.tsv"; then
+    echo "[restore.sh ERROR] Could not verify restored Portal Background references." >&2
+    exit 1
+  fi
+else
+  echo "[restore.sh] Restored schema has no Portal Background reference columns; skipping Background reference checks."
 fi
 while IFS=$'\t' read -r storage_key expected_size mime_type; do
   [ -n "${storage_key}" ] || continue

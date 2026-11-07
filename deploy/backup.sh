@@ -139,7 +139,7 @@ if ! IFS= read -r -t 35 LOCK_RESULT <&"${LOCK_READ_FD}" || [ "${LOCK_RESULT}" !=
 fi
 
 if ! mysqldump --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" \
-  --single-transaction --quick --lock-tables=false "${DB_NAME}" \
+  --single-transaction --quick --lock-tables=false --no-tablespaces "${DB_NAME}" \
   | gzip -9 > "${STAGE_DIR}/database.sql.gz"; then
   echo "[backup.sh ERROR] Database dump failed." >&2
   exit 1
@@ -259,10 +259,23 @@ if ! copy_media_files "${SHOP_LOGO_STORAGE_ROOT}" shop-logos 2097152 \
 fi
 sort -o "${STAGE_DIR}/MEDIA_MANIFEST.tsv" "${STAGE_DIR}/MEDIA_MANIFEST.tsv"
 
-mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+SHOP_LOGO_COLUMN_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
   --batch --skip-column-names \
-  -e "SELECT logo_storage_key FROM shop_settings WHERE logo_storage_key IS NOT NULL ORDER BY logo_storage_key;" \
-  > "${STAGE_DIR}/database-logo-references.txt"
+  -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'shop_settings' AND column_name = 'logo_storage_key';")"
+if [[ ! "${SHOP_LOGO_COLUMN_COUNT}" =~ ^[01]$ ]]; then
+  echo "[backup.sh ERROR] Could not determine whether shop_settings.logo_storage_key exists." >&2
+  exit 1
+fi
+
+: > "${STAGE_DIR}/database-logo-references.txt"
+if [ "${SHOP_LOGO_COLUMN_COUNT}" = "1" ]; then
+  mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+    --batch --skip-column-names \
+    -e "SELECT logo_storage_key FROM shop_settings WHERE logo_storage_key IS NOT NULL ORDER BY logo_storage_key;" \
+    > "${STAGE_DIR}/database-logo-references.txt"
+else
+  echo "[backup.sh] shop_settings.logo_storage_key is absent; preserving Logo files without database-reference checks for this legacy schema."
+fi
 while IFS= read -r storage_key; do
   [ -n "${storage_key}" ] || continue
   if [[ ! "${storage_key}" =~ ^[a-f0-9]{32}\.(png|jpg|webp)$ ]] \
@@ -272,10 +285,23 @@ while IFS= read -r storage_key; do
   fi
 done < "${STAGE_DIR}/database-logo-references.txt"
 
-mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+BACKGROUND_COLUMN_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
   --batch --skip-column-names \
-  -e "SELECT storage_key, file_size, mime_type FROM portal_backgrounds ORDER BY storage_key;" \
-  > "${STAGE_DIR}/database-background-references.tsv"
+  -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'portal_backgrounds' AND column_name IN ('storage_key', 'file_size', 'mime_type');")"
+if [[ ! "${BACKGROUND_COLUMN_COUNT}" =~ ^(0|3)$ ]]; then
+  echo "[backup.sh ERROR] Portal Background schema is incomplete; expected all required reference columns or none." >&2
+  exit 1
+fi
+
+: > "${STAGE_DIR}/database-background-references.tsv"
+if [ "${BACKGROUND_COLUMN_COUNT}" = "3" ]; then
+  mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+    --batch --skip-column-names \
+    -e "SELECT storage_key, file_size, mime_type FROM portal_backgrounds ORDER BY storage_key;" \
+    > "${STAGE_DIR}/database-background-references.tsv"
+else
+  echo "[backup.sh] portal_backgrounds reference columns are absent; preserving Background files without database-reference checks for this legacy schema."
+fi
 while IFS=$'\t' read -r storage_key expected_size mime_type; do
   [ -n "${storage_key}" ] || continue
   if [[ ! "${storage_key}" =~ ^[a-f0-9]{32}\.(png|jpg|webp)$ ]] \

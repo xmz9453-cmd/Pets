@@ -28,6 +28,7 @@ function createFixture({ schemaCount = '1', references = '', pdfFiles = [] } = {
   const deployLibDirectory = path.join(projectRoot, 'deploy', 'lib');
   const restoreMarker = path.join(tempRoot, 'database-restored.txt');
   const queryLog = path.join(tempRoot, 'contract-reference-query.txt');
+  const mysqlDumpArgsPath = path.join(tempRoot, 'mysqldump-args.txt');
 
   fs.mkdirSync(path.dirname(backupScript), { recursive: true });
   fs.mkdirSync(deployLibDirectory, { recursive: true });
@@ -96,6 +97,17 @@ set -e
   fi
   exit 0
 fi
+if [[ "$*" == *"information_schema.columns"* ]]; then
+  if [[ "$*" == *"logo_storage_key"* ]]; then
+    printf '%s\\n' "\${MOCK_LOGO_COLUMN_COUNT:-1}"
+  elif [[ "$*" == *"portal_backgrounds"* ]]; then
+    printf '%s\\n' "\${MOCK_BACKGROUND_COLUMN_COUNT:-3}"
+  else
+    echo "unexpected column query" >&2
+    exit 10
+  fi
+  exit 0
+fi
 if [[ "$*" == *"SELECT storage_path"* ]]; then
   printf '%s\\n' "$*" > "$MOCK_QUERY_LOG"
   if [ "\${MOCK_AUTH_ERROR:-0}" = "1" ] \
@@ -153,6 +165,7 @@ printf 'restored\\n' > "$MOCK_RESTORE_MARKER"
 `;
   fs.writeFileSync(path.join(toolRoot, 'mysql'), mysqlMock);
   fs.writeFileSync(path.join(toolRoot, 'mysqldump'), `#!/usr/bin/env bash
+printf '%s\\n' "$*" > "$MOCK_MYSQLDUMP_ARGS"
 printf 'CREATE TABLE \`customers\` (id INT);\\n'
 if [ "$MOCK_SCHEMA_COUNT" = "1" ]; then
   printf 'CREATE TABLE \`contract_versions\` (id INT);\\n'
@@ -184,6 +197,7 @@ exec /usr/bin/find "$@"
     BACKUP_DIR: toBashPath(backupRoot),
     BASH_ENV: toBashPath(bashEnv),
     MOCK_EXPECTED_PASSWORD: 'test-password',
+    MOCK_MYSQLDUMP_ARGS: toBashPath(mysqlDumpArgsPath),
     MOCK_BACKGROUND_REFERENCES: '',
     MOCK_LOGO_REFERENCES: '',
     MOCK_FIND_MARKER: toBashPath(path.join(tempRoot, 'find-failure-marker.txt')),
@@ -242,6 +256,7 @@ exec /usr/bin/find "$@"
     env,
     pdfs,
     queryLog,
+    mysqlDumpArgsPath,
     restoreMarker,
     runBackup,
     runBackupGate,
@@ -331,6 +346,30 @@ describe('Contract PDF backup and restore scripts', () => {
       expect(backup.status).toBe(0);
       expect(fs.readFileSync(path.join(fixture.tempRoot, 'lock-mysql-args.txt'), 'utf8'))
         .toContain('--unbuffered');
+    } finally {
+      removeFixture(fixture);
+    }
+  });
+
+  test('uses no-tablespaces and tolerates a legacy schema without Shop Logo metadata', () => {
+    const fixture = createFixture({ schemaCount: '0' });
+    const logoKey = `${'a'.repeat(32)}.png`;
+    const logoRoot = path.join(path.dirname(fixture.storageRoot), 'shop-logos');
+    fs.mkdirSync(logoRoot, { recursive: true });
+    fs.writeFileSync(path.join(logoRoot, logoKey), 'legacy shop logo');
+    try {
+      const backup = fixture.runBackup({ MOCK_LOGO_COLUMN_COUNT: '0' });
+      if (backup.status !== 0) {
+        throw new Error(`Legacy-schema backup failed (${backup.status}): ${backup.stdout}\n${backup.stderr}`);
+      }
+      expect(fs.readFileSync(fixture.mysqlDumpArgsPath, 'utf8')).toContain('--no-tablespaces');
+      expect(backup.stdout).toContain('shop_settings.logo_storage_key is absent');
+
+      const restore = fixture.runRestore(fixture.backupPathFor(backup), {
+        MOCK_LOGO_COLUMN_COUNT: '0',
+      });
+      expectRestoreSuccess(restore);
+      expect(fs.readFileSync(path.join(logoRoot, logoKey), 'utf8')).toBe('legacy shop logo');
     } finally {
       removeFixture(fixture);
     }
