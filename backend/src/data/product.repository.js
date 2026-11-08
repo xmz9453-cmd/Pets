@@ -3,7 +3,23 @@ const { getCurrentShopId } = require('../utils/shop-context');
 
 function normalize(row) {
   if (!row) return null;
-  return { ...row, id: Number(row.id), price: Number(row.price), is_sellable: Boolean(row.is_sellable) };
+  const shopId = getCurrentShopId();
+  const {
+    image_storage_key: imageStorageKey,
+    image_mime_type: _imageMimeType,
+    image_file_size: _imageFileSize,
+    image_original_filename: _imageOriginalFilename,
+    ...product
+  } = row;
+  return {
+    ...product,
+    id: Number(product.id),
+    price: Number(product.price),
+    is_sellable: Boolean(product.is_sellable),
+    image_url: imageStorageKey
+      ? `/api/public/products/${Number(product.id)}/image?shop_id=${shopId}&v=${encodeURIComponent(imageStorageKey)}`
+      : null,
+  };
 }
 
 async function listProducts(filters = {}) {
@@ -20,6 +36,15 @@ async function listProducts(filters = {}) {
 async function getProductById(id, connection = getPool()) {
   const [rows] = await connection.query('SELECT * FROM products WHERE id = ? AND shop_id = ? LIMIT 1', [id, getCurrentShopId()]);
   return normalize(rows[0]);
+}
+
+async function getProductImageMetadata(id, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT image_storage_key, image_mime_type, image_file_size, image_original_filename
+     FROM products WHERE id = ? AND shop_id = ? LIMIT 1`,
+    [id, getCurrentShopId()],
+  );
+  return rows[0] || null;
 }
 
 async function findByName(name, excludeId = null) {
@@ -53,6 +78,23 @@ async function updateProductStatus(id, status) {
   return getProductById(id);
 }
 
+async function updateProductImage(id, image, connection = getPool()) {
+  const [result] = await connection.query(
+    `UPDATE products
+     SET image_storage_key = ?, image_mime_type = ?, image_file_size = ?, image_original_filename = ?
+     WHERE id = ? AND shop_id = ?`,
+    [
+      image?.storage_key ?? null,
+      image?.mime_type ?? null,
+      image?.file_size ?? null,
+      image?.original_filename ?? null,
+      id,
+      getCurrentShopId(),
+    ],
+  );
+  return result.affectedRows === 1;
+}
+
 async function deleteProduct(id) {
   const [result] = await getPool().query(
     'DELETE FROM products WHERE id = ? AND shop_id = ?',
@@ -61,4 +103,14 @@ async function deleteProduct(id) {
   return result.affectedRows === 1;
 }
 
-module.exports = { createProduct, deleteProduct, findByName, getProductById, listProducts, updateProduct, updateProductStatus };
+module.exports = {
+  createProduct,
+  deleteProduct,
+  findByName,
+  getProductById,
+  getProductImageMetadata,
+  listProducts,
+  updateProduct,
+  updateProductImage,
+  updateProductStatus,
+};

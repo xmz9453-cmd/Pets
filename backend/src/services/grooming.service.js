@@ -4,6 +4,35 @@ const appointmentRepository = require('../data/appointment.repository');
 const dailyOperationsRepository = require('../data/daily-operations.repository');
 const dailyOperationsService = require('./daily-operations.service');
 const groomingRepository = require('../data/grooming.repository');
+const groomingPhotoRepository = require('../data/grooming-photo.repository');
+const groomingPhotoStorage = require('../utils/grooming-photo-storage');
+const { withMediaStorageLock } = require('../utils/media-storage-lock');
+const { logError } = require('../utils/logger');
+
+const GROOMING_PHOTO_CATEGORIES = new Set(['BEFORE', 'AFTER', 'CONCERN']);
+const MAX_GROOMING_PHOTOS = 5;
+
+function presentPhoto(photo, imageUrl) {
+  return {
+    id: Number(photo.id),
+    category: photo.category,
+    file_size: Number(photo.file_size),
+    original_filename: photo.original_filename,
+    created_at: photo.created_at,
+    image_url: imageUrl,
+  };
+}
+
+async function listPresentedPhotos(groomingId, audience = 'staff') {
+  const photos = await groomingPhotoRepository.listByGroomingId(groomingId);
+  const shopId = getCurrentShopId();
+  return photos.map((photo) => presentPhoto(
+    photo,
+    audience === 'customer'
+      ? `/api/public/member/grooming-photos/${Number(photo.id)}?shop_id=${shopId}`
+      : `/api/groomings/${Number(groomingId)}/photos/${Number(photo.id)}/image`,
+  ));
+}
 
 function createValidationError(fields) {
   const error = new Error('Validation failed');
@@ -70,6 +99,16 @@ async function listGroomings(query = {}) {
 
   await ensureDailyOperationExists(dailyOperationId);
   const rows = await groomingRepository.listByDailyOperationId(dailyOperationId);
+  const photos = await groomingPhotoRepository.listByGroomingIds(rows.map((row) => Number(row.id)));
+  const photosByGrooming = new Map();
+  for (const photo of photos) {
+    const groomingId = Number(photo.grooming_id);
+    if (!photosByGrooming.has(groomingId)) photosByGrooming.set(groomingId, []);
+    photosByGrooming.get(groomingId).push(presentPhoto(
+      photo,
+      `/api/groomings/${groomingId}/photos/${Number(photo.id)}/image`,
+    ));
+  }
   return rows.map((row) => ({
     id: Number(row.id),
     daily_operation_id: Number(row.daily_operation_id),
@@ -83,6 +122,7 @@ async function listGroomings(query = {}) {
     grooming_result: row.grooming_result,
     note: row.note,
     service_names: row.service_names,
+    photos: photosByGrooming.get(Number(row.id)) || [],
     created_at: row.created_at,
     updated_at: row.updated_at,
   }));
@@ -105,6 +145,7 @@ async function getGrooming(id) {
     customer_name: record.customer_name,
     customer_phone: record.customer_phone,
     service_names: record.service_names,
+    photos: await listPresentedPhotos(record.id),
     before_condition: record.before_condition,
     actual_grooming_content: record.actual_grooming_content,
     grooming_result: record.grooming_result,
@@ -192,7 +233,7 @@ async function updateGrooming(id, payload = {}) {
     const finalDailyOperationId = nextPayload.daily_operation_id ?? existing.daily_operation_id;
     const finalPetId = nextPayload.pet_id ?? existing.pet_id;
     const duplicate = await groomingRepository.findByDailyOperationAndPet(finalDailyOperationId, finalPetId);
-    if (duplicate && duplicate.id !== id) {
+    if (duplicate && Number(duplicate.id) !== Number(id)) {
       throw createConflictError('GROOMING_ALREADY_EXISTS', 'Grooming work already exists for this pet');
     }
   }
@@ -216,10 +257,90 @@ async function completeGrooming(id) {
   return getGrooming(id);
 }
 
+async function addGroomingPhoto(id, file, categoryValue) {
+  const category = String(categoryValue || '').trim().toUpperCase();
+  if (!GROOMING_PHOTO_CATEGORIES.has(category)) {
+    throw createValidationError({ category: '照片分類必須為 BEFORE、AFTER 或 CONCERN。' });
+  }
+  const existing = await groomingRepository.findById(id);
+  if (!existing) throw createNotFoundError('GROOMING_NOT_FOUND', 'Grooming record not found');
+  await ensureDailyOperationExists(existing.daily_operation_id);
+
+  try {
+    return await withMediaStorageLock(async () => {
+      if (await groomingPhotoRepository.countByGroomingId(id) >= MAX_GROOMING_PHOTOS) {
+        throw createConflictError('GROOMING_PHOTO_LIMIT_REACHED', '每次美容最多可上傳 5 張照片。');
+      }
+
+      const inspected = await groomingPhotoStorage.inspectUploadedFile(file);
+      const storageKey = groomingPhotoStorage.createStorageKey(inspected.extension);
+      await groomingPhotoStorage.moveTemporaryFile(file.path, storageKey);
+      try {
+        const photoId = await groomingPhotoRepository.create({
+          grooming_id: Number(id),
+          category,
+          storage_key: storageKey,
+          mime_type: inspected.mimeType,
+          file_size: inspected.bytes.length,
+          original_filename: inspected.originalFilename,
+        });
+        return {
+          photo: presentPhoto(
+            { id: photoId, category, file_size: inspected.bytes.length, original_filename: inspected.originalFilename },
+            `/api/groomings/${Number(id)}/photos/${photoId}/image`,
+          ),
+        };
+      } catch (error) {
+        await groomingPhotoStorage.removeStoredImage(storageKey).catch((cleanupError) => {
+          logError('Failed to remove orphaned grooming photo after database failure', {
+            code: cleanupError.code,
+            groomingId: Number(id),
+          });
+        });
+        throw error;
+      }
+    });
+  } finally {
+    if (file?.path) {
+      await groomingPhotoStorage.removeTemporaryFile(file.path).catch((cleanupError) => {
+        logError('Failed to remove grooming photo upload temporary file', { code: cleanupError.code });
+      });
+    }
+  }
+}
+
+async function removeGroomingPhoto(groomingId, photoId) {
+  return withMediaStorageLock(async () => {
+    const photo = await groomingPhotoRepository.findById(photoId);
+    if (!photo || Number(photo.grooming_id) !== Number(groomingId)) {
+      throw createNotFoundError('GROOMING_PHOTO_NOT_FOUND', 'Grooming photo not found');
+    }
+    await groomingPhotoRepository.deleteById(photoId);
+    try {
+      await groomingPhotoStorage.removeStoredImage(photo.storage_key);
+    } catch (error) {
+      logError('Failed to remove deleted grooming photo file', { photoId: Number(photoId), code: error.code });
+      throw error;
+    }
+    return { id: Number(photoId) };
+  });
+}
+
+async function getGroomingPhotoImage(groomingId, photoId) {
+  const photo = await groomingPhotoRepository.findById(photoId);
+  if (!photo || Number(photo.grooming_id) !== Number(groomingId)) {
+    throw createNotFoundError('GROOMING_PHOTO_NOT_FOUND', 'Grooming photo not found');
+  }
+  return groomingPhotoStorage.readStoredImage(photo.storage_key, photo.mime_type);
+}
+
 module.exports = {
+  addGroomingPhoto,
   completeGrooming,
   createGrooming,
   getGrooming,
+  getGroomingPhotoImage,
   listGroomings,
+  removeGroomingPhoto,
   updateGrooming,
 };

@@ -1,4 +1,7 @@
 const productRepository = require('../data/product.repository');
+const productImageStorage = require('../utils/product-image-storage');
+const { withMediaStorageLock } = require('../utils/media-storage-lock');
+const { logError } = require('../utils/logger');
 
 const VALID_SPECIES = new Set(['DOG', 'CAT', 'BOTH']);
 const VALID_STATUSES = new Set(['ACTIVE', 'INACTIVE']);
@@ -60,19 +63,114 @@ async function updateProduct(id, payload = {}) {
 }
 
 async function deleteProduct(id) {
-  if (!await productRepository.getProductById(id)) throw notFound();
-  try {
-    await productRepository.deleteProduct(id);
-    return { deleted: true };
-  } catch (error) {
-    if (error.code === 'ER_ROW_IS_REFERENCED_2') {
-      const conflict = new Error('此商品已有訂單或預約紀錄，無法刪除；如不再販售，請改為停用。');
-      conflict.statusCode = 409;
-      conflict.code = 'PRODUCT_IN_USE';
-      throw conflict;
+  return withMediaStorageLock(async () => {
+    const product = await productRepository.getProductById(id);
+    if (!product) throw notFound();
+    const imageMetadata = await productRepository.getProductImageMetadata(id);
+    try {
+      await productRepository.deleteProduct(id);
+      if (imageMetadata?.image_storage_key) {
+        try {
+          await productImageStorage.removeStoredImage(imageMetadata.image_storage_key);
+        } catch (error) {
+          logError('Failed to remove deleted product image file', { productId: Number(id), code: error.code });
+          throw error;
+        }
+      }
+      return { deleted: true };
+    } catch (error) {
+      if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+        const conflict = new Error('此商品已有訂單或預約紀錄，無法刪除；如不再販售，請改為停用。');
+        conflict.statusCode = 409;
+        conflict.code = 'PRODUCT_IN_USE';
+        throw conflict;
+      }
+      throw error;
     }
-    throw error;
+  });
+}
+
+function validateId(id) {
+  const numericId = Number(id);
+  if (!Number.isSafeInteger(numericId) || numericId <= 0) throw notFound();
+  return numericId;
+}
+
+async function uploadProductImage(id, file) {
+  const productId = validateId(id);
+  try {
+    return await withMediaStorageLock(async () => {
+      const existing = await productRepository.getProductById(productId);
+      if (!existing) throw notFound();
+      const existingImage = await productRepository.getProductImageMetadata(productId);
+      const inspected = await productImageStorage.inspectUploadedFile(file);
+      const storageKey = productImageStorage.createStorageKey(inspected.extension);
+      await productImageStorage.moveTemporaryFile(file.path, storageKey);
+      let updated = false;
+      try {
+        const imageUpdated = await productRepository.updateProductImage(productId, {
+          storage_key: storageKey,
+          mime_type: inspected.mimeType,
+          file_size: inspected.bytes.length,
+          original_filename: inspected.originalFilename,
+        });
+        if (!imageUpdated) throw notFound();
+        updated = true;
+      } catch (error) {
+        await productImageStorage.removeStoredImage(storageKey).catch((cleanupError) => {
+          logError('Failed to remove orphaned product image after database failure', {
+            code: cleanupError.code,
+            productId,
+          });
+        });
+        throw error;
+      }
+
+      if (updated && existingImage?.image_storage_key) {
+        try {
+          await productImageStorage.removeStoredImage(existingImage.image_storage_key);
+        } catch (error) {
+          logError('Failed to remove replaced product image file', { productId, code: error.code });
+          throw error;
+        }
+      }
+      return { product: await productRepository.getProductById(productId) };
+    });
+  } finally {
+    if (file?.path) {
+      await productImageStorage.removeTemporaryFile(file.path).catch((cleanupError) => {
+        logError('Failed to remove product image upload temporary file', { code: cleanupError.code });
+      });
+    }
   }
+}
+
+async function removeProductImage(id) {
+  const productId = validateId(id);
+  return withMediaStorageLock(async () => {
+    const product = await productRepository.getProductById(productId);
+    if (!product) throw notFound();
+    const imageMetadata = await productRepository.getProductImageMetadata(productId);
+    if (!imageMetadata?.image_storage_key) return { product };
+    if (!await productRepository.updateProductImage(productId, null)) throw notFound();
+    try {
+      await productImageStorage.removeStoredImage(imageMetadata.image_storage_key);
+    } catch (error) {
+      logError('Failed to remove detached product image file', { productId, code: error.code });
+      throw error;
+    }
+    return { product: await productRepository.getProductById(productId) };
+  });
+}
+
+async function getPublicProductImage(id, version) {
+  const product = await productRepository.getProductById(validateId(id));
+  const imageMetadata = product
+    ? await productRepository.getProductImageMetadata(product.id)
+    : null;
+  if (!imageMetadata?.image_storage_key
+    || (version && version !== imageMetadata.image_storage_key)) throw notFound();
+  return productImageStorage.readStoredImage(imageMetadata.image_storage_key, imageMetadata.image_mime_type);
 }
 
 async function setStatus(id, status) {
@@ -83,4 +181,15 @@ async function setStatus(id, status) {
 async function enableProduct(id) { return setStatus(id, 'ACTIVE'); }
 async function disableProduct(id) { return setStatus(id, 'INACTIVE'); }
 
-module.exports = { createProduct, deleteProduct, disableProduct, enableProduct, getProduct, listProducts, updateProduct };
+module.exports = {
+  createProduct,
+  deleteProduct,
+  disableProduct,
+  enableProduct,
+  getProduct,
+  getPublicProductImage,
+  listProducts,
+  removeProductImage,
+  updateProduct,
+  uploadProductImage,
+};

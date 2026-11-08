@@ -20,6 +20,8 @@ DB_PASSWORD=""
 CONTRACT_STORAGE_ROOT=""
 SHOP_LOGO_STORAGE_ROOT=""
 PORTAL_BACKGROUND_STORAGE_ROOT=""
+GROOMING_PHOTO_STORAGE_ROOT=""
+PRODUCT_IMAGE_STORAGE_ROOT=""
 if [ -f "${ENV_FILE}" ]; then
   load_deployment_env "${ENV_FILE}"
 fi
@@ -30,10 +32,15 @@ fi
 MEDIA_PARENT="$(dirname "${CONTRACT_STORAGE_ROOT}")"
 SHOP_LOGO_STORAGE_ROOT="${SHOP_LOGO_STORAGE_ROOT:-${MEDIA_PARENT}/shop-logos}"
 PORTAL_BACKGROUND_STORAGE_ROOT="${PORTAL_BACKGROUND_STORAGE_ROOT:-${MEDIA_PARENT}/portal-backgrounds}"
-mkdir -p -- "${SHOP_LOGO_STORAGE_ROOT}" "${PORTAL_BACKGROUND_STORAGE_ROOT}"
+GROOMING_PHOTO_STORAGE_ROOT="${GROOMING_PHOTO_STORAGE_ROOT:-${MEDIA_PARENT}/grooming-photos}"
+PRODUCT_IMAGE_STORAGE_ROOT="${PRODUCT_IMAGE_STORAGE_ROOT:-${MEDIA_PARENT}/product-images}"
+mkdir -p -- "${SHOP_LOGO_STORAGE_ROOT}" "${PORTAL_BACKGROUND_STORAGE_ROOT}" \
+  "${GROOMING_PHOTO_STORAGE_ROOT}" "${PRODUCT_IMAGE_STORAGE_ROOT}"
 if [ -L "${SHOP_LOGO_STORAGE_ROOT}" ] || [ ! -d "${SHOP_LOGO_STORAGE_ROOT}" ] \
-  || [ -L "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] || [ ! -d "${PORTAL_BACKGROUND_STORAGE_ROOT}" ]; then
-  echo "[restore.sh ERROR] Shop Logo and Portal Background roots must be real directories, not symbolic links." >&2
+  || [ -L "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] || [ ! -d "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] \
+  || [ -L "${GROOMING_PHOTO_STORAGE_ROOT}" ] || [ ! -d "${GROOMING_PHOTO_STORAGE_ROOT}" ] \
+  || [ -L "${PRODUCT_IMAGE_STORAGE_ROOT}" ] || [ ! -d "${PRODUCT_IMAGE_STORAGE_ROOT}" ]; then
+  echo "[restore.sh ERROR] Media roots must be real directories, not symbolic links." >&2
   exit 1
 fi
 
@@ -44,10 +51,19 @@ canonical_path() {
 CONTRACT_STORAGE_ROOT="$(canonical_path "${CONTRACT_STORAGE_ROOT}")"
 SHOP_LOGO_STORAGE_ROOT="$(canonical_path "${SHOP_LOGO_STORAGE_ROOT}")"
 PORTAL_BACKGROUND_STORAGE_ROOT="$(canonical_path "${PORTAL_BACKGROUND_STORAGE_ROOT}")"
+GROOMING_PHOTO_STORAGE_ROOT="$(canonical_path "${GROOMING_PHOTO_STORAGE_ROOT}")"
+PRODUCT_IMAGE_STORAGE_ROOT="$(canonical_path "${PRODUCT_IMAGE_STORAGE_ROOT}")"
 if [ "${SHOP_LOGO_STORAGE_ROOT}" = "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] \
   || [ "${SHOP_LOGO_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ] \
-  || [ "${PORTAL_BACKGROUND_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ]; then
-  echo "[restore.sh ERROR] Contract, Logo, and Portal Background storage roots must be different directories." >&2
+  || [ "${PORTAL_BACKGROUND_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ] \
+  || [ "${GROOMING_PHOTO_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ] \
+  || [ "${GROOMING_PHOTO_STORAGE_ROOT}" = "${SHOP_LOGO_STORAGE_ROOT}" ] \
+  || [ "${GROOMING_PHOTO_STORAGE_ROOT}" = "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] \
+  || [ "${PRODUCT_IMAGE_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ] \
+  || [ "${PRODUCT_IMAGE_STORAGE_ROOT}" = "${SHOP_LOGO_STORAGE_ROOT}" ] \
+  || [ "${PRODUCT_IMAGE_STORAGE_ROOT}" = "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] \
+  || [ "${PRODUCT_IMAGE_STORAGE_ROOT}" = "${GROOMING_PHOTO_STORAGE_ROOT}" ]; then
+  echo "[restore.sh ERROR] Contract and media storage roots must be different directories." >&2
   exit 1
 fi
 
@@ -58,9 +74,15 @@ NEW_LOGOS="${SHOP_LOGO_STORAGE_ROOT}.restore-${$}"
 OLD_LOGOS="${SHOP_LOGO_STORAGE_ROOT}.before-restore-${$}"
 NEW_BACKGROUNDS="${PORTAL_BACKGROUND_STORAGE_ROOT}.restore-${$}"
 OLD_BACKGROUNDS="${PORTAL_BACKGROUND_STORAGE_ROOT}.before-restore-${$}"
+NEW_GROOMING_PHOTOS="${GROOMING_PHOTO_STORAGE_ROOT}.restore-${$}"
+OLD_GROOMING_PHOTOS="${GROOMING_PHOTO_STORAGE_ROOT}.before-restore-${$}"
+NEW_PRODUCT_IMAGES="${PRODUCT_IMAGE_STORAGE_ROOT}.restore-${$}"
+OLD_PRODUCT_IMAGES="${PRODUCT_IMAGE_STORAGE_ROOT}.before-restore-${$}"
 CONTRACTS_INSTALLED=0
 LOGOS_INSTALLED=0
 BACKGROUNDS_INSTALLED=0
+GROOMING_PHOTOS_INSTALLED=0
+PRODUCT_IMAGES_INSTALLED=0
 LOCK_PID=""
 LOCK_READ_FD=""
 LOCK_WRITE_FD=""
@@ -80,6 +102,12 @@ cleanup() {
   fi
   if [ "${BACKGROUNDS_INSTALLED}" -eq 0 ]; then
     rm -rf -- "${NEW_BACKGROUNDS}"
+  fi
+  if [ "${GROOMING_PHOTOS_INSTALLED}" -eq 0 ]; then
+    rm -rf -- "${NEW_GROOMING_PHOTOS}"
+  fi
+  if [ "${PRODUCT_IMAGES_INSTALLED}" -eq 0 ]; then
+    rm -rf -- "${NEW_PRODUCT_IMAGES}"
   fi
 }
 trap cleanup EXIT
@@ -113,10 +141,18 @@ tar -xzf "${BACKUP_FILE}" -C "${STAGE_DIR}"
 )
 gzip -t "${STAGE_DIR}/database.sql.gz"
 if [ "${HAS_MEDIA}" -eq 1 ]; then
-  grep -qx 'format=pets-contract-backup-v2' "${STAGE_DIR}/manifest.txt"
+  if grep -qx 'format=pets-contract-backup-v3' "${STAGE_DIR}/manifest.txt"; then
+    HAS_EXTENDED_MEDIA=1
+  elif grep -qx 'format=pets-contract-backup-v2' "${STAGE_DIR}/manifest.txt"; then
+    HAS_EXTENDED_MEDIA=0
+  else
+    echo "[restore.sh ERROR] Backup manifest format is not supported." >&2
+    exit 1
+  fi
   grep -Eq '^app_commit=[0-9a-f]{40}$' "${STAGE_DIR}/manifest.txt"
   RESTORE_APP_COMMIT="$(sed -n 's/^app_commit=//p' "${STAGE_DIR}/manifest.txt")"
 else
+  HAS_EXTENDED_MEDIA=0
   grep -qx 'format=pets-contract-backup-v1' "${STAGE_DIR}/manifest.txt"
   RESTORE_APP_COMMIT="not-recorded-in-legacy-backup"
   echo "[restore.sh WARNING] This legacy backup does not contain uploaded media; existing Logo and Background files will be retained and checked."
@@ -166,9 +202,16 @@ done < <(find "${STAGE_DIR}/pdf-root" -mindepth 1 -print)
 if [ "${HAS_MEDIA}" -eq 1 ]; then
 mkdir -p "${STAGE_DIR}/media"
 tar -tzf "${STAGE_DIR}/media-files.tar.gz" > "${STAGE_DIR}/media-contents.txt"
+MEDIA_DIRECTORY_PATTERN='^(shop-logos|portal-backgrounds)$'
+MEDIA_FILE_PATTERN='^(shop-logos|portal-backgrounds)/[a-f0-9]{32}\.(png|jpg|webp)$'
+if [ "${HAS_EXTENDED_MEDIA}" -eq 1 ]; then
+  MEDIA_DIRECTORY_PATTERN='^(shop-logos|portal-backgrounds|grooming-photos|product-images)$'
+  MEDIA_FILE_PATTERN='^(shop-logos|portal-backgrounds|grooming-photos|product-images)/[a-f0-9]{32}\.(png|jpg|webp)$'
+fi
 while IFS= read -r member; do
-  if [ "${member}" != "shop-logos/" ] && [ "${member}" != "portal-backgrounds/" ] \
-    && [[ ! "${member}" =~ ^(shop-logos|portal-backgrounds)/[a-f0-9]{32}\.(png|jpg|webp)$ ]]; then
+  directory_name="${member%/}"
+  if { [ "${member}" != "${directory_name}/" ] || [[ ! "${directory_name}" =~ ${MEDIA_DIRECTORY_PATTERN} ]]; } \
+    && [[ ! "${member}" =~ ${MEDIA_FILE_PATTERN} ]]; then
     echo "[restore.sh ERROR] Media archive contains an unexpected path." >&2
     exit 1
   fi
@@ -177,10 +220,11 @@ tar -tvzf "${STAGE_DIR}/media-files.tar.gz" > "${STAGE_DIR}/media-details.txt"
 while IFS= read -r member_details; do
   member_type="${member_details:0:1}"
   member_name="${member_details##* }"
-  if [[ "${member_type}" == d && ( "${member_name}" == "shop-logos/" || "${member_name}" == "portal-backgrounds/" ) ]]; then
+  directory_name="${member_name%/}"
+  if [[ "${member_type}" == d && "${directory_name}" =~ ${MEDIA_DIRECTORY_PATTERN} ]]; then
     continue
   fi
-  if [[ "${member_type}" == - && "${member_name}" =~ ^(shop-logos|portal-backgrounds)/[a-f0-9]{32}\.(png|jpg|webp)$ ]]; then
+  if [[ "${member_type}" == - && "${member_name}" =~ ${MEDIA_FILE_PATTERN} ]]; then
     continue
   fi
   echo "[restore.sh ERROR] Media archive contains a non-regular or unexpected member." >&2
@@ -191,8 +235,13 @@ if find "${STAGE_DIR}/media" -type l -print -quit | grep -q .; then
   echo "[restore.sh ERROR] Media archive contains a symbolic link." >&2
   exit 1
 fi
-for media_name in shop-logos portal-backgrounds; do
-  if [ ! -d "${STAGE_DIR}/media/${media_name}" ]; then
+MEDIA_ROOTS=("${STAGE_DIR}/media/shop-logos" "${STAGE_DIR}/media/portal-backgrounds")
+if [ "${HAS_EXTENDED_MEDIA}" -eq 1 ]; then
+  MEDIA_ROOTS+=("${STAGE_DIR}/media/grooming-photos" "${STAGE_DIR}/media/product-images")
+fi
+for media_root in "${MEDIA_ROOTS[@]}"; do
+  media_name="${media_root##*/}"
+  if [ ! -d "${media_root}" ]; then
     echo "[restore.sh ERROR] Media archive is missing a required storage directory." >&2
     exit 1
   fi
@@ -209,6 +258,9 @@ while IFS= read -r media_file; do
     portal-backgrounds/*)
       max_size=10485760
       ;;
+    grooming-photos/*|product-images/*)
+      max_size=2097152
+      ;;
     *)
       echo "[restore.sh ERROR] Extracted media archive contains an unexpected file." >&2
       exit 1
@@ -220,7 +272,7 @@ while IFS= read -r media_file; do
   fi
   printf '%s\t%s\t%s\n' "${relative_media_file}" "${media_size}" \
     "$(sha256sum "${media_file}" | cut -d' ' -f1)" >> "${STAGE_DIR}/verified-MEDIA_MANIFEST.tsv"
-done < <(find "${STAGE_DIR}/media/shop-logos" "${STAGE_DIR}/media/portal-backgrounds" -type f | sort)
+done < <(find "${MEDIA_ROOTS[@]}" -type f | sort)
 if ! cmp -s "${STAGE_DIR}/MEDIA_MANIFEST.tsv" "${STAGE_DIR}/verified-MEDIA_MANIFEST.tsv"; then
   echo "[restore.sh ERROR] Media manifest does not match the archived files." >&2
   exit 1
@@ -362,7 +414,9 @@ fi
 
 if [ -e "${OLD_CONTRACTS}" ] \
   || { [ "${HAS_MEDIA}" -eq 1 ] && { [ -e "${OLD_LOGOS}" ] || [ -e "${OLD_BACKGROUNDS}" ] \
-    || [ -e "${NEW_LOGOS}" ] || [ -e "${NEW_BACKGROUNDS}" ]; }; }; then
+    || [ -e "${NEW_LOGOS}" ] || [ -e "${NEW_BACKGROUNDS}" ]; }; } \
+  || { [ "${HAS_EXTENDED_MEDIA}" -eq 1 ] && { [ -e "${OLD_GROOMING_PHOTOS}" ] \
+    || [ -e "${OLD_PRODUCT_IMAGES}" ] || [ -e "${NEW_GROOMING_PHOTOS}" ] || [ -e "${NEW_PRODUCT_IMAGES}" ]; }; }; then
   echo "[restore.sh ERROR] Restore recovery path already exists; refusing to continue." >&2
   exit 1
 fi
@@ -389,10 +443,25 @@ find "${NEW_BACKGROUNDS}" -type f -exec chmod 600 {} \;
 mv "${PORTAL_BACKGROUND_STORAGE_ROOT}" "${OLD_BACKGROUNDS}"
 mv "${NEW_BACKGROUNDS}" "${PORTAL_BACKGROUND_STORAGE_ROOT}"
 BACKGROUNDS_INSTALLED=1
+if [ "${HAS_EXTENDED_MEDIA}" -eq 1 ]; then
+  cp -a "${STAGE_DIR}/media/grooming-photos" "${NEW_GROOMING_PHOTOS}"
+  find "${NEW_GROOMING_PHOTOS}" -type d -exec chmod 700 {} \;
+  find "${NEW_GROOMING_PHOTOS}" -type f -exec chmod 600 {} \;
+  mv "${GROOMING_PHOTO_STORAGE_ROOT}" "${OLD_GROOMING_PHOTOS}"
+  mv "${NEW_GROOMING_PHOTOS}" "${GROOMING_PHOTO_STORAGE_ROOT}"
+  GROOMING_PHOTOS_INSTALLED=1
+
+  cp -a "${STAGE_DIR}/media/product-images" "${NEW_PRODUCT_IMAGES}"
+  find "${NEW_PRODUCT_IMAGES}" -type d -exec chmod 700 {} \;
+  find "${NEW_PRODUCT_IMAGES}" -type f -exec chmod 600 {} \;
+  mv "${PRODUCT_IMAGE_STORAGE_ROOT}" "${OLD_PRODUCT_IMAGES}"
+  mv "${NEW_PRODUCT_IMAGES}" "${PRODUCT_IMAGE_STORAGE_ROOT}"
+  PRODUCT_IMAGES_INSTALLED=1
+fi
 fi
 
 if ! zcat "${STAGE_DIR}/database.sql.gz" | mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}"; then
-  echo "[restore.sh ERROR] Database restoration failed; preserve prior Contract, Logo, and Background storage for manual recovery." >&2
+  echo "[restore.sh ERROR] Database restoration failed; preserve prior media storage for manual recovery." >&2
   exit 1
 fi
 
@@ -535,22 +604,92 @@ while IFS=$'\t' read -r storage_key expected_size mime_type; do
   fi
 done < "${STAGE_DIR}/restored-background-references.tsv"
 
+if [ "${HAS_EXTENDED_MEDIA}" -eq 1 ]; then
+  PRODUCT_IMAGE_COLUMN_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+    --batch --skip-column-names \
+    -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'products' AND column_name IN ('image_storage_key', 'image_file_size', 'image_mime_type');")"
+  if [[ ! "${PRODUCT_IMAGE_COLUMN_COUNT}" =~ ^(0|3)$ ]]; then
+    echo "[restore.sh ERROR] Restored Product Image schema is incomplete." >&2
+    exit 1
+  fi
+  : > "${STAGE_DIR}/restored-product-image-references.tsv"
+  if [ "${PRODUCT_IMAGE_COLUMN_COUNT}" = "3" ]; then
+    mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" -D "${DB_NAME}" \
+      -N -B -e "SELECT image_storage_key, image_file_size, image_mime_type FROM products WHERE image_storage_key IS NOT NULL ORDER BY image_storage_key;" \
+      > "${STAGE_DIR}/restored-product-image-references.tsv"
+  fi
+  while IFS=$'\t' read -r storage_key expected_size mime_type; do
+    [ -n "${storage_key}" ] || continue
+    image_path="${PRODUCT_IMAGE_STORAGE_ROOT}/${storage_key}"
+    if [[ ! "${storage_key}" =~ ^[a-f0-9]{32}\.(png|jpg|webp)$ ]] \
+      || [ ! -f "${image_path}" ] || [ -L "${image_path}" ]; then
+      echo "[restore.sh ERROR] A restored Product Image reference is missing or unsafe." >&2
+      exit 1
+    fi
+    actual_size="$(wc -c < "${image_path}" | tr -d ' ')"
+    case "${storage_key##*.}:${mime_type}" in
+      png:image/png|jpg:image/jpeg|webp:image/webp) ;;
+      *) echo "[restore.sh ERROR] A restored Product Image has mismatched media metadata." >&2; exit 1 ;;
+    esac
+    if [ "${actual_size}" != "${expected_size}" ]; then
+      echo "[restore.sh ERROR] A restored Product Image has an invalid file size." >&2
+      exit 1
+    fi
+  done < "${STAGE_DIR}/restored-product-image-references.tsv"
+
+  GROOMING_PHOTO_TABLE_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+    --batch --skip-column-names \
+    -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'grooming_photos';")"
+  if [[ ! "${GROOMING_PHOTO_TABLE_COUNT}" =~ ^[01]$ ]]; then
+    echo "[restore.sh ERROR] Could not determine whether grooming_photos exists after restore." >&2
+    exit 1
+  fi
+  : > "${STAGE_DIR}/restored-grooming-photo-references.tsv"
+  if [ "${GROOMING_PHOTO_TABLE_COUNT}" = "1" ]; then
+    mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" -D "${DB_NAME}" \
+      -N -B -e "SELECT storage_key, file_size, mime_type FROM grooming_photos ORDER BY storage_key;" \
+      > "${STAGE_DIR}/restored-grooming-photo-references.tsv"
+  fi
+  while IFS=$'\t' read -r storage_key expected_size mime_type; do
+    [ -n "${storage_key}" ] || continue
+    image_path="${GROOMING_PHOTO_STORAGE_ROOT}/${storage_key}"
+    if [[ ! "${storage_key}" =~ ^[a-f0-9]{32}\.(png|jpg|webp)$ ]] \
+      || [ ! -f "${image_path}" ] || [ -L "${image_path}" ]; then
+      echo "[restore.sh ERROR] A restored Grooming Photo reference is missing or unsafe." >&2
+      exit 1
+    fi
+    actual_size="$(wc -c < "${image_path}" | tr -d ' ')"
+    case "${storage_key##*.}:${mime_type}" in
+      png:image/png|jpg:image/jpeg|webp:image/webp) ;;
+      *) echo "[restore.sh ERROR] A restored Grooming Photo has mismatched media metadata." >&2; exit 1 ;;
+    esac
+    if [ "${actual_size}" != "${expected_size}" ]; then
+      echo "[restore.sh ERROR] A restored Grooming Photo has an invalid file size." >&2
+      exit 1
+    fi
+  done < "${STAGE_DIR}/restored-grooming-photo-references.tsv"
+fi
+
 if [ "${HAS_MEDIA}" -eq 1 ]; then
   : > "${STAGE_DIR}/restored-MEDIA_MANIFEST.tsv"
+  RESTORED_MEDIA_ROOTS=("${SHOP_LOGO_STORAGE_ROOT}" "${PORTAL_BACKGROUND_STORAGE_ROOT}")
+  if [ "${HAS_EXTENDED_MEDIA}" -eq 1 ]; then
+    RESTORED_MEDIA_ROOTS+=("${GROOMING_PHOTO_STORAGE_ROOT}" "${PRODUCT_IMAGE_STORAGE_ROOT}")
+  fi
   while IFS= read -r media_file; do
-    relative_media_file="${media_file#${SHOP_LOGO_STORAGE_ROOT}/}"
-    if [ "${relative_media_file}" = "${media_file}" ]; then
-      relative_media_file="portal-backgrounds/${media_file#${PORTAL_BACKGROUND_STORAGE_ROOT}/}"
-    else
-      relative_media_file="shop-logos/${relative_media_file}"
-    fi
-    printf '%s\t%s\t%s\n' "${relative_media_file}" \
-      "$(wc -c < "${media_file}" | tr -d ' ')" \
-      "$(sha256sum "${media_file}" | cut -d' ' -f1)" >> "${STAGE_DIR}/restored-MEDIA_MANIFEST.tsv"
-  done < <(find "${SHOP_LOGO_STORAGE_ROOT}" "${PORTAL_BACKGROUND_STORAGE_ROOT}" -type f | sort)
+    for media_root in "${RESTORED_MEDIA_ROOTS[@]}"; do
+      relative_media_file="${media_file#${media_root}/}"
+      if [ "${relative_media_file}" != "${media_file}" ]; then
+        printf '%s/%s\t%s\t%s\n' "${media_root##*/}" "${relative_media_file}" \
+          "$(wc -c < "${media_file}" | tr -d ' ')" \
+          "$(sha256sum "${media_file}" | cut -d' ' -f1)" >> "${STAGE_DIR}/restored-MEDIA_MANIFEST.tsv"
+        break
+      fi
+    done
+  done < <(find "${RESTORED_MEDIA_ROOTS[@]}" -type f | sort)
   sort -o "${STAGE_DIR}/restored-MEDIA_MANIFEST.tsv" "${STAGE_DIR}/restored-MEDIA_MANIFEST.tsv"
   if ! cmp -s "${STAGE_DIR}/MEDIA_MANIFEST.tsv" "${STAGE_DIR}/restored-MEDIA_MANIFEST.tsv"; then
-    echo "[restore.sh ERROR] Restored Logo and Background files do not match the verified media manifest." >&2
+    echo "[restore.sh ERROR] Restored media files do not match the verified media manifest." >&2
     exit 1
   fi
 fi
@@ -560,5 +699,8 @@ if [ -d "${OLD_CONTRACTS}" ]; then
 fi
 if [ "${HAS_MEDIA}" -eq 1 ]; then
   rm -rf -- "${OLD_LOGOS}" "${OLD_BACKGROUNDS}"
+fi
+if [ "${HAS_EXTENDED_MEDIA}" -eq 1 ]; then
+  rm -rf -- "${OLD_GROOMING_PHOTOS}" "${OLD_PRODUCT_IMAGES}"
 fi
 echo "[restore.sh SUCCESS] Database, ${PDF_COUNT} Contract PDF file(s), and ${MEDIA_COUNT} uploaded media file(s) restored and verified."

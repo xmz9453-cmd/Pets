@@ -119,6 +119,27 @@ export async function uploadShopLogo(file) {
   return request('/api/shop-settings/logo', { method: 'POST', body: formData });
 }
 
+export async function uploadProductImage(productId, file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request(`/api/products/${encodeURIComponent(productId)}/image`, { method: 'POST', body: formData });
+}
+
+export async function removeProductImage(productId) {
+  return request(`/api/products/${encodeURIComponent(productId)}/image`, { method: 'DELETE' });
+}
+
+export async function uploadGroomingPhoto(groomingId, file, category) {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('category', category);
+  return request(`/api/groomings/${encodeURIComponent(groomingId)}/photos`, { method: 'POST', body: formData });
+}
+
+export async function removeGroomingPhoto(groomingId, photoId) {
+  return request(`/api/groomings/${encodeURIComponent(groomingId)}/photos/${encodeURIComponent(photoId)}`, { method: 'DELETE' });
+}
+
 export async function deleteShopLogo() {
   return request('/api/shop-settings/logo', { method: 'DELETE' });
 }
@@ -291,6 +312,10 @@ export async function createCustomerBookingChangeRequest(appointmentId, payload,
 
 export async function getCustomerBookingRequests(shopId) {
   return request('/api/public/member/requests', publicShopOptions(shopId));
+}
+
+export async function getCustomerGroomingRecords(shopId) {
+  return request('/api/public/member/grooming-records', publicShopOptions(shopId));
 }
 
 export async function getCustomerBookingOnboardingToken(appointmentId, shopId) {

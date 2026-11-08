@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import {
+  API_BASE_URL,
   createCustomerBookingRequest,
   createCustomerBookingChangeRequest,
   getCustomerBookingAvailability,
@@ -8,6 +9,7 @@ import {
   getCustomerBookingPets,
   getCustomerBookingProducts,
   getCustomerBookingRequests,
+  getCustomerGroomingRecords,
   getCustomerBookingServices,
   getCustomerMember,
   getCustomerMemberAuthUrl,
@@ -59,6 +61,8 @@ export default function BookingPage() {
   const [customer, setCustomer] = useState(null);
   const [pets, setPets] = useState([]);
   const [requests, setRequests] = useState([]);
+  const [completedGroomingRecords, setCompletedGroomingRecords] = useState([]);
+  const [expandedGroomingId, setExpandedGroomingId] = useState(null);
   const [services, setServices] = useState([]);
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -126,13 +130,15 @@ export default function BookingPage() {
         setCustomer(result.customer);
         setName(result.customer?.name || result.member?.display_name || '');
         setPhone(result.customer?.phone || '');
-        const [petResult, requestResult] = await Promise.all([
+        const [petResult, requestResult, groomingResult] = await Promise.all([
           getCustomerBookingPets(shopId),
           getCustomerBookingRequests(shopId),
+          getCustomerGroomingRecords(shopId),
         ]);
         if (!active) return;
         setPets(petResult.pets || []);
         setRequests(requestResult.requests || []);
+        setCompletedGroomingRecords(groomingResult.records || []);
       } catch (loadError) {
         if (active && loadError.statusCode !== 401) {
           setError(loadError.message || '目前無法載入會員資料，請稍後再試。');
@@ -626,6 +632,15 @@ export default function BookingPage() {
                     <div className="d-grid gap-2">
                       {visibleProducts.map((product) => (
                         <div key={product.id} className="d-flex flex-wrap align-items-center gap-2 border rounded p-2">
+                          {product.image_url ? (
+                            <img
+                              src={`${API_BASE_URL}${product.image_url}`}
+                              alt={`${product.name}主圖`}
+                              loading="lazy"
+                              className="rounded border"
+                              style={{ width: '64px', height: '64px', objectFit: 'cover' }}
+                            />
+                          ) : null}
                           <label className="form-check-label flex-grow-1" htmlFor={`addon-${product.id}`}>
                             <input
                               id={`addon-${product.id}`}
@@ -758,6 +773,71 @@ export default function BookingPage() {
                             ) : null}
                         </div>
                       ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+              <section className="card shadow-sm mt-4">
+                <div className="card-body">
+                  <h2 className="h5">已完成美容紀錄</h2>
+                  {!completedGroomingRecords.length ? (
+                    <p className="text-muted mb-0">目前沒有已完成的美容紀錄。</p>
+                  ) : (
+                    <div className="list-group list-group-flush">
+                      {completedGroomingRecords.map((record) => {
+                        const isExpanded = expandedGroomingId === record.grooming_id;
+                        return (
+                          <article className="list-group-item px-0" key={record.grooming_id}>
+                            <button
+                              type="button"
+                              className="btn btn-link text-start text-decoration-none p-0 w-100"
+                              aria-expanded={isExpanded}
+                              onClick={() => setExpandedGroomingId(isExpanded ? null : record.grooming_id)}
+                            >
+                              <span className="d-flex flex-wrap justify-content-between gap-2">
+                                <strong>{record.appointment_date}｜{record.pet_name}｜{record.service_names || '美容服務'}</strong>
+                                <span>{isExpanded ? '收合' : '查看紀錄'}</span>
+                              </span>
+                            </button>
+                            {isExpanded ? (
+                              <div className="mt-3">
+                                <p className="small text-muted">預約時間：{String(record.appointment_time).slice(0, 5)}</p>
+                                {[
+                                  ['美容前', record.before_condition],
+                                  ['實際美容內容', record.actual_grooming_content],
+                                  ['美容後結果', record.grooming_result],
+                                  ['美容備註', record.note],
+                                ].filter(([, value]) => value).map(([label, value]) => (
+                                  <div className="mb-2" key={label}>
+                                    <strong>{label}</strong>
+                                    <p className="mb-0" style={{ whiteSpace: 'pre-wrap' }}>{value}</p>
+                                  </div>
+                                ))}
+                                {record.photos?.length ? (
+                                  <div className="row g-2 mt-2">
+                                    {record.photos.map((photo) => (
+                                      <div className="col-6 col-md-4" key={photo.id}>
+                                        <a href={`${API_BASE_URL}${photo.image_url}`} target="_blank" rel="noreferrer">
+                                          <img
+                                            src={`${API_BASE_URL}${photo.image_url}`}
+                                            alt={`${record.pet_name} ${photo.category === 'BEFORE' ? '美容前' : photo.category === 'AFTER' ? '美容後' : '狀況'}照片`}
+                                            loading="lazy"
+                                            className="img-fluid rounded border"
+                                            style={{ width: '100%', height: '180px', objectFit: 'cover' }}
+                                          />
+                                        </a>
+                                        <small className="text-muted d-block mt-1">
+                                          {photo.category === 'BEFORE' ? '美容前' : photo.category === 'AFTER' ? '美容後' : '狀況'}
+                                        </small>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : <p className="text-muted small mb-0">本次服務沒有上傳照片。</p>}
+                              </div>
+                            ) : null}
+                          </article>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

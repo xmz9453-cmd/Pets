@@ -230,6 +230,8 @@ NEXT_PUBLIC_API_BASE_URL=
 CONTRACT_STORAGE_ROOT=/home/${BOOTSTRAP_USER}/pets-data/contracts
 SHOP_LOGO_STORAGE_ROOT=/home/${BOOTSTRAP_USER}/pets-data/shop-logos
 PORTAL_BACKGROUND_STORAGE_ROOT=/home/${BOOTSTRAP_USER}/pets-data/portal-backgrounds
+GROOMING_PHOTO_STORAGE_ROOT=/home/${BOOTSTRAP_USER}/pets-data/grooming-photos
+PRODUCT_IMAGE_STORAGE_ROOT=/home/${BOOTSTRAP_USER}/pets-data/product-images
 EOF
   chown "${BOOTSTRAP_USER}:${BOOTSTRAP_USER}" "${ENV_FILE}"
   chmod 600 "${ENV_FILE}"
@@ -246,7 +248,9 @@ unset DB_PASSWORD
 install -d -o "${BOOTSTRAP_USER}" -g "${BOOTSTRAP_USER}" -m 700 \
   "/home/${BOOTSTRAP_USER}/pets-data/contracts" \
   "/home/${BOOTSTRAP_USER}/pets-data/shop-logos" \
-  "/home/${BOOTSTRAP_USER}/pets-data/portal-backgrounds"
+  "/home/${BOOTSTRAP_USER}/pets-data/portal-backgrounds" \
+  "/home/${BOOTSTRAP_USER}/pets-data/grooming-photos" \
+  "/home/${BOOTSTRAP_USER}/pets-data/product-images"
 
 cat > /etc/systemd/system/pets-backend.service <<EOF
 [Unit]

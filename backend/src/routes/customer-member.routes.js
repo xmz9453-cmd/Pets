@@ -17,6 +17,8 @@ router.get('/public/member/services', publicShopContext, requireCustomerAuthenti
 router.get('/public/member/products', publicShopContext, requireCustomerAuthentication, customerBookingController.listProducts);
 router.get('/public/member/availability', publicShopContext, requireCustomerAuthentication, customerBookingController.listAvailability);
 router.get('/public/member/requests', publicShopContext, requireCustomerAuthentication, customerBookingController.listRequests);
+router.get('/public/member/grooming-records', publicShopContext, requireCustomerAuthentication, customerBookingController.listCompletedGroomingRecords);
+router.get('/public/member/grooming-photos/:photoId', publicShopContext, requireCustomerAuthentication, customerBookingController.getCompletedGroomingPhoto);
 router.get('/public/member/requests/:id/onboarding', publicShopContext, requireCustomerAuthentication, customerBookingController.getOnboardingToken);
 router.post('/public/member/requests/:id/changes', publicShopContext, requireCustomerAuthentication, customerBookingController.createBookingChangeRequest);
 router.post('/public/member/requests', publicShopContext, requireCustomerAuthentication, customerBookingController.createBookingRequest);

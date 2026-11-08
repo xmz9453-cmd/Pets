@@ -102,7 +102,9 @@ if [[ "$*" == *"information_schema.columns"* ]]; then
     printf '%s\\n' "\${MOCK_LOGO_COLUMN_COUNT:-1}"
   elif [[ "$*" == *"portal_backgrounds"* ]]; then
     printf '%s\\n' "\${MOCK_BACKGROUND_COLUMN_COUNT:-3}"
-  else
+elif [[ "$*" == *"image_storage_key"* ]]; then
+  printf '%s\\n' "\${MOCK_PRODUCT_IMAGE_COLUMN_COUNT:-0}"
+else
     echo "unexpected column query" >&2
     exit 10
   fi
@@ -139,9 +141,26 @@ if [[ "$*" == *"SELECT logo_storage_key"* ]]; then
   exit 0
 fi
 if [[ "$*" == *"SELECT storage_key, file_size, mime_type"* ]]; then
-  references="$MOCK_BACKGROUND_REFERENCES"
-  if [ -f "$MOCK_RESTORE_MARKER" ] && [ "\${MOCK_RESTORED_BACKGROUND_REFERENCES_SET:-0}" = "1" ]; then
-    references="$MOCK_RESTORED_BACKGROUND_REFERENCES"
+  if [[ "$*" == *"FROM grooming_photos"* ]]; then
+    references="$MOCK_GROOMING_PHOTO_REFERENCES"
+    if [ -f "$MOCK_RESTORE_MARKER" ] && [ "\${MOCK_RESTORED_GROOMING_PHOTO_REFERENCES_SET:-0}" = "1" ]; then
+      references="$MOCK_RESTORED_GROOMING_PHOTO_REFERENCES"
+    fi
+  else
+    references="$MOCK_BACKGROUND_REFERENCES"
+    if [ -f "$MOCK_RESTORE_MARKER" ] && [ "\${MOCK_RESTORED_BACKGROUND_REFERENCES_SET:-0}" = "1" ]; then
+      references="$MOCK_RESTORED_BACKGROUND_REFERENCES"
+    fi
+  fi
+  if [ -n "$references" ]; then
+    printf '%s\\n' "$references"
+  fi
+  exit 0
+fi
+if [[ "$*" == *"SELECT image_storage_key, image_file_size, image_mime_type"* ]]; then
+  references="$MOCK_PRODUCT_IMAGE_REFERENCES"
+  if [ -f "$MOCK_RESTORE_MARKER" ] && [ "\${MOCK_RESTORED_PRODUCT_IMAGE_REFERENCES_SET:-0}" = "1" ]; then
+    references="$MOCK_RESTORED_PRODUCT_IMAGE_REFERENCES"
   fi
   if [ -n "$references" ]; then
     printf '%s\\n' "$references"
@@ -200,6 +219,9 @@ exec /usr/bin/find "$@"
     MOCK_MYSQLDUMP_ARGS: toBashPath(mysqlDumpArgsPath),
     MOCK_BACKGROUND_REFERENCES: '',
     MOCK_LOGO_REFERENCES: '',
+    MOCK_GROOMING_PHOTO_REFERENCES: '',
+    MOCK_PRODUCT_IMAGE_REFERENCES: '',
+    MOCK_PRODUCT_IMAGE_COLUMN_COUNT: schemaCount === '1' ? '3' : '0',
     MOCK_FIND_MARKER: toBashPath(path.join(tempRoot, 'find-failure-marker.txt')),
     MOCK_LOCK_MYSQL_ARGS: toBashPath(path.join(tempRoot, 'lock-mysql-args.txt')),
     MOCK_PDF_REFERENCES: references,
@@ -287,7 +309,7 @@ function createLegacyBackup(fixture, backupFile) {
 
   const manifestPath = path.join(extractedRoot, 'manifest.txt');
   const manifest = fs.readFileSync(manifestPath, 'utf8')
-    .replace('format=pets-contract-backup-v2', 'format=pets-contract-backup-v1')
+    .replace(/format=pets-contract-backup-v[23]/, 'format=pets-contract-backup-v1')
     .split('\n')
     .filter((line) => !line.startsWith('app_commit=') && !line.startsWith('media_count='))
     .join('\n');
@@ -439,6 +461,37 @@ describe('Contract PDF backup and restore scripts', () => {
       expect(fs.readFileSync(path.join(logoRoot, logoKey))).toEqual(logoBytes);
       expect(fs.readFileSync(path.join(backgroundRoot, backgroundKey))).toEqual(backgroundBytes);
       expect(fs.readdirSync(logoRoot)).toEqual([logoKey]);
+    } finally {
+      removeFixture(fixture);
+    }
+  });
+
+  test('backs up and restores completed-service photos and product images with their references', () => {
+    const fixture = createFixture({ schemaCount: '1' });
+    const photoKey = `${'a'.repeat(32)}.jpg`;
+    const productKey = `${'b'.repeat(32)}.webp`;
+    const photoBytes = Buffer.from('grooming image bytes');
+    const productBytes = Buffer.from('product image bytes');
+    const photoRoot = path.join(path.dirname(fixture.storageRoot), 'grooming-photos');
+    const productRoot = path.join(path.dirname(fixture.storageRoot), 'product-images');
+    fs.mkdirSync(photoRoot, { recursive: true });
+    fs.mkdirSync(productRoot, { recursive: true });
+    fs.writeFileSync(path.join(photoRoot, photoKey), photoBytes);
+    fs.writeFileSync(path.join(productRoot, productKey), productBytes);
+    fixture.env.MOCK_GROOMING_PHOTO_REFERENCES = `${photoKey}\t${photoBytes.length}\timage/jpeg`;
+    fixture.env.MOCK_PRODUCT_IMAGE_REFERENCES = `${productKey}\t${productBytes.length}\timage/webp`;
+    try {
+      const backup = fixture.runBackup();
+      if (backup.status !== 0) {
+        throw new Error(`Image-media backup failed (${backup.status}): ${backup.stdout}\n${backup.stderr}`);
+      }
+      fs.writeFileSync(path.join(photoRoot, photoKey), 'changed photo');
+      fs.writeFileSync(path.join(productRoot, productKey), 'changed product image');
+
+      const restore = fixture.runRestore(fixture.backupPathFor(backup));
+      expectRestoreSuccess(restore);
+      expect(fs.readFileSync(path.join(photoRoot, photoKey))).toEqual(photoBytes);
+      expect(fs.readFileSync(path.join(productRoot, productKey))).toEqual(productBytes);
     } finally {
       removeFixture(fixture);
     }

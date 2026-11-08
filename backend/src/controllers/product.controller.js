@@ -8,4 +8,26 @@ async function updateProduct(req, res, next) { try { send(res, await productServ
 async function deleteProduct(req, res, next) { try { send(res, await productService.deleteProduct(req.params.id)); } catch (error) { next(error); } }
 async function enableProduct(req, res, next) { try { send(res, await productService.enableProduct(req.params.id)); } catch (error) { next(error); } }
 async function disableProduct(req, res, next) { try { send(res, await productService.disableProduct(req.params.id)); } catch (error) { next(error); } }
-module.exports = { createProduct, deleteProduct, disableProduct, enableProduct, getProduct, listProducts, updateProduct };
+async function uploadImage(req, res, next) { try { send(res, await productService.uploadProductImage(req.params.id, req.file), 201); } catch (error) { next(error); } }
+async function removeImage(req, res, next) { try { send(res, await productService.removeProductImage(req.params.id)); } catch (error) { next(error); } }
+async function getPublicImage(req, res, next) {
+  try {
+    const image = await productService.getPublicProductImage(req.params.id, req.query.v);
+    res.status(200).set('Content-Type', image.mimeType).set('X-Content-Type-Options', 'nosniff')
+      .set('Cache-Control', 'public, max-age=31536000, immutable').send(image.bytes);
+  } catch (error) {
+    next(error);
+  }
+}
+module.exports = {
+  createProduct,
+  deleteProduct,
+  disableProduct,
+  enableProduct,
+  getProduct,
+  getPublicImage,
+  listProducts,
+  removeImage,
+  updateProduct,
+  uploadImage,
+};

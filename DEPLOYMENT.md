@@ -16,6 +16,8 @@ This document provides standard operating procedures (SOP) for **Pets 2.0 Produc
 - **Contract PDF Storage**: private filesystem directory configured by `CONTRACT_STORAGE_ROOT`; not part of the Git checkout or Nginx document root.
 - **Shop Logo Storage**: private filesystem directory configured by `SHOP_LOGO_STORAGE_ROOT`; only validated PNG/JPG/WebP files are served through the public logo endpoint.
 - **Portal Background Storage**: private filesystem directory configured by `PORTAL_BACKGROUND_STORAGE_ROOT`; only the selected, validated PNG/JPG/WebP image is publicly served.
+- **Grooming Photo Storage**: private filesystem directory configured by `GROOMING_PHOTO_STORAGE_ROOT`; customer images are served only after member ownership and completed-service checks.
+- **Product Image Storage**: private filesystem directory configured by `PRODUCT_IMAGE_STORAGE_ROOT`; one validated PNG/JPG/WebP image is allowed per product.
 - **Application Services**:
   - Backend: `pets-backend.service` (`http://127.0.0.1:3001`)
   - Frontend: `pets-frontend.service` (`http://127.0.0.1:3000`)
@@ -35,15 +37,15 @@ This document provides standard operating procedures (SOP) for **Pets 2.0 Produc
 
 ### Complete Application Backup and Restore
 
-The verified backup bundle contains the compressed MySQL dump, Contract PDFs, Shop Logos, Portal Backgrounds, SHA-256 manifests, and the Git commit SHA for the application version. Configure `CONTRACT_STORAGE_ROOT` in the Backend environment and repository `.env` used by maintenance scripts; the root must already exist and be private. Logo and background roots may be configured with `SHOP_LOGO_STORAGE_ROOT` and `PORTAL_BACKGROUND_STORAGE_ROOT`; by default they are next to the contract root.
+The verified backup bundle contains the compressed MySQL dump, Contract PDFs, Shop Logos, Portal Backgrounds, Grooming Photos, Product Images, SHA-256 manifests, and the Git commit SHA for the application version. Configure `CONTRACT_STORAGE_ROOT` in the Backend environment and repository `.env` used by maintenance scripts; the root must already exist and be private. Media roots may be configured with `SHOP_LOGO_STORAGE_ROOT`, `PORTAL_BACKGROUND_STORAGE_ROOT`, `GROOMING_PHOTO_STORAGE_ROOT`, and `PRODUCT_IMAGE_STORAGE_ROOT`; by default they are separate directories next to the contract root.
 
 `deploy/backup.sh` requires a clean Git working tree so the recorded commit identifies the code version used for recovery. It creates a timestamped `pets_backup_YYYYMMDD_HHMMSS.tar.gz` bundle and checksum sidecar. Completed bundles are verified and stored with mode `600`; bundles older than 30 days are removed. Keep the bundle and its `.sha256` sidecar together.
 
-Deployment creates this backup before applying pending migrations. The backup script checks whether optional Logo and Portal Background reference columns exist, so a valid pre-migration database can still be backed up; when a reference column is absent, its files are included but cannot be cross-checked against that column. The database account does not need the MySQL `PROCESS` privilege for tablespace metadata.
+Deployment creates this backup before applying pending migrations. The backup script checks whether optional Logo, Portal Background, Product Image, and Grooming Photo reference schemas exist, so a valid pre-migration database can still be backed up; when a reference schema is absent, its files are included but cannot be cross-checked against that schema. The database account does not need the MySQL `PROCESS` privilege for tablespace metadata.
 
 Application source is recovered by checking out the recorded `app_commit` from the GitHub repository. The bundle does not include `.env` or other secrets: store those separately in an encrypted, access-controlled backup. This is an application-level recovery set, not a full VM or operating-system image.
 
-The migration sequence snapshots existing portal footer and background metadata before migration 034 and restores it after the shop-scoping changes; do not edit migration 034 in place.
+The migration sequence snapshots existing portal footer and background metadata before migration 034 and restores it after the shop-scoping changes; do not edit migration 034 in place. New grooming photos and product images are stored outside the Git checkout and included in backup bundles; do not expose these media roots through Nginx.
 
 Restore a complete bundle with:
 

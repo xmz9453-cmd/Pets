@@ -30,6 +30,20 @@ function listRequests(req, res, next) {
   send(res, () => bookingChangeService.listCustomerRequests()).catch(next);
 }
 
+function listCompletedGroomingRecords(req, res, next) {
+  send(res, () => customerBookingService.listCompletedGroomingRecords()).catch(next);
+}
+
+async function getCompletedGroomingPhoto(req, res, next) {
+  try {
+    const image = await customerBookingService.getCompletedGroomingPhotoImage(req.params.photoId);
+    res.status(200).set('Content-Type', image.mimeType).set('X-Content-Type-Options', 'nosniff')
+      .set('Cache-Control', 'private, no-store').send(image.bytes);
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function createBookingChangeRequest(req, res, next) {
   try {
     const result = await bookingChangeService.createCustomerChangeRequest(req.params.id, req.body || {});
@@ -54,9 +68,11 @@ async function createBookingRequest(req, res, next) {
 
 module.exports = {
   createBookingRequest,
+  getCompletedGroomingPhoto,
   createBookingChangeRequest,
   getOnboardingToken,
   listAvailability,
+  listCompletedGroomingRecords,
   listPets,
   listProducts,
   listRequests,

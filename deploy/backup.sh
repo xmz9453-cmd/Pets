@@ -17,6 +17,8 @@ DB_PASSWORD=""
 CONTRACT_STORAGE_ROOT=""
 SHOP_LOGO_STORAGE_ROOT=""
 PORTAL_BACKGROUND_STORAGE_ROOT=""
+GROOMING_PHOTO_STORAGE_ROOT=""
+PRODUCT_IMAGE_STORAGE_ROOT=""
 
 if [ -f "${ENV_FILE}" ]; then
   load_deployment_env "${ENV_FILE}"
@@ -41,6 +43,8 @@ fi
 MEDIA_PARENT="$(dirname "${CONTRACT_STORAGE_ROOT}")"
 SHOP_LOGO_STORAGE_ROOT="${SHOP_LOGO_STORAGE_ROOT:-${MEDIA_PARENT}/shop-logos}"
 PORTAL_BACKGROUND_STORAGE_ROOT="${PORTAL_BACKGROUND_STORAGE_ROOT:-${MEDIA_PARENT}/portal-backgrounds}"
+GROOMING_PHOTO_STORAGE_ROOT="${GROOMING_PHOTO_STORAGE_ROOT:-${MEDIA_PARENT}/grooming-photos}"
+PRODUCT_IMAGE_STORAGE_ROOT="${PRODUCT_IMAGE_STORAGE_ROOT:-${MEDIA_PARENT}/product-images}"
 
 ensure_media_root() {
   local root="$1" label="$2"
@@ -57,6 +61,8 @@ ensure_media_root() {
 
 ensure_media_root "${SHOP_LOGO_STORAGE_ROOT}" "Shop Logo"
 ensure_media_root "${PORTAL_BACKGROUND_STORAGE_ROOT}" "Portal Background"
+ensure_media_root "${GROOMING_PHOTO_STORAGE_ROOT}" "Grooming Photo"
+ensure_media_root "${PRODUCT_IMAGE_STORAGE_ROOT}" "Product Image"
 
 canonical_path() {
   (cd -P -- "$1" && pwd)
@@ -65,10 +71,19 @@ canonical_path() {
 CONTRACT_STORAGE_ROOT="$(canonical_path "${CONTRACT_STORAGE_ROOT}")"
 SHOP_LOGO_STORAGE_ROOT="$(canonical_path "${SHOP_LOGO_STORAGE_ROOT}")"
 PORTAL_BACKGROUND_STORAGE_ROOT="$(canonical_path "${PORTAL_BACKGROUND_STORAGE_ROOT}")"
+GROOMING_PHOTO_STORAGE_ROOT="$(canonical_path "${GROOMING_PHOTO_STORAGE_ROOT}")"
+PRODUCT_IMAGE_STORAGE_ROOT="$(canonical_path "${PRODUCT_IMAGE_STORAGE_ROOT}")"
 if [ "${SHOP_LOGO_STORAGE_ROOT}" = "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] \
   || [ "${SHOP_LOGO_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ] \
-  || [ "${PORTAL_BACKGROUND_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ]; then
-  echo "[backup.sh ERROR] Contract, Logo, and Portal Background storage roots must be different directories." >&2
+  || [ "${PORTAL_BACKGROUND_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ] \
+  || [ "${GROOMING_PHOTO_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ] \
+  || [ "${GROOMING_PHOTO_STORAGE_ROOT}" = "${SHOP_LOGO_STORAGE_ROOT}" ] \
+  || [ "${GROOMING_PHOTO_STORAGE_ROOT}" = "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] \
+  || [ "${PRODUCT_IMAGE_STORAGE_ROOT}" = "${CONTRACT_STORAGE_ROOT}" ] \
+  || [ "${PRODUCT_IMAGE_STORAGE_ROOT}" = "${SHOP_LOGO_STORAGE_ROOT}" ] \
+  || [ "${PRODUCT_IMAGE_STORAGE_ROOT}" = "${PORTAL_BACKGROUND_STORAGE_ROOT}" ] \
+  || [ "${PRODUCT_IMAGE_STORAGE_ROOT}" = "${GROOMING_PHOTO_STORAGE_ROOT}" ]; then
+  echo "[backup.sh ERROR] Contract and media storage roots must be different directories." >&2
   exit 1
 fi
 
@@ -114,7 +129,8 @@ if [ -e "${BACKUP_FILE}" ] || [ -L "${BACKUP_FILE}" ] \
 fi
 
 mkdir -p "${STAGE_DIR}/pdf-root/contract-versions" \
-  "${STAGE_DIR}/media/shop-logos" "${STAGE_DIR}/media/portal-backgrounds"
+  "${STAGE_DIR}/media/shop-logos" "${STAGE_DIR}/media/portal-backgrounds" \
+  "${STAGE_DIR}/media/grooming-photos" "${STAGE_DIR}/media/product-images"
 SYMLINK_LIST="${STAGE_DIR}/contract-storage-symlinks.txt"
 if ! find "${CONTRACT_STORAGE_ROOT}" -type l -print > "${SYMLINK_LIST}"; then
   echo "[backup.sh ERROR] Could not scan Contract PDF storage for symbolic links." >&2
@@ -254,7 +270,9 @@ copy_media_files() {
 
 : > "${STAGE_DIR}/MEDIA_MANIFEST.tsv"
 if ! copy_media_files "${SHOP_LOGO_STORAGE_ROOT}" shop-logos 2097152 \
-  || ! copy_media_files "${PORTAL_BACKGROUND_STORAGE_ROOT}" portal-backgrounds 10485760; then
+  || ! copy_media_files "${PORTAL_BACKGROUND_STORAGE_ROOT}" portal-backgrounds 10485760 \
+  || ! copy_media_files "${GROOMING_PHOTO_STORAGE_ROOT}" grooming-photos 2097152 \
+  || ! copy_media_files "${PRODUCT_IMAGE_STORAGE_ROOT}" product-images 2097152; then
   exit 1
 fi
 sort -o "${STAGE_DIR}/MEDIA_MANIFEST.tsv" "${STAGE_DIR}/MEDIA_MANIFEST.tsv"
@@ -320,6 +338,72 @@ while IFS=$'\t' read -r storage_key expected_size mime_type; do
   fi
 done < "${STAGE_DIR}/database-background-references.tsv"
 
+PRODUCT_IMAGE_COLUMN_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+  --batch --skip-column-names \
+  -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'products' AND column_name IN ('image_storage_key', 'image_file_size', 'image_mime_type');")"
+if [[ ! "${PRODUCT_IMAGE_COLUMN_COUNT}" =~ ^(0|3)$ ]]; then
+  echo "[backup.sh ERROR] Product Image schema is incomplete; expected all required reference columns or none." >&2
+  exit 1
+fi
+: > "${STAGE_DIR}/database-product-image-references.tsv"
+if [ "${PRODUCT_IMAGE_COLUMN_COUNT}" = "3" ]; then
+  mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+    --batch --skip-column-names \
+    -e "SELECT image_storage_key, image_file_size, image_mime_type FROM products WHERE image_storage_key IS NOT NULL ORDER BY image_storage_key;" \
+    > "${STAGE_DIR}/database-product-image-references.tsv"
+fi
+while IFS=$'\t' read -r storage_key expected_size mime_type; do
+  [ -n "${storage_key}" ] || continue
+  image_path="${STAGE_DIR}/media/product-images/${storage_key}"
+  if [[ ! "${storage_key}" =~ ^[a-f0-9]{32}\.(png|jpg|webp)$ ]] \
+    || [ ! -f "${image_path}" ] || [ -L "${image_path}" ]; then
+    echo "[backup.sh ERROR] A database-referenced Product Image is missing or unsafe." >&2
+    exit 1
+  fi
+  actual_size="$(wc -c < "${image_path}" | tr -d ' ')"
+  case "${storage_key##*.}:${mime_type}" in
+    png:image/png|jpg:image/jpeg|webp:image/webp) ;;
+    *) echo "[backup.sh ERROR] A Product Image has mismatched media metadata." >&2; exit 1 ;;
+  esac
+  if [ "${actual_size}" != "${expected_size}" ]; then
+    echo "[backup.sh ERROR] A database-referenced Product Image has an invalid file size." >&2
+    exit 1
+  fi
+done < "${STAGE_DIR}/database-product-image-references.tsv"
+
+GROOMING_PHOTO_TABLE_COUNT="$(mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+  --batch --skip-column-names \
+  -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'grooming_photos';")"
+if [[ ! "${GROOMING_PHOTO_TABLE_COUNT}" =~ ^[01]$ ]]; then
+  echo "[backup.sh ERROR] Could not determine whether grooming_photos exists." >&2
+  exit 1
+fi
+: > "${STAGE_DIR}/database-grooming-photo-references.tsv"
+if [ "${GROOMING_PHOTO_TABLE_COUNT}" = "1" ]; then
+  mysql --defaults-extra-file="${MYSQL_CREDENTIALS_FILE}" "${DB_NAME}" \
+    --batch --skip-column-names \
+    -e "SELECT storage_key, file_size, mime_type FROM grooming_photos ORDER BY storage_key;" \
+    > "${STAGE_DIR}/database-grooming-photo-references.tsv"
+fi
+while IFS=$'\t' read -r storage_key expected_size mime_type; do
+  [ -n "${storage_key}" ] || continue
+  image_path="${STAGE_DIR}/media/grooming-photos/${storage_key}"
+  if [[ ! "${storage_key}" =~ ^[a-f0-9]{32}\.(png|jpg|webp)$ ]] \
+    || [ ! -f "${image_path}" ] || [ -L "${image_path}" ]; then
+    echo "[backup.sh ERROR] A database-referenced Grooming Photo is missing or unsafe." >&2
+    exit 1
+  fi
+  actual_size="$(wc -c < "${image_path}" | tr -d ' ')"
+  case "${storage_key##*.}:${mime_type}" in
+    png:image/png|jpg:image/jpeg|webp:image/webp) ;;
+    *) echo "[backup.sh ERROR] A Grooming Photo has mismatched media metadata." >&2; exit 1 ;;
+  esac
+  if [ "${actual_size}" != "${expected_size}" ]; then
+    echo "[backup.sh ERROR] A database-referenced Grooming Photo has an invalid file size." >&2
+    exit 1
+  fi
+done < "${STAGE_DIR}/database-grooming-photo-references.tsv"
+
 (
   cd "${STAGE_DIR}/pdf-root"
   find contract-versions -type f -name '*.pdf' -print0 \
@@ -334,7 +418,7 @@ done < "${STAGE_DIR}/database-background-references.tsv"
 tar -czf "${STAGE_DIR}/contract-pdfs.tar.gz" -C "${STAGE_DIR}/pdf-root" contract-versions
 
 {
-  printf 'format=pets-contract-backup-v2\n'
+  printf 'format=pets-contract-backup-v3\n'
   printf 'timestamp=%s\n' "${TIMESTAMP}"
   printf 'database=%s\n' "${DB_NAME}"
   printf 'app_commit=%s\n' "${APP_COMMIT}"
@@ -342,7 +426,8 @@ tar -czf "${STAGE_DIR}/contract-pdfs.tar.gz" -C "${STAGE_DIR}/pdf-root" contract
   printf 'media_count=%s\n' "$(wc -l < "${STAGE_DIR}/MEDIA_MANIFEST.tsv" | tr -d ' ')"
 } > "${STAGE_DIR}/manifest.txt"
 
-tar -czf "${STAGE_DIR}/media-files.tar.gz" -C "${STAGE_DIR}/media" shop-logos portal-backgrounds
+tar -czf "${STAGE_DIR}/media-files.tar.gz" -C "${STAGE_DIR}/media" \
+  shop-logos portal-backgrounds grooming-photos product-images
 (
   cd "${STAGE_DIR}"
   sha256sum database.sql.gz contract-pdfs.tar.gz PDF_MANIFEST.tsv media-files.tar.gz MEDIA_MANIFEST.tsv manifest.txt > SHA256SUMS

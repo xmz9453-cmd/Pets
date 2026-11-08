@@ -9,7 +9,7 @@ load_deployment_env() {
     [[ "${line}" == *=* ]] || continue
     key="${line%%=*}"
     case "${key}" in
-      DB_HOST|DB_PORT|DB_NAME|DB_USER|DB_PASSWORD|CONTRACT_STORAGE_ROOT|SHOP_LOGO_STORAGE_ROOT|PORTAL_BACKGROUND_STORAGE_ROOT) ;;
+      DB_HOST|DB_PORT|DB_NAME|DB_USER|DB_PASSWORD|CONTRACT_STORAGE_ROOT|SHOP_LOGO_STORAGE_ROOT|PORTAL_BACKGROUND_STORAGE_ROOT|GROOMING_PHOTO_STORAGE_ROOT|PRODUCT_IMAGE_STORAGE_ROOT) ;;
       *) continue ;;
     esac
     value="${line#*=}"

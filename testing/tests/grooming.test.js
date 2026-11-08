@@ -1,6 +1,9 @@
 const request = require('supertest');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const groomingPhotoStorageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pets-grooming-photo-test-'));
+process.env.GROOMING_PHOTO_STORAGE_ROOT = groomingPhotoStorageRoot;
 
 function loadLocalEnvForTestDatabase() {
   const envPath = path.resolve(__dirname, '..', '..', '.env');
@@ -74,6 +77,10 @@ describe('Grooming API', () => {
 
   beforeEach(async () => {
     await getPool().query('DELETE FROM auth_sessions');
+    await getPool().query('DELETE FROM customer_member_sessions');
+    await getPool().query('DELETE FROM customer_member_customers');
+    await getPool().query('DELETE FROM customer_members');
+    await getPool().query('DELETE FROM grooming_photos');
     await getPool().query('DELETE FROM groomings');
     await getPool().query('DELETE FROM boardings');
     await getPool().query('DELETE FROM daily_operations');
@@ -90,6 +97,7 @@ describe('Grooming API', () => {
 
   afterAll(async () => {
     await closePool();
+    fs.rmSync(groomingPhotoStorageRoot, { recursive: true, force: true });
   });
 
   test('POST and PATCH /api/groomings save grooming execution data and prevent duplicates for the same pet', async () => {
@@ -146,6 +154,8 @@ describe('Grooming API', () => {
     expect(duplicateResponse.status).toBe(409);
 
     const updateResponse = await agent.patch(`/api/groomings/${createResponse.body.data.id}`).send({
+      daily_operation_id: dailyOperationId,
+      pet_id: petId,
       before_condition: '耳朵已清潔，毛量適中',
       note: '已完成耳部清潔與修剪。',
     });
@@ -153,6 +163,142 @@ describe('Grooming API', () => {
     expect(updateResponse.status).toBe(200);
     expect(updateResponse.body.success).toBe(true);
     expect(updateResponse.body.data.note).toContain('已完成耳部清潔');
+
+    const photoBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+    const upload = await agent.post(`/api/groomings/${createResponse.body.data.id}/photos`)
+      .field('category', 'AFTER')
+      .attach('file', photoBytes, { filename: 'after.png', contentType: 'image/png' });
+    expect(upload.status).toBe(201);
+    expect(upload.body.data.photo).toMatchObject({ category: 'AFTER', file_size: photoBytes.length });
+
+    const photoResponse = await agent.get(upload.body.data.photo.image_url);
+    expect(photoResponse.status).toBe(200);
+    expect(photoResponse.headers['content-type']).toContain('image/png');
+    expect(photoResponse.headers['x-content-type-options']).toBe('nosniff');
+    expect(photoResponse.body).toEqual(photoBytes);
+
+    const invalidCategory = await agent.post(`/api/groomings/${createResponse.body.data.id}/photos`)
+      .field('category', 'OTHER')
+      .attach('file', photoBytes, { filename: 'invalid.png', contentType: 'image/png' });
+    expect(invalidCategory.status).toBe(400);
+
+    const unauthorized = await request(app)
+      .get(`/api/groomings/${createResponse.body.data.id}/photos/${upload.body.data.photo.id}/image`);
+    expect(unauthorized.status).toBe(401);
+
+    const removal = await agent.delete(`/api/groomings/${createResponse.body.data.id}/photos/${upload.body.data.photo.id}`);
+    expect(removal.status).toBe(200);
+    expect((await agent.get(upload.body.data.photo.image_url)).status).toBe(404);
+  });
+
+  test('limits each pet grooming record to five image uploads', async () => {
+    const { agent } = await loginAsOwner();
+    const customer = await createCustomer(agent, { name: 'Photo Limit Client', phone: '0912-555-779' });
+    const pet = await createPet(agent, { name: 'Photo Limit Pet', species: 'DOG', gender: 'MALE', customer_id: customer.body.data.customer.id });
+    const [serviceRows] = await getPool().query('SELECT id FROM services WHERE type = ? LIMIT 1', ['GROOMING']);
+    const appointment = await createAppointment(agent, {
+      customer_id: customer.body.data.customer.id,
+      appointment_date: new Date().toISOString().slice(0, 10),
+      appointment_time: '12:00:00',
+      pets: [{ pet_id: pet.body.data.pet.id, service_ids: [serviceRows[0].id] }],
+    });
+    const dailyOperationId = await ensureDailyOperationExists(appointment.body.data.appointment.id);
+    await agent.post(`/api/operations/${dailyOperationId}/check-in`);
+    const grooming = await agent.post('/api/groomings').send({
+      daily_operation_id: dailyOperationId,
+      pet_id: pet.body.data.pet.id,
+    });
+    const photoBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]);
+    for (let index = 0; index < 5; index += 1) {
+      const upload = await agent.post(`/api/groomings/${grooming.body.data.id}/photos`)
+        .field('category', index % 2 ? 'AFTER' : 'BEFORE')
+        .attach('file', photoBytes, { filename: `photo-${index}.png`, contentType: 'image/png' });
+      expect(upload.status).toBe(201);
+    }
+    const rejected = await agent.post(`/api/groomings/${grooming.body.data.id}/photos`)
+      .field('category', 'CONCERN')
+      .attach('file', photoBytes, { filename: 'sixth.png', contentType: 'image/png' });
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.error.code).toBe('GROOMING_PHOTO_LIMIT_REACHED');
+  });
+
+  test('members can view only their completed grooming history and photos', async () => {
+    const { agent } = await loginAsOwner();
+    const customer = await createCustomer(agent, { name: 'Completed History Client', phone: '0912-555-780' });
+    const pet = await createPet(agent, { name: 'History Pet', species: 'DOG', gender: 'FEMALE', customer_id: customer.body.data.customer.id });
+    const [serviceRows] = await getPool().query('SELECT id FROM services WHERE type = ? LIMIT 1', ['GROOMING']);
+    const appointment = await createAppointment(agent, {
+      customer_id: customer.body.data.customer.id,
+      appointment_date: new Date().toISOString().slice(0, 10),
+      appointment_time: '13:00:00',
+      pets: [{ pet_id: pet.body.data.pet.id, service_ids: [serviceRows[0].id] }],
+    });
+    const dailyOperationId = await ensureDailyOperationExists(appointment.body.data.appointment.id);
+    await agent.post(`/api/operations/${dailyOperationId}/check-in`);
+    const grooming = await agent.post('/api/groomings').send({
+      daily_operation_id: dailyOperationId,
+      pet_id: pet.body.data.pet.id,
+      grooming_result: '完成美容',
+    });
+    const imageBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 2]);
+    const photo = await agent.post(`/api/groomings/${grooming.body.data.id}/photos`)
+      .field('category', 'AFTER')
+      .attach('file', imageBytes, { filename: 'completed.png', contentType: 'image/png' });
+
+    const memberRows = await getPool().query(
+      'INSERT INTO customer_members (display_name) VALUES (?)',
+      ['History Member'],
+    );
+    const memberId = memberRows[0].insertId;
+    await getPool().query(
+      'INSERT INTO customer_member_customers (shop_id, customer_member_id, customer_id) VALUES (?, ?, ?)',
+      [1, memberId, customer.body.data.customer.id],
+    );
+    const { createSessionToken, hashSessionToken } = require('../../backend/src/utils/session-token');
+    const memberToken = createSessionToken();
+    await getPool().query(
+      `INSERT INTO customer_member_sessions
+         (shop_id, customer_member_id, token_hash, authenticated_at, expires_at)
+       VALUES (?, ?, ?, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 DAY))`,
+      [1, memberId, hashSessionToken(memberToken)],
+    );
+
+    const member = request(app);
+    const memberOptions = (pathValue) => member.get(pathValue)
+      .set('X-Shop-Id', '1')
+      .set('Cookie', `customer_member_session=${memberToken}`);
+    const beforeComplete = await memberOptions('/api/public/member/grooming-records');
+    expect(beforeComplete.status).toBe(200);
+    expect(beforeComplete.body.data.records).toHaveLength(0);
+
+    await agent.post(`/api/operations/${dailyOperationId}/complete-work`);
+    const history = await memberOptions('/api/public/member/grooming-records');
+    expect(history.status).toBe(200);
+    expect(history.body.data.records).toHaveLength(1);
+    expect(history.body.data.records[0]).toMatchObject({
+      appointment_id: appointment.body.data.appointment.id,
+      pet_name: 'History Pet',
+      grooming_result: '完成美容',
+    });
+    expect(history.body.data.records[0].photos[0].category).toBe('AFTER');
+
+    const photoResponse = await memberOptions(history.body.data.records[0].photos[0].image_url);
+    expect(photoResponse.status).toBe(200);
+    expect(photoResponse.body).toEqual(imageBytes);
+
+    const anotherMember = await getPool().query('INSERT INTO customer_members (display_name) VALUES (?)', ['Other Member']);
+    const otherToken = createSessionToken();
+    await getPool().query(
+      `INSERT INTO customer_member_sessions
+         (shop_id, customer_member_id, token_hash, authenticated_at, expires_at)
+       VALUES (?, ?, ?, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 DAY))`,
+      [1, anotherMember[0].insertId, hashSessionToken(otherToken)],
+    );
+    const deniedPhoto = await request(app)
+      .get(history.body.data.records[0].photos[0].image_url)
+      .set('X-Shop-Id', '1')
+      .set('Cookie', `customer_member_session=${otherToken}`);
+    expect(deniedPhoto.status).toBe(404);
   });
 
   test('allows grooming execution during active work and notes to be added after completion', async () => {

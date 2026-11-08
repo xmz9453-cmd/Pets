@@ -1,8 +1,18 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { getUserFacingErrorMessage } from '../utils/error-message';
-import { API_BASE_URL, fetchWithShop as fetch } from '../api/client';
+import {
+  API_BASE_URL,
+  fetchWithShop as fetch,
+  removeGroomingPhoto,
+  uploadGroomingPhoto,
+} from '../api/client';
 const SPECIES_LABELS = { DOG: '狗', CAT: '貓' };
+const PHOTO_CATEGORIES = [
+  { value: 'BEFORE', label: '美容前' },
+  { value: 'AFTER', label: '美容後' },
+  { value: 'CONCERN', label: '狀況' },
+];
 
 export default function GroomingPage() {
   const router = useRouter();
@@ -10,7 +20,10 @@ export default function GroomingPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [grooming, setGrooming] = useState(null);
+  const [groomings, setGroomings] = useState([]);
+  const [selectedPetId, setSelectedPetId] = useState('');
+  const [photoCategory, setPhotoCategory] = useState('AFTER');
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [operation, setOperation] = useState(null);
   const [form, setForm] = useState({
     before_condition: '',
@@ -18,6 +31,8 @@ export default function GroomingPage() {
     grooming_result: '',
     note: '',
   });
+  const selectedPet = operation?.pets?.find((item) => Number(item.pet_id) === Number(selectedPetId));
+  const grooming = groomings.find((item) => Number(item.pet_id) === Number(selectedPetId)) || null;
 
   useEffect(() => {
     if (!router.isReady) {
@@ -48,9 +63,12 @@ export default function GroomingPage() {
         }
         const appointmentData = await appointmentResponse.json();
         const appointment = appointmentData.data.appointment;
+        const groomingPets = (appointment.pets || []).filter(
+          (item) => item.services?.some((service) => service.type === 'GROOMING'),
+        );
         setOperation({
           ...operationData.data,
-          pets: appointment.pets || [],
+          pets: groomingPets,
         });
 
         const groomingResponse = await fetch(`${API_BASE_URL}/api/groomings?daily_operation_id=${daily_operation_id}`, {
@@ -60,16 +78,10 @@ export default function GroomingPage() {
           throw new Error('無法載入美容資料');
         }
         const groomingData = await groomingResponse.json();
-        const firstRecord = groomingData.data && groomingData.data[0] ? groomingData.data[0] : null;
-        if (firstRecord) {
-          setGrooming(firstRecord);
-          setForm({
-            before_condition: firstRecord.before_condition || '',
-            actual_grooming_content: firstRecord.actual_grooming_content || '',
-            grooming_result: firstRecord.grooming_result || '',
-            note: firstRecord.note || '',
-          });
-        }
+        const records = groomingData.data || [];
+        setGroomings(records);
+        const firstPetId = groomingPets[0]?.pet_id;
+        if (firstPetId) setSelectedPetId(String(firstPetId));
       } catch (loadError) {
         setError(getUserFacingErrorMessage(loadError, 500, '無法載入美容資料'));
       } finally {
@@ -80,6 +92,16 @@ export default function GroomingPage() {
     loadData();
   }, [router.isReady, daily_operation_id]);
 
+  useEffect(() => {
+    const record = groomings.find((item) => Number(item.pet_id) === Number(selectedPetId));
+    setForm({
+      before_condition: record?.before_condition || '',
+      actual_grooming_content: record?.actual_grooming_content || '',
+      grooming_result: record?.grooming_result || '',
+      note: record?.note || '',
+    });
+  }, [groomings, selectedPetId]);
+
   async function saveGrooming() {
     try {
       setSubmitting(true);
@@ -87,7 +109,7 @@ export default function GroomingPage() {
 
       const payload = {
         daily_operation_id: Number(daily_operation_id),
-        pet_id: operation?.pets?.[0]?.pet_id || operation?.pet_id || null,
+        pet_id: Number(selectedPetId) || operation?.pet_id || null,
         ...form,
       };
 
@@ -110,7 +132,10 @@ export default function GroomingPage() {
       }
 
       const saved = body.data;
-      setGrooming(saved);
+      setGroomings((current) => [
+        ...current.filter((item) => Number(item.pet_id) !== Number(saved.pet_id)),
+        saved,
+      ]);
       setForm({
         before_condition: saved.before_condition || '',
         actual_grooming_content: saved.actual_grooming_content || '',
@@ -123,6 +148,49 @@ export default function GroomingPage() {
       return null;
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleUploadPhoto(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!grooming) {
+      setError('請先儲存這隻寵物的美容紀錄，再上傳照片。');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('美容照片不可超過 2 MiB。');
+      return;
+    }
+    try {
+      setUploadingPhoto(true);
+      setError('');
+      const result = await uploadGroomingPhoto(grooming.id, file, photoCategory);
+      setGroomings((current) => current.map((item) => (
+        Number(item.id) === Number(grooming.id)
+          ? { ...item, photos: [...(item.photos || []), result.photo] }
+          : item
+      )));
+    } catch (uploadError) {
+      setError(getUserFacingErrorMessage(uploadError, uploadError.statusCode || 500, '美容照片上傳失敗'));
+    } finally {
+      setUploadingPhoto(false);
+    }
+  }
+
+  async function handleDeletePhoto(photo) {
+    if (!window.confirm('確定刪除此張美容照片嗎？')) return;
+    try {
+      setError('');
+      await removeGroomingPhoto(grooming.id, photo.id);
+      setGroomings((current) => current.map((item) => (
+        Number(item.id) === Number(grooming.id)
+          ? { ...item, photos: (item.photos || []).filter((entry) => Number(entry.id) !== Number(photo.id)) }
+          : item
+      )));
+    } catch (deleteError) {
+      setError(getUserFacingErrorMessage(deleteError, deleteError.statusCode || 500, '美容照片刪除失敗'));
     }
   }
 
@@ -159,7 +227,7 @@ export default function GroomingPage() {
     return <div className="container mt-4"><div className="alert alert-warning">未找到美容工作。</div></div>;
   }
 
-  const pet = operation.pets && operation.pets[0] ? operation.pets[0] : null;
+  const pet = selectedPet || null;
 
   return (
     <main className="container py-4">
@@ -179,7 +247,14 @@ export default function GroomingPage() {
           <div className="row g-3">
             <div className="col-md-4"><label className="form-label">客戶</label><input className="form-control" value={operation.customer_name || ''} readOnly /></div>
             <div className="col-md-4"><label className="form-label">電話</label><input className="form-control" value={operation.customer_phone || ''} readOnly /></div>
-            <div className="col-md-4"><label className="form-label">寵物</label><input className="form-control" value={pet ? pet.name : ''} readOnly /></div>
+            <div className="col-md-4">
+              <label className="form-label" htmlFor="grooming-pet">寵物</label>
+              <select id="grooming-pet" className="form-select" value={selectedPetId} onChange={(event) => setSelectedPetId(event.target.value)}>
+                {(operation.pets || []).map((item) => (
+                  <option key={item.pet_id} value={item.pet_id}>{item.name}</option>
+                ))}
+              </select>
+            </div>
             <div className="col-md-4"><label className="form-label">種類</label><input className="form-control" value={pet ? SPECIES_LABELS[pet.species] || pet.species : ''} readOnly /></div>
             <div className="col-md-4"><label className="form-label">預約時間</label><input className="form-control" value={operation.appointment_time || ''} readOnly /></div>
             <div className="col-md-4"><label className="form-label">服務</label><input className="form-control" value={pet && pet.services && pet.services.length ? pet.services.map((item) => item.name).join(', ') : ''} readOnly /></div>
@@ -209,6 +284,41 @@ export default function GroomingPage() {
               <textarea className="form-control" rows="3" value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="記錄美容備註" maxLength={2000} />
             </div>
           </div>
+          <hr className="my-4" />
+          <div className="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-3">
+            <div>
+              <h3 className="h6 mb-1">美容照片</h3>
+              <p className="text-muted small mb-0">每隻寵物每次服務最多 5 張；支援 JPG、PNG、WebP，每張不超過 2 MiB。</p>
+            </div>
+            <div className="d-flex gap-2 align-items-end">
+              <div>
+                <label className="form-label" htmlFor="grooming-photo-category">照片分類</label>
+                <select id="grooming-photo-category" className="form-select" value={photoCategory} onChange={(event) => setPhotoCategory(event.target.value)}>
+                  {PHOTO_CATEGORIES.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="form-label" htmlFor="grooming-photo-file">新增照片</label>
+                <input id="grooming-photo-file" className="form-control" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleUploadPhoto} disabled={!grooming || uploadingPhoto || (grooming.photos || []).length >= 5} />
+              </div>
+            </div>
+          </div>
+          {!grooming ? <p className="text-muted">請先儲存美容紀錄，才能為此寵物上傳照片。</p> : null}
+          {grooming?.photos?.length ? (
+            <div className="row g-3">
+              {grooming.photos.map((photo) => (
+                <div className="col-6 col-md-4 col-lg-3" key={photo.id}>
+                  <div className="border rounded p-2 h-100">
+                    <img src={`${API_BASE_URL}${photo.image_url}`} alt={`${pet?.name || '寵物'}${PHOTO_CATEGORIES.find((category) => category.value === photo.category)?.label || '美容'}照片`} className="img-fluid rounded" style={{ width: '100%', height: '160px', objectFit: 'cover' }} />
+                    <div className="d-flex justify-content-between align-items-center gap-2 mt-2">
+                      <span className="small">{PHOTO_CATEGORIES.find((category) => category.value === photo.category)?.label || photo.category}</span>
+                      <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => handleDeletePhoto(photo)} disabled={uploadingPhoto}>刪除</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : grooming ? <p className="text-muted mb-0">尚未上傳美容照片。</p> : null}
         </div>
       </div>
 

@@ -40,6 +40,18 @@ const config = {
       ? path.resolve(contractStorageRoot, '..', 'portal-backgrounds')
       : path.resolve(__dirname, '..', '..', 'storage', 'portal-backgrounds'),
   ),
+  groomingPhotoStorageRoot: readEnv(
+    'GROOMING_PHOTO_STORAGE_ROOT',
+    contractStorageRoot
+      ? path.resolve(contractStorageRoot, '..', 'grooming-photos')
+      : path.resolve(__dirname, '..', '..', 'storage', 'grooming-photos'),
+  ),
+  productImageStorageRoot: readEnv(
+    'PRODUCT_IMAGE_STORAGE_ROOT',
+    contractStorageRoot
+      ? path.resolve(contractStorageRoot, '..', 'product-images')
+      : path.resolve(__dirname, '..', '..', 'storage', 'product-images'),
+  ),
   database: {
     host: readEnv('DB_HOST', 'localhost'),
     port: readNumberEnv('DB_PORT', 3306),
