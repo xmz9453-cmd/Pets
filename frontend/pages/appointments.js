@@ -69,7 +69,7 @@ export default function AppointmentsPage() {
     ]);
     setCustomers(customerResult.customers || []);
     setPets(petResult.pets || []);
-    setServices(serviceResult.services || []);
+    setServices((serviceResult.services || []).filter((service) => ['GROOMING', 'BOARDING'].includes(service.type)));
   }
 
   async function refreshAppointments() {
@@ -568,6 +568,7 @@ export default function AppointmentsPage() {
                               <small className="d-block text-muted">
                                 客戶申請・{appointment.service_type === 'BOARDING' ? '住宿' : '美容'}
                                 {appointment.requested_check_out ? `・退房 ${appointment.requested_check_out.slice(0, 16)}` : ''}
+                                {appointment.requested_add_on_services ? `・加購服務：${appointment.requested_add_on_services}` : ''}
                                 {appointment.requested_products ? `・加購：${appointment.requested_products}` : ''}
                               </small>
                             ) : null}

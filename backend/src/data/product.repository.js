@@ -3,13 +3,14 @@ const { getCurrentShopId } = require('../utils/shop-context');
 
 function normalize(row) {
   if (!row) return null;
-  return { ...row, id: Number(row.id), price: Number(row.price) };
+  return { ...row, id: Number(row.id), price: Number(row.price), is_sellable: Boolean(row.is_sellable) };
 }
 
 async function listProducts(filters = {}) {
   const conditions = ['shop_id = ?'];
   const params = [getCurrentShopId()];
   if (filters.status && filters.status !== 'ALL') { conditions.push('status = ?'); params.push(filters.status); }
+  if (filters.sellable === true || filters.sellable === 'true') { conditions.push('is_sellable = TRUE'); }
   if (filters.search) { conditions.push('name LIKE ?'); params.push(`%${filters.search}%`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const [rows] = await getPool().query(`SELECT * FROM products ${where} ORDER BY name ASC`, params);
@@ -31,8 +32,8 @@ async function findByName(name, excludeId = null) {
 
 async function createProduct(payload) {
   const [result] = await getPool().query(
-    'INSERT INTO products (shop_id, name, description, price, stock_quantity, unit, species, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [getCurrentShopId(), payload.name, payload.description || null, payload.price, payload.stock_quantity ?? 0, payload.unit, payload.species, payload.status || 'ACTIVE'],
+    'INSERT INTO products (shop_id, name, description, price, stock_quantity, is_sellable, unit, species, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [getCurrentShopId(), payload.name, payload.description || null, payload.price, payload.stock_quantity ?? 0, payload.is_sellable ?? true, payload.unit, payload.species, payload.status || 'ACTIVE'],
   );
   return getProductById(result.insertId);
 }
@@ -40,7 +41,7 @@ async function createProduct(payload) {
 async function updateProduct(id, payload) {
   const fields = [];
   const values = [];
-  for (const key of ['name', 'description', 'price', 'stock_quantity', 'unit', 'species', 'status']) {
+  for (const key of ['name', 'description', 'price', 'stock_quantity', 'is_sellable', 'unit', 'species', 'status']) {
     if (payload[key] !== undefined) { fields.push(`${key} = ?`); values.push(payload[key] === '' ? null : payload[key]); }
   }
   if (fields.length) { values.push(id, getCurrentShopId()); await getPool().query(`UPDATE products SET ${fields.join(', ')} WHERE id = ? AND shop_id = ?`, values); }

@@ -94,11 +94,19 @@ async function listPets() {
   };
 }
 
+async function listForSpecies(species) {
+  const [services, addOnServices] = await Promise.all([
+    serviceRepository.listActiveServicesBySpecies(species),
+    serviceRepository.listActiveAddOnServicesBySpecies(species),
+  ]);
+  return { services, add_on_services: addOnServices };
+}
+
 async function listServices(petIdValue, speciesValue) {
   const species = String(speciesValue || '');
   if (species) {
     if (!['DOG', 'CAT'].includes(species)) throw validation({ species: '請選擇寵物種類。' });
-    return { services: await serviceRepository.listActiveServicesBySpecies(species) };
+    return listForSpecies(species);
   }
   const memberId = getCurrentCustomerMemberId();
   const petId = Number(petIdValue);
@@ -107,7 +115,51 @@ async function listServices(petIdValue, speciesValue) {
   if (!pet || !await memberCanAccessPet(memberId, petId)) {
     throw createError('找不到可使用的寵物資料。', 404, 'PET_NOT_FOUND');
   }
-  return { services: await serviceRepository.listActiveServicesBySpecies(pet.species) };
+  return listForSpecies(pet.species);
+}
+
+function validateAddOns(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 20) throw validation({ add_ons: '加購商品資料不正確。' });
+  const seen = new Set();
+  return value.map((item, index) => {
+    const productId = Number(item?.product_id);
+    const quantity = Number(item?.quantity);
+    if (!Number.isInteger(productId) || productId <= 0
+      || !Number.isInteger(quantity) || quantity <= 0 || quantity > 99
+      || seen.has(productId)) {
+      throw validation({ [`add_ons[${index}]`]: '請確認商品與數量。' });
+    }
+    seen.add(productId);
+    return { product_id: productId, quantity };
+  });
+}
+
+async function validateAddOnServices(value, species, connection) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 20) throw validation({ add_on_services: '加購服務資料不正確。' });
+  const seen = new Set();
+  const services = [];
+  for (const [index, item] of value.entries()) {
+    const serviceId = Number(item?.service_id);
+    const quantity = Number(item?.quantity);
+    if (!Number.isInteger(serviceId) || serviceId <= 0 || !Number.isFinite(quantity) || quantity <= 0 || seen.has(serviceId)) {
+      throw validation({ [`add_on_services[${index}]`]: '請確認加購服務與數量。' });
+    }
+    seen.add(serviceId);
+    const service = await serviceRepository.getServiceById(serviceId, connection);
+    if (!service || service.type !== 'ADD_ON' || service.status !== 'ACTIVE'
+      || (service.species !== 'BOTH' && service.species !== species)) {
+      throw validation({ [`add_on_services[${index}].service_id`]: '此加購服務目前無法預約。' });
+    }
+    if (service.allow_fractional_quantity
+      ? Math.round(quantity * 100) / 100 !== quantity
+      : !Number.isInteger(quantity)) {
+      throw validation({ [`add_on_services[${index}].quantity`]: '請依加購服務設定輸入整數或最多兩位小數。' });
+    }
+    services.push({ ...service, quantity });
+  }
+  return services;
 }
 
 async function listProducts(speciesValue) {
@@ -116,7 +168,7 @@ async function listProducts(speciesValue) {
   const [rows] = await getPool().query(
     `SELECT id, name, description, price, unit, species, stock_quantity
      FROM products
-     WHERE shop_id = ? AND status = 'ACTIVE' AND stock_quantity > 0
+    WHERE shop_id = ? AND status = 'ACTIVE' AND is_sellable = TRUE AND stock_quantity > 0
        AND (species = 'BOTH' OR species = ?)
      ORDER BY name ASC`,
     [getCurrentShopId(), species],
@@ -147,28 +199,11 @@ async function listAvailability(query = {}) {
     pet = { species };
   }
   const service = await serviceRepository.getServiceById(serviceId);
-  if (!service || service.status !== 'ACTIVE') throw createError('此服務目前無法預約。', 404, 'SERVICE_NOT_FOUND');
+  if (!service || service.status !== 'ACTIVE' || !['GROOMING', 'BOARDING'].includes(service.type)) throw createError('此服務目前無法預約。', 404, 'SERVICE_NOT_FOUND');
   if (service.species !== 'BOTH' && service.species !== pet.species) {
     throw validation({ service_id: '此服務不適用於所選寵物。' });
   }
   return publicBookingService.listAvailabilityForService(pet, service, query);
-}
-
-function validateAddOns(value) {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 20) throw validation({ add_ons: '加購商品資料不正確。' });
-  const seen = new Set();
-  return value.map((item, index) => {
-    const productId = Number(item?.product_id);
-    const quantity = Number(item?.quantity);
-    if (!Number.isInteger(productId) || productId <= 0
-      || !Number.isInteger(quantity) || quantity <= 0 || quantity > 99
-      || seen.has(productId)) {
-      throw validation({ [`add_ons[${index}]`]: '請確認商品與數量。' });
-    }
-    seen.add(productId);
-    return { product_id: productId, quantity };
-  });
 }
 
 async function resolveCustomer(memberId, profile, connection) {
@@ -260,7 +295,7 @@ async function createBookingRequest(payload = {}) {
   const serviceId = Number(payload.service_id);
   if (!Number.isInteger(serviceId) || serviceId <= 0) throw validation({ service_id: '請選擇服務。' });
   const service = await serviceRepository.getServiceById(serviceId);
-  if (!service || service.status !== 'ACTIVE') throw createError('此服務目前無法預約。', 404, 'SERVICE_NOT_FOUND');
+  if (!service || service.status !== 'ACTIVE' || !['GROOMING', 'BOARDING'].includes(service.type)) throw createError('此服務目前無法預約。', 404, 'SERVICE_NOT_FOUND');
   const date = normalizeDate(payload.appointment_date, 'appointment_date');
   const time = normalizeTime(payload.appointment_time, 'appointment_time');
   const checkOut = service.type === 'BOARDING'
@@ -286,11 +321,12 @@ async function createBookingRequest(payload = {}) {
       throw createError('所選時段已不可申請，請重新查詢。', 409, 'BOOKING_SLOT_UNAVAILABLE');
     }
 
+    const addOnServices = await validateAddOnServices(payload.add_on_services, pet.species, connection);
     const addOns = validateAddOns(payload.add_ons);
     const productRows = [];
     for (const addOn of addOns) {
       const product = await productRepository.getProductById(addOn.product_id, connection);
-      if (!product || product.status !== 'ACTIVE'
+      if (!product || product.status !== 'ACTIVE' || !product.is_sellable
         || (product.species !== 'BOTH' && product.species !== pet.species)
         || product.stock_quantity < addOn.quantity) {
         throw createError('部分加購商品目前庫存不足，請重新確認。', 409, 'BOOKING_PRODUCT_UNAVAILABLE');
@@ -315,6 +351,14 @@ async function createBookingRequest(payload = {}) {
        VALUES (?, ?, ?, ?)`,
       [getCurrentShopId(), appointmentPet.insertId, service.id, service.duration_minutes],
     );
+    for (const addOnService of addOnServices) {
+      await connection.query(
+        `INSERT INTO booking_request_add_on_services
+           (shop_id, appointment_id, appointment_pet_id, service_id, service_name, unit, unit_price, quantity, allow_fractional_quantity)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [getCurrentShopId(), appointmentId, appointmentPet.insertId, addOnService.id, addOnService.name, addOnService.unit, addOnService.price, addOnService.quantity, addOnService.allow_fractional_quantity],
+      );
+    }
     await connection.query(
       `INSERT INTO booking_request_details
          (shop_id, appointment_id, service_type, customer_member_id, requested_check_out)
@@ -345,6 +389,13 @@ async function createBookingRequest(payload = {}) {
         appointment_date: date,
         appointment_time: time.slice(0, 5),
         requested_check_out: checkOut ? `${checkOut.date} ${checkOut.time}` : null,
+        add_on_services: addOnServices.map((item) => ({
+          service_id: item.id,
+          name: item.name,
+          unit: item.unit,
+          unit_price: Number(item.price),
+          quantity: item.quantity,
+        })),
         add_ons: productRows.map((product) => ({
           name: product.name,
           quantity: product.quantity,

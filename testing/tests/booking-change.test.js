@@ -34,6 +34,8 @@ const owner = getFoundationOwner();
 const fixtureMemberIds = [];
 const fixtureCustomerIds = [];
 const fixtureAppointmentIds = [];
+const fixturePetIds = [];
+const fixtureServiceIds = [];
 
 async function loginAsOwner() {
   const agent = request.agent(app);
@@ -109,10 +111,20 @@ async function cleanFixtures() {
   if (fixtureAppointmentIds.length) {
     await getPool().query('DELETE FROM appointment_resource_assignments WHERE appointment_id IN (?)', [fixtureAppointmentIds]);
     await getPool().query('DELETE FROM booking_request_products WHERE appointment_id IN (?)', [fixtureAppointmentIds]);
+    await getPool().query('DELETE FROM booking_request_add_on_services WHERE appointment_id IN (?)', [fixtureAppointmentIds]);
     await getPool().query('DELETE FROM orders WHERE appointment_id IN (?)', [fixtureAppointmentIds]);
     await getPool().query('DELETE FROM booking_request_details WHERE appointment_id IN (?)', [fixtureAppointmentIds]);
     await getPool().query('DELETE FROM appointments WHERE id IN (?)', [fixtureAppointmentIds]);
     fixtureAppointmentIds.length = 0;
+  }
+  if (fixtureServiceIds.length) {
+    await getPool().query('DELETE FROM services WHERE id IN (?)', [fixtureServiceIds]);
+    fixtureServiceIds.length = 0;
+  }
+  if (fixturePetIds.length) {
+    await getPool().query('DELETE FROM pet_customer_relationships WHERE pet_id IN (?)', [fixturePetIds]);
+    await getPool().query('DELETE FROM pets WHERE id IN (?)', [fixturePetIds]);
+    fixturePetIds.length = 0;
   }
   if (fixtureMemberIds.length) {
     await getPool().query('DELETE FROM customer_member_sessions WHERE customer_member_id IN (?)', [fixtureMemberIds]);
@@ -201,6 +213,63 @@ describe('Booking change requests', () => {
     });
     const readNotifications = await ownerAgent.get('/api/notifications').set(headers).expect(200);
     expect(readNotifications.body.data.unread_count).toBe(0);
+  });
+
+  test('shows a member-selected add-on service in their request and staff appointment details', async () => {
+    const ownerAgent = await loginAsOwner();
+    const { appointmentId, memberToken } = await createBookingFixture(ownerAgent);
+    const headers = { 'X-Shop-Id': '1' };
+    const petResponse = await ownerAgent.post('/api/pets').send({
+      name: `Add-on Pet ${Date.now()}`,
+      species: 'DOG',
+      gender: 'UNKNOWN',
+      customer_id: fixtureCustomerIds.at(-1),
+    }).expect(201);
+    const petId = Number(petResponse.body.data.pet.id);
+    fixturePetIds.push(petId);
+    const [appointmentPetResult] = await getPool().query(
+      'INSERT INTO appointment_pets (shop_id, appointment_id, pet_id) VALUES (1, ?, ?)',
+      [appointmentId, petId],
+    );
+    const appointmentPetId = Number(appointmentPetResult.insertId);
+    const serviceResponse = await ownerAgent.post('/api/services').send({
+      name: `預選藥浴 ${Date.now()}`,
+      type: 'ADD_ON',
+      price: 180,
+      unit: '次',
+      species: 'DOG',
+      allow_fractional_quantity: false,
+    }).expect(201);
+    const serviceId = Number(serviceResponse.body.data.service.id);
+    fixtureServiceIds.push(serviceId);
+    await getPool().query(
+      `INSERT INTO booking_request_add_on_services
+         (shop_id, appointment_id, appointment_pet_id, service_id, service_name, unit, unit_price, quantity, allow_fractional_quantity)
+       VALUES (1, ?, ?, ?, ?, '次', 180, 1, FALSE)`,
+      [appointmentId, appointmentPetId, serviceId, serviceResponse.body.data.service.name],
+    );
+
+    const memberServices = await request(app).get(`/api/public/member/services?pet_id=${petId}`)
+      .set(headers)
+      .set('Cookie', `customer_member_session=${memberToken}`)
+      .expect(200);
+    expect(memberServices.body.data.add_on_services).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: serviceId, type: 'ADD_ON', name: serviceResponse.body.data.service.name }),
+    ]));
+    expect(memberServices.body.data.services.every((service) => service.type !== 'ADD_ON')).toBe(true);
+
+    const memberRequests = await request(app).get('/api/public/member/requests')
+      .set(headers)
+      .set('Cookie', `customer_member_session=${memberToken}`)
+      .expect(200);
+    expect(memberRequests.body.data.requests[0].add_on_services).toEqual([
+      expect.objectContaining({ service_id: serviceId, name: serviceResponse.body.data.service.name, quantity: 1, unit: '次' }),
+    ]);
+
+    const staffAppointment = await ownerAgent.get(`/api/appointments/${appointmentId}`).set(headers).expect(200);
+    expect(staffAppointment.body.data.appointment.pets[0].add_on_services).toEqual([
+      expect.objectContaining({ service_id: serviceId, name: serviceResponse.body.data.service.name, quantity: 1 }),
+    ]);
   });
 
   test('cancels the booking only after the shop approves the customer request', async () => {

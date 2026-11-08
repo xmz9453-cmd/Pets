@@ -23,17 +23,26 @@ async function validateItems(items, businessUnit, connection, sourceType = 'WALK
     if (sourceType === 'APPOINTMENT' && serviceId && !petId) { errors[`items[${index}].pet_id`] = 'Pet is required for appointment service items'; continue; }
     if (petId && (!serviceId || sourceType !== 'APPOINTMENT')) { errors[`items[${index}].pet_id`] = 'Pet is only valid for appointment service items'; continue; }
     const quantity = Number(item.quantity === undefined ? 1 : item.quantity); const price = Number(item.transaction_price);
-    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price < 0) { errors[`items[${index}]`] = 'Quantity and transaction price must be valid'; continue; }
+    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isInteger(price) || price < 0) { errors[`items[${index}]`] = 'Quantity must be positive and transaction price must be a non-negative whole number'; continue; }
     const master = serviceId ? await serviceRepository.getServiceById(serviceId, connection) : await productRepository.getProductById(productId, connection);
     if (!master || master.status !== 'ACTIVE') { errors[`items[${index}]`] = serviceId ? 'Service is invalid' : 'Product is invalid'; continue; }
+    if (productId && !master.is_sellable) { errors[`items[${index}]`] = 'Product is not available for sale'; continue; }
+    if (!master.allow_fractional_quantity && !Number.isInteger(quantity)) {
+      errors[`items[${index}].quantity`] = 'Quantity must be a whole number for this item';
+      continue;
+    }
+    if (master.allow_fractional_quantity && Math.round(quantity * 100) / 100 !== quantity) {
+      errors[`items[${index}].quantity`] = 'Quantity cannot have more than two decimal places';
+      continue;
+    }
     if (master.species !== 'BOTH' && master.species !== businessUnit) { errors[`items[${index}]`] = 'Item does not match order business unit'; continue; }
     const transactionPrice = productId ? Number(master.price) : price;
-    const amount = Math.round(transactionPrice * quantity * 100) / 100;
-    normalized.push({ item_type: serviceId ? 'SERVICE' : 'PRODUCT', service_id: serviceId, product_id: productId, pet_id: petId, name: master.name, transaction_price: transactionPrice, quantity, item_amount: amount });
+    const amount = Math.round(transactionPrice * quantity);
+    normalized.push({ item_type: serviceId ? 'SERVICE' : 'PRODUCT', service_id: serviceId, product_id: productId, pet_id: petId, name: master.name, unit: master.unit || (serviceId ? '次' : '件'), transaction_price: transactionPrice, quantity, item_amount: amount });
     total += amount;
   }
   if (Object.keys(errors).length) throw validation(errors);
-  return { items: normalized, total: Math.round(total * 100) / 100 };
+  return { items: normalized, total: Math.round(total) };
 }
 
 async function validateCustomer(customerId, connection) {
@@ -95,6 +104,8 @@ async function validateAppointmentServiceItems(appointmentId, items, connection)
     if (service.species !== 'BOTH' && service.species !== petRows[0].species) {
       throw validation({ items: 'Service is not compatible with appointment pet' });
     }
+
+    if (service.type === 'ADD_ON') continue;
 
     let completedRows = [];
     if (service.type === 'GROOMING') {

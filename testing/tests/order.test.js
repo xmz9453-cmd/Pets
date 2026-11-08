@@ -74,6 +74,47 @@ describe('Order API', () => {
     expect(future.body.data.order.items[0].transaction_price).toBe(999);
   });
 
+  test('accepts fractional quantities for add-on services but not inventory products', async () => {
+    const agent = await login();
+    const customerId = await createCustomer(agent);
+    const regularProduct = await agent.post('/api/products').send({ name: `Whole Product ${customerSequence}`, price: 40, species: 'DOG' });
+    const fareService = await agent.post('/api/services').send({ name: `Fare Service ${customerSequence}`, type: 'ADD_ON', price: 40, unit: '公里', species: 'DOG', allow_fractional_quantity: true });
+    expect(regularProduct.status).toBe(201);
+    expect(fareService.status).toBe(201);
+
+    const invalid = await agent.post('/api/orders').send({
+      customer_id: customerId,
+      business_unit: 'DOG',
+      items: [{ product_id: regularProduct.body.data.product.id, transaction_price: 40, quantity: 1.5 }],
+    });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error.fields['items[0].quantity']).toBeDefined();
+
+    const valid = await agent.post('/api/orders').send({
+      customer_id: customerId,
+      business_unit: 'DOG',
+      items: [{ service_id: fareService.body.data.service.id, transaction_price: 40, quantity: 1.5 }],
+    });
+    expect(valid.status).toBe(201);
+    expect(valid.body.data.order.items[0].quantity).toBe(1.5);
+    expect(valid.body.data.order.items[0].item_amount).toBe(60);
+  });
+
+  test('rejects inventory-only supplies in customer orders', async () => {
+    const agent = await login();
+    const customerId = await createCustomer(agent);
+    const supply = await agent.post('/api/products').send({ name: `Internal Supply ${customerSequence}`, unit: '罐', stock_quantity: 5, is_sellable: false });
+    expect(supply.status).toBe(201);
+
+    const response = await agent.post('/api/orders').send({
+      customer_id: customerId,
+      business_unit: 'DOG',
+      items: [{ product_id: supply.body.data.product.id, transaction_price: 0, quantity: 1 }],
+    });
+    expect(response.status).toBe(400);
+    expect(response.body.error.fields['items[0]']).toBeDefined();
+  });
+
   test('rejects inactive and invalid products for new orders', async () => {
     const agent = await login(); const customerId = await createCustomer(agent);
     const productResponse = await agent.post('/api/products').send({ name: `Inactive Product ${customerSequence}`, price: 300, species: 'DOG' });

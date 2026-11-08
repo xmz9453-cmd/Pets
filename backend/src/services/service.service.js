@@ -1,6 +1,6 @@
 const serviceRepository = require('../data/service.repository');
 
-const VALID_TYPES = new Set(['GROOMING', 'BOARDING']);
+const VALID_TYPES = new Set(['GROOMING', 'BOARDING', 'ADD_ON']);
 const VALID_SPECIES = new Set(['DOG', 'CAT', 'BOTH']);
 const VALID_STATUSES = new Set(['ACTIVE', 'INACTIVE']);
 
@@ -23,10 +23,12 @@ function validatePayload(payload, partial = false) {
   const errors = {};
   if (!partial && !String(payload.name || '').trim()) errors.name = 'Service name is required';
   if (payload.name !== undefined && (!String(payload.name).trim() || String(payload.name).length > 100)) errors.name = 'Service name must be 1-100 characters';
-  if (!partial && !VALID_TYPES.has(payload.type)) errors.type = 'Type must be GROOMING or BOARDING';
-  if (payload.type !== undefined && !VALID_TYPES.has(payload.type)) errors.type = 'Type must be GROOMING or BOARDING';
+  if (!partial && !VALID_TYPES.has(payload.type)) errors.type = 'Type must be GROOMING, BOARDING, or ADD_ON';
+  if (payload.type !== undefined && !VALID_TYPES.has(payload.type)) errors.type = 'Type must be GROOMING, BOARDING, or ADD_ON';
   if (!partial && !String(payload.unit || '').trim()) errors.unit = 'Unit is required';
   if (payload.unit !== undefined && (!String(payload.unit).trim() || String(payload.unit).length > 20)) errors.unit = 'Unit must be 1-20 characters';
+  if (payload.allow_fractional_quantity !== undefined && typeof payload.allow_fractional_quantity !== 'boolean') errors.allow_fractional_quantity = 'Allow fractional quantity must be a boolean';
+  if (payload.allow_fractional_quantity === true && payload.type !== 'ADD_ON') errors.allow_fractional_quantity = 'Only add-on services can have fractional quantities';
   if (payload.type === 'GROOMING' && payload.unit !== undefined && String(payload.unit).trim() !== '次') {
     errors.unit = 'GROOMING unit must be 次';
   }
@@ -38,7 +40,7 @@ function validatePayload(payload, partial = false) {
   if (payload.description !== undefined && payload.description !== null && String(payload.description).length > 500) errors.description = 'Description must be 500 characters or less';
   if (!partial || payload.price !== undefined) {
     const price = Number(payload.price);
-    if (!Number.isFinite(price) || price <= 0) errors.price = 'Price must be greater than 0';
+    if (!Number.isInteger(price) || price <= 0) errors.price = 'Price must be a positive whole number';
   }
   const hasDuration = payload.duration_minutes !== undefined && payload.duration_minutes !== null && payload.duration_minutes !== '';
   if (payload.type === 'GROOMING') {
@@ -83,13 +85,17 @@ async function createService(payload = {}) {
   if (normalizedPayload.type === 'BOARDING' && (normalizedPayload.duration_minutes === undefined || normalizedPayload.duration_minutes === null || normalizedPayload.duration_minutes === '')) {
     normalizedPayload.duration_minutes = 60;
   }
+  if (normalizedPayload.type === 'ADD_ON') normalizedPayload.duration_minutes = 0;
   return { service: await serviceRepository.createService(normalizedPayload) };
 }
 
 async function updateService(id, payload = {}) {
   const existing = await serviceRepository.getServiceById(id);
   if (!existing) throw notFound();
-  const errors = validatePayload(payload, true);
+  const nextType = payload.type ?? existing.type;
+  const nextFractionalQuantity = payload.allow_fractional_quantity ?? existing.allow_fractional_quantity;
+  const errors = validatePayload({ ...payload, type: payload.type ?? (payload.allow_fractional_quantity === true ? existing.type : nextType) }, true);
+  if (nextType !== 'ADD_ON' && nextFractionalQuantity) errors.allow_fractional_quantity = 'Only add-on services can have fractional quantities';
   if (Object.keys(errors).length) throw validation(errors);
   const nextName = payload.name !== undefined ? String(payload.name).trim() : existing.name;
   const nextSpecies = payload.species !== undefined ? payload.species : existing.species;
@@ -97,8 +103,10 @@ async function updateService(id, payload = {}) {
     throw validation({ name: 'Service name already exists' });
   }
   const nextPayload = { ...payload };
+  if (nextType !== 'ADD_ON' && existing.allow_fractional_quantity) nextPayload.allow_fractional_quantity = false;
   if (nextPayload.name !== undefined) nextPayload.name = String(nextPayload.name).trim();
   if (nextPayload.price !== undefined) nextPayload.price = Number(nextPayload.price);
+  if (nextPayload.type === 'ADD_ON') nextPayload.duration_minutes = 0;
   if (nextPayload.duration_minutes !== undefined) nextPayload.duration_minutes = Number(nextPayload.duration_minutes);
   if (nextPayload.sort_order !== undefined) nextPayload.sort_order = Number(nextPayload.sort_order);
   return { service: await serviceRepository.updateService(id, nextPayload) };

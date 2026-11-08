@@ -13,7 +13,11 @@ function validate(payload, partial = false) {
   const errors = {};
   if (!partial && !String(payload.name || '').trim()) errors.name = 'Product name is required';
   if (payload.name !== undefined && (!String(payload.name).trim() || String(payload.name).length > 100)) errors.name = 'Product name must be 1-100 characters';
-  if (!partial || payload.price !== undefined) { const price = Number(payload.price); if (!Number.isFinite(price) || price <= 0) errors.price = 'Price must be greater than zero'; }
+  if (payload.is_sellable !== undefined && typeof payload.is_sellable !== 'boolean') errors.is_sellable = 'Is sellable must be a boolean';
+  if (!partial || payload.price !== undefined) {
+    const price = Number(payload.price ?? (payload.is_sellable === false ? 0 : NaN));
+    if (!Number.isInteger(price) || price < 0 || (payload.is_sellable !== false && price === 0)) errors.price = 'Sellable product price must be a positive whole number';
+  }
   if (!partial && payload.unit !== undefined && !String(payload.unit || '').trim()) errors.unit = 'Unit is required';
   if (payload.unit !== undefined && (!String(payload.unit).trim() || String(payload.unit).length > 20)) errors.unit = 'Unit must be 1-20 characters';
   if (!partial && payload.species !== undefined && !VALID_SPECIES.has(payload.species)) errors.species = 'Species must be DOG, CAT, or BOTH';
@@ -34,20 +38,23 @@ async function createProduct(payload = {}) {
   return { product: await productRepository.createProduct({
     ...payload,
     name,
-    price: Number(payload.price),
     stock_quantity: payload.stock_quantity === undefined ? 0 : Number(payload.stock_quantity),
     unit: String(payload.unit || '件').trim(),
+    price: payload.price === undefined && payload.is_sellable === false ? 0 : Number(payload.price),
+    is_sellable: payload.is_sellable ?? true,
     species: payload.species || 'BOTH',
   }) };
 }
 async function updateProduct(id, payload = {}) {
-  if (!await productRepository.getProductById(id)) throw notFound();
+  const existing = await productRepository.getProductById(id);
+  if (!existing) throw notFound();
   if (payload.status !== undefined) throw validation({ status: 'Use enable or disable action to change status' });
-  const errors = validate(payload, true); if (Object.keys(errors).length) throw validation(errors);
+  const errors = validate({ ...existing, ...payload }, true); if (Object.keys(errors).length) throw validation(errors);
   if (payload.name !== undefined && await productRepository.findByName(String(payload.name).trim(), id)) throw validation({ name: 'Product name already exists' });
   const next = { ...payload };
   if (next.name !== undefined) next.name = String(next.name).trim();
   if (next.price !== undefined) next.price = Number(next.price);
+  if (next.is_sellable !== undefined) next.is_sellable = Boolean(next.is_sellable);
   if (next.stock_quantity !== undefined) next.stock_quantity = Number(next.stock_quantity);
   return { product: await productRepository.updateProduct(id, next) };
 }

@@ -11,7 +11,7 @@ function localDate() {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
-function amount(value) { return Number(value || 0).toFixed(2); }
+function amount(value) { return Number(value || 0).toLocaleString('zh-TW', { maximumFractionDigits: 0 }); }
 
 export default function ReportsPage() {
   const router = useRouter();

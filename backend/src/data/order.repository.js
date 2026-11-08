@@ -36,8 +36,8 @@ async function insertOrder(payload, connection) {
 }
 
 async function insertItem(orderId, item, connection) {
-  await connection.query(`INSERT INTO order_items (shop_id, order_id, item_type, service_id, product_id, pet_id, name, transaction_price, quantity, item_amount)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [getCurrentShopId(), orderId, item.item_type, item.service_id, item.product_id, item.pet_id, item.name, item.transaction_price, item.quantity, item.item_amount]);
+  await connection.query(`INSERT INTO order_items (shop_id, order_id, item_type, service_id, product_id, pet_id, name, unit, transaction_price, quantity, item_amount)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [getCurrentShopId(), orderId, item.item_type, item.service_id, item.product_id, item.pet_id, item.name, item.unit, item.transaction_price, item.quantity, item.item_amount]);
 }
 
 async function updateOrder(id, payload, connection) {

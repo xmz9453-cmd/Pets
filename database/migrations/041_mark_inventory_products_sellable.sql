@@ -1,0 +1,2 @@
+ALTER TABLE products
+  ADD COLUMN is_sellable BOOLEAN NOT NULL DEFAULT TRUE AFTER stock_quantity;

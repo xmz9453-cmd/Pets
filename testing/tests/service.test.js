@@ -57,12 +57,14 @@ describe('Service API', () => {
     const createResponse = await agent.post('/api/services').send({ name: 'Test Boarding', type: 'BOARDING', description: 'Overnight stay', price: 1200, unit: '晚', species: 'DOG', sort_order: 10 });
     expect(createResponse.status).toBe(201);
     const serviceId = createResponse.body.data.service.id;
+    expect(createResponse.body.data.service.sort_order).toBe(10);
     expect((await agent.get(`/api/services/${serviceId}`)).body.data.service.type).toBe('BOARDING');
     expect((await agent.get(`/api/services/${serviceId}`)).body.data.service.unit).toBe('晚');
-    const updateResponse = await agent.put(`/api/services/${serviceId}`).send({ status: 'INACTIVE', unit: '晚' });
+    const updateResponse = await agent.put(`/api/services/${serviceId}`).send({ status: 'INACTIVE', unit: '晚', sort_order: 3 });
     expect(updateResponse.status).toBe(200);
     expect(updateResponse.body.data.service.status).toBe('INACTIVE');
     expect(updateResponse.body.data.service.unit).toBe('晚');
+    expect(updateResponse.body.data.service.sort_order).toBe(3);
     expect((await agent.get('/api/services?status=INACTIVE')).body.data.services.some((service) => service.id === serviceId)).toBe(true);
     expect((await agent.delete(`/api/services/${serviceId}`)).status).toBe(200);
     expect((await agent.get(`/api/services/${serviceId}`)).status).toBe(404);

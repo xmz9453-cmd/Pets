@@ -2,9 +2,13 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { getCurrentStaff, getService } from '../../api/client';
 
-const typeLabels = { GROOMING: '美容', BOARDING: '住宿' };
+const typeLabels = { GROOMING: '美容', BOARDING: '住宿', ADD_ON: '加購服務' };
 const speciesLabels = { DOG: '狗', CAT: '貓', BOTH: '狗與貓' };
 const statusLabels = { ACTIVE: '啟用', INACTIVE: '停用' };
+
+function formatMoney(value) {
+  return Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 0 });
+}
 
 export default function ServiceDetailPage() {
   const router = useRouter();
@@ -98,11 +102,11 @@ export default function ServiceDetailPage() {
               </div>
               <div className="col-md-6">
                 <div className="foundation-label">價格</div>
-                <div className="foundation-status">{service.price} / {service.unit}</div>
+                <div className="foundation-status">{formatMoney(service.price)} / {service.unit}</div>
               </div>
               <div className="col-md-6">
                 <div className="foundation-label">預估時間</div>
-                <div className="foundation-status">{service.duration_minutes} 分鐘</div>
+                <div className="foundation-status">{service.type === 'ADD_ON' ? '—' : `${service.duration_minutes} 分鐘`}</div>
               </div>
               <div className="col-12">
                 <div className="foundation-label">說明</div>

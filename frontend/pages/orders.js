@@ -4,6 +4,21 @@ import { createOrder, deleteOrder, getAppointment, getCustomers, getOrders, getP
 
 const labels = { DOG: '狗', CAT: '貓', SERVICE: '服務', PRODUCT: '商品', UNPAID: '未付款', PAID: '已付款', CANCELLED: '已取消' };
 
+function formatQuantity(value) {
+  return Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 2 });
+}
+
+function formatAmount(value) {
+  return Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 0 });
+}
+
+function isValidQuantity(value, allowFractionalQuantity) {
+  if (!Number.isFinite(value) || value <= 0) return false;
+  return allowFractionalQuantity
+    ? Math.round(value * 100) / 100 === value
+    : Number.isInteger(value);
+}
+
 export default function OrdersPage() {
   const router = useRouter();
   const [customers, setCustomers] = useState([]);
@@ -34,7 +49,7 @@ export default function OrdersPage() {
       const [customerData, serviceData, productData, orderData] = await Promise.all([
         getCustomers({ status: 'ACTIVE' }),
         getServices({ status: 'ACTIVE' }),
-        getProducts({ status: 'ACTIVE' }),
+        getProducts({ status: 'ACTIVE', sellable: true }),
         getOrders(),
       ]);
       setCustomers(customerData.customers || []);
@@ -49,16 +64,32 @@ export default function OrdersPage() {
         const appointmentPets = result.appointment.pets || [];
         setBusinessUnit(appointmentPets[0]?.species || 'DOG');
         if (initializeAppointmentItems) {
-          setItems(appointmentPets.flatMap((pet) => (pet.services || []).map((service) => ({
-            itemType: 'SERVICE',
-            itemId: service.id,
-            pet_id: Number(pet.pet_id),
-            petName: pet.name,
-            name: service.name,
-            transaction_price: Number(service.price),
-            quantity: 1,
-            item_amount: Number(service.price),
-          }))));
+          setItems(appointmentPets.flatMap((pet) => [
+            ...(pet.services || []).map((service) => ({
+              itemType: 'SERVICE',
+              itemId: service.id,
+              pet_id: Number(pet.pet_id),
+              petName: pet.name,
+              name: service.name,
+              unit: service.unit || (service.type === 'BOARDING' ? '晚' : '次'),
+              transaction_price: Number(service.price),
+              allow_fractional_quantity: Boolean(service.allow_fractional_quantity),
+              quantity: 1,
+              item_amount: Number(service.price),
+            })),
+            ...(pet.add_on_services || []).map((service) => ({
+              itemType: 'SERVICE',
+              itemId: service.service_id,
+              pet_id: Number(pet.pet_id),
+              petName: pet.name,
+              name: service.name,
+              unit: service.unit,
+              transaction_price: Number(service.price),
+              allow_fractional_quantity: Boolean(service.allow_fractional_quantity),
+              quantity: Number(service.quantity),
+              item_amount: Math.round(Number(service.price) * Number(service.quantity)),
+            })),
+          ]));
         }
       } else {
         setSourceType('WALK_IN');
@@ -80,6 +111,8 @@ export default function OrdersPage() {
   }, [router.isReady]);
 
   const available = itemType === 'SERVICE' ? services : products;
+  const selectedAvailableItem = available.find((item) => String(item.id) === itemId);
+  const allowFractionalQuantity = Boolean(selectedAvailableItem?.allow_fractional_quantity);
 
   function getAppointmentPetForService(service) {
     if (sourceType !== 'APPOINTMENT' || !service) return null;
@@ -104,8 +137,8 @@ export default function OrdersPage() {
     const count = Number(quantity);
     const unitPrice = Number(price);
     const appointmentPet = getAppointmentPetForService(selected);
-    if (!selected || !Number.isFinite(count) || count <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
-      setError('請選擇有效的項目、數量與單價');
+    if (!selected || !isValidQuantity(count, selected.allow_fractional_quantity) || !Number.isInteger(unitPrice) || unitPrice < 0) {
+      setError('請確認項目、數量與單價有效；此項目的數量格式依品項設定');
       return;
     }
     if (sourceType === 'APPOINTMENT' && itemType === 'SERVICE' && !appointmentPet) {
@@ -118,9 +151,11 @@ export default function OrdersPage() {
       itemId: selected.id,
       ...(petId ? { pet_id: petId, petName: appointmentPet.name } : {}),
       name: selected.name,
+      unit: selected.unit || (itemType === 'SERVICE' ? '次' : '件'),
+      allow_fractional_quantity: Boolean(selected.allow_fractional_quantity),
       transaction_price: unitPrice,
       quantity: count,
-      item_amount: Math.round(unitPrice * count * 100) / 100,
+      item_amount: Math.round(unitPrice * count),
     }]);
     setItemId('');
     setSelectedPetId('');
@@ -138,7 +173,7 @@ export default function OrdersPage() {
         next.name = selected?.name || item.name;
         if (selected) next.transaction_price = Number(selected.price);
       }
-      next.item_amount = Math.round(Number(next.transaction_price) * Number(next.quantity) * 100) / 100;
+      next.item_amount = Math.round(Number(next.transaction_price) * Number(next.quantity));
       return next;
     }));
   }
@@ -168,22 +203,24 @@ export default function OrdersPage() {
       ...current,
       itemId: Number(value),
       name: selected?.name || current.name,
+      unit: selected?.unit || current.unit,
       transaction_price: selected ? Number(selected.price) : current.transaction_price,
+      allow_fractional_quantity: Boolean(selected?.allow_fractional_quantity),
     }));
   }
 
   function confirmEditingItem() {
     const count = Number(editingItem.quantity);
     const unitPrice = Number(editingItem.transaction_price);
-    if (!Number.isFinite(count) || count <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
-      setError('請輸入有效的數量與單價');
+    if (!isValidQuantity(count, editingItem.allow_fractional_quantity) || !Number.isInteger(unitPrice) || unitPrice < 0) {
+      setError('請確認數量與單價格式符合此品項設定');
       return;
     }
     setItems((current) => current.map((item, index) => index === editingItemIndex ? {
       ...editingItem,
       quantity: count,
       transaction_price: unitPrice,
-      item_amount: Math.round(unitPrice * count * 100) / 100,
+      item_amount: Math.round(unitPrice * count),
     } : item));
     cancelEditingItem();
     setError('');
@@ -289,18 +326,18 @@ export default function OrdersPage() {
                   <label className="form-label">項目</label>
                   <select className="form-select" value={itemId} onChange={(event) => selectItem(event.target.value)}>
                     <option value="">請選擇{labels[itemType]}</option>
-                    {available.map((item) => <option key={item.id} value={item.id}>{item.name}（{item.price}）</option>)}
+                    {available.map((item) => <option key={item.id} value={item.id}>{item.name}（{formatAmount(item.price)}／{item.unit || (itemType === 'SERVICE' ? '次' : '件')}）</option>)}
                   </select>
                 </div>
               </div>
               <div className="row g-2 mt-1">
                 <div className="col-4">
                   <label className="form-label">數量</label>
-                  <input className="form-control" type="number" min="0.01" step="0.01" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
+                  <input className="form-control" type="number" min={allowFractionalQuantity ? '0.01' : '1'} step={allowFractionalQuantity ? '0.01' : '1'} value={quantity} onChange={(event) => setQuantity(event.target.value)} />
                 </div>
                 <div className="col-8">
                   <label className="form-label">單價</label>
-                  <input className="form-control" type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} />
+                  <input className="form-control" type="number" min="0" step="1" value={price} onChange={(event) => setPrice(event.target.value)} />
                 </div>
               </div>
               <button type="button" className="btn btn-outline-primary mt-3" onClick={addItem}>加入項目</button>
@@ -311,18 +348,18 @@ export default function OrdersPage() {
                   <div>
                     <div className="row g-2 align-items-end">
                       <div className="col-md-4">
-                        <label className="form-label">服務</label>
+                        <label className="form-label">品項</label>
                         {item.itemType === 'SERVICE' ? <select className="form-select form-select-sm" value={editingItem.itemId} onChange={(event) => selectEditingService(event.target.value)}>{getServicesForItem(item).map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}</select> : <div>{item.name}</div>}
                       </div>
                       <div className="col-md-2">
                         <label className="form-label">數量</label>
-                        <input className="form-control form-control-sm" type="number" min="0.01" step="0.01" value={editingItem.quantity} onChange={(event) => updateEditingItem('quantity', event.target.value)} />
+                        <input className="form-control form-control-sm" type="number" min={editingItem.allow_fractional_quantity ? '0.01' : '1'} step={editingItem.allow_fractional_quantity ? '0.01' : '1'} value={editingItem.quantity} onChange={(event) => updateEditingItem('quantity', event.target.value)} />
                       </div>
                       <div className="col-md-2">
                         <label className="form-label">單價</label>
-                        <input className="form-control form-control-sm" type="number" min="0" step="0.01" value={editingItem.transaction_price} onChange={(event) => updateEditingItem('transaction_price', event.target.value)} />
+                        <input className="form-control form-control-sm" type="number" min="0" step="1" value={editingItem.transaction_price} onChange={(event) => updateEditingItem('transaction_price', event.target.value)} />
                       </div>
-                      <div className="col-md-2"><span className="d-block small text-muted">小計</span>{(Number(editingItem.transaction_price) * Number(editingItem.quantity)).toFixed(2)}</div>
+                      <div className="col-md-2"><span className="d-block small text-muted">小計</span>{formatAmount(Number(editingItem.transaction_price) * Number(editingItem.quantity))}</div>
                       <div className="col-md-2 d-flex gap-2">
                         <button type="button" className="btn btn-sm btn-primary" onClick={confirmEditingItem}>確認</button>
                         <button type="button" className="btn btn-sm btn-outline-secondary" onClick={cancelEditingItem}>取消</button>
@@ -330,19 +367,35 @@ export default function OrdersPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="row g-2 align-items-center">
-                    <div className="col-4">{item.name}</div>
-                    <div className="col-2">{item.quantity}</div>
-                    <div className="col-2">{Number(item.transaction_price).toFixed(2)}</div>
-                    <div className="col-2">{item.item_amount.toFixed(2)}</div>
-                    <div className="col-2 d-flex gap-2 justify-content-end">
-                      <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => startEditingItem(index)}>編輯</button>
-                      <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => removeItem(index)}>移除</button>
+                  <div className="d-flex flex-column gap-2">
+                    <div className="d-flex justify-content-between align-items-start gap-2">
+                      <div className="flex-grow-1">
+                        <span className="d-block small text-muted">品項</span>
+                        <div className="text-break">{item.name}</div>
+                      </div>
+                      <div className="d-flex gap-2 flex-shrink-0">
+                        <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => startEditingItem(index)}>編輯</button>
+                        <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => removeItem(index)}>移除</button>
+                      </div>
+                    </div>
+                    <div className="row g-2">
+                      <div className="col-4">
+                        <span className="d-block small text-muted">數量{item.unit ? `（${item.unit}）` : ''}</span>
+                        <div>{formatQuantity(item.quantity)}</div>
+                      </div>
+                      <div className="col-4">
+                        <span className="d-block small text-muted">單價</span>
+                        <div>{formatAmount(item.transaction_price)}</div>
+                      </div>
+                      <div className="col-4">
+                        <span className="d-block small text-muted">小計</span>
+                        <div>{formatAmount(item.item_amount)}</div>
+                      </div>
                     </div>
                   </div>
                 )}
               </li>)}</ul>}
-              <div className="d-flex justify-content-between mb-3"><strong>總額</strong><strong>{total.toFixed(2)}</strong></div>
+              <div className="d-flex justify-content-between mb-3"><strong>總額</strong><strong>{formatAmount(total)}</strong></div>
               <button type="submit" className="btn btn-primary" disabled={saving || loading}>{saving ? '處理中...' : '建立訂單'}</button>
             </form>
           </div>
@@ -371,7 +424,7 @@ export default function OrdersPage() {
                         <td>{order.customer_name}</td>
                         <td>{order.source_type === 'APPOINTMENT' ? `預約 #${order.appointment_id}` : '現場'}</td>
                         <td>{labels[order.business_unit]}</td>
-                        <td>{order.total_amount.toFixed(2)}</td>
+                        <td>{formatAmount(order.total_amount)}</td>
                         <td>
                           <span className={`badge ${order.status === 'PAID' ? 'bg-success' : 'bg-secondary'}`}>{labels[order.status] || order.status}</span>
                           <button type="button" className="btn btn-sm btn-outline-danger ms-2" onClick={() => handleDelete(order)} disabled={deletingOrderId === order.id}>

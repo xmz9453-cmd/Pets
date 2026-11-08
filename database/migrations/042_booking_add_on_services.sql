@@ -1,0 +1,20 @@
+CREATE TABLE booking_request_add_on_services (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  shop_id INT NOT NULL,
+  appointment_id INT NOT NULL,
+  appointment_pet_id INT NOT NULL,
+  service_id INT NOT NULL,
+  service_name VARCHAR(100) NOT NULL,
+  unit VARCHAR(20) NOT NULL,
+  unit_price DECIMAL(10,2) NOT NULL,
+  quantity DECIMAL(10,2) NOT NULL,
+  allow_fractional_quantity BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_booking_request_add_on_values CHECK (unit_price >= 0 AND quantity > 0),
+  CONSTRAINT fk_booking_request_add_on_shop FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
+  CONSTRAINT fk_booking_request_add_on_appointment FOREIGN KEY (appointment_id) REFERENCES appointments(id) ON DELETE CASCADE,
+  CONSTRAINT fk_booking_request_add_on_appointment_pet FOREIGN KEY (appointment_pet_id) REFERENCES appointment_pets(id) ON DELETE CASCADE,
+  CONSTRAINT fk_booking_request_add_on_service FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE RESTRICT,
+  UNIQUE KEY uq_booking_request_add_on_service (shop_id, appointment_pet_id, service_id),
+  INDEX idx_booking_request_add_on_appointment (shop_id, appointment_id)
+);

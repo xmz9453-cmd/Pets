@@ -227,6 +227,11 @@ async function validatePetEntries(customerId, petEntries = []) {
         continue;
       }
 
+      if (!['GROOMING', 'BOARDING'].includes(service.type)) {
+        errors[`pets[${index}].service_ids[${serviceIndex}]`] = 'Add-on services cannot be scheduled as appointment services';
+        continue;
+      }
+
       if (!isSpeciesCompatible(service.species, pet.species)) {
         errors[`pets[${index}].service_ids[${serviceIndex}]`] = 'Service is not compatible with pet species';
         continue;
@@ -663,13 +668,13 @@ async function reserveBookingProducts(appointmentId, connection) {
   for (const item of requestedProducts) {
     if (item.status !== 'PENDING') continue;
     const [products] = await connection.query(
-      `SELECT stock_quantity, status
+      `SELECT stock_quantity, status, is_sellable
        FROM products
        WHERE id = ? AND shop_id = ?
        LIMIT 1 FOR UPDATE`,
       [item.product_id, getCurrentShopId()],
     );
-    if (!products.length || products[0].status !== 'ACTIVE'
+    if (!products.length || products[0].status !== 'ACTIVE' || !products[0].is_sellable
       || Number(products[0].stock_quantity) < Number(item.quantity)) {
       throw createBookingProductUnavailableError();
     }

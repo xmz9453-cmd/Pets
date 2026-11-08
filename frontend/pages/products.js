@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { createProduct, deleteProduct, disableProduct, enableProduct, getCurrentStaff, getProducts, updateProduct } from '../api/client';
 
-const emptyForm = { name: '', price: '', stock_quantity: '0' };
+const emptyForm = { name: '', price: '', unit: '件', stock_quantity: '0', is_sellable: true };
+
+function formatMoney(value) {
+  return Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 0 });
+}
 
 export default function ProductsPage() {
   const router = useRouter();
@@ -49,7 +53,7 @@ export default function ProductsPage() {
 
   function startEdit(product) {
     setEditingId(product.id);
-    setFormData({ name: product.name, price: product.price.toFixed(2), stock_quantity: String(product.stock_quantity ?? 0) });
+    setFormData({ name: product.name, price: product.is_sellable ? String(Math.round(product.price)) : '', unit: product.unit || '件', stock_quantity: String(product.stock_quantity ?? 0), is_sellable: Boolean(product.is_sellable) });
     setError('');
     setSuccess('');
   }
@@ -57,13 +61,13 @@ export default function ProductsPage() {
   async function handleSubmit(event) {
     event.preventDefault();
     const name = formData.name.trim();
-    const price = Number(formData.price);
+    const price = formData.is_sellable ? Number(formData.price) : 0;
     const stockQuantity = Number(formData.stock_quantity);
     if (!name) {
       setError('請輸入商品名稱');
       return;
     }
-    if (!Number.isFinite(price) || price <= 0) {
+    if (formData.is_sellable && (!Number.isInteger(price) || price <= 0)) {
       setError('售價必須大於 0');
       return;
     }
@@ -76,10 +80,10 @@ export default function ProductsPage() {
       setError('');
       setSuccess('');
       if (editingId) {
-        await updateProduct(editingId, { name, price, stock_quantity: stockQuantity });
+        await updateProduct(editingId, { name, price, unit: formData.unit.trim(), stock_quantity: stockQuantity, is_sellable: formData.is_sellable });
         setSuccess('商品已更新');
       } else {
-        await createProduct({ name, price, stock_quantity: stockQuantity });
+        await createProduct({ name, price, unit: formData.unit.trim(), stock_quantity: stockQuantity, is_sellable: formData.is_sellable });
         setSuccess('商品已新增');
       }
       resetForm();
@@ -140,8 +144,56 @@ export default function ProductsPage() {
       {error ? <div className="alert alert-danger" role="alert">{error}</div> : null}
       {success ? <div className="alert alert-success" role="alert">{success}</div> : null}
       <div className="row g-4">
-        {canManage ? <div className="col-lg-4"><div className="foundation-panel"><h2 className="h5 mb-3">{editingId ? '編輯商品' : '新增商品'}</h2><form onSubmit={handleSubmit}><label className="form-label" htmlFor="product-name">商品名稱</label><input id="product-name" className="form-control mb-3" maxLength="100" value={formData.name} onChange={(event) => setFormData({ ...formData, name: event.target.value })} required /><label className="form-label" htmlFor="product-price">售價</label><input id="product-price" className="form-control mb-3" type="number" min="0.01" step="0.01" value={formData.price} onChange={(event) => setFormData({ ...formData, price: event.target.value })} required /><label className="form-label" htmlFor="product-stock">庫存數量</label><input id="product-stock" className="form-control mb-3" type="number" min="0" step="1" value={formData.stock_quantity} onChange={(event) => setFormData({ ...formData, stock_quantity: event.target.value })} required /><div className="d-flex gap-2"><button type="submit" className="btn btn-primary" disabled={saving}>{saving ? '儲存中...' : '儲存'}</button>{editingId ? <button type="button" className="btn btn-outline-secondary" onClick={resetForm}>取消</button> : null}</div></form></div></div> : null}
-          <div className={canManage ? 'col-lg-8' : 'col-12'}><div className="foundation-panel"><h2 className="h5 mb-3">商品列表</h2>{loading ? <p className="text-muted mb-0">商品載入中...</p> : products.length === 0 ? <div className="alert alert-light border mb-0">目前沒有商品</div> : <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>商品名稱</th><th>售價</th><th>庫存</th><th>狀態</th><th>操作</th></tr></thead><tbody>{products.map((product) => <tr key={product.id}><td>{product.name}</td><td>{product.price.toFixed(2)}</td><td>{product.stock_quantity ?? 0}</td><td><span className={`badge ${product.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>{product.status === 'ACTIVE' ? '啟用中' : '已停用'}</span></td><td>{canManage ? <div className="btn-group btn-group-sm"><button type="button" className="btn btn-outline-primary" onClick={() => startEdit(product)}>編輯</button><button type="button" className={product.status === 'ACTIVE' ? 'btn btn-outline-danger' : 'btn btn-outline-success'} disabled={saving} onClick={() => changeStatus(product)}>{product.status === 'ACTIVE' ? '停用' : '啟用'}</button><button type="button" className="btn btn-outline-danger" disabled={saving} onClick={() => removeProduct(product)}>刪除</button></div> : <span className="text-muted">僅可查看</span>}</td></tr>)}</tbody></table></div>}</div></div>
+        {canManage ? (
+          <div className="col-lg-4">
+            <div className="foundation-panel">
+              <h2 className="h5 mb-3">{editingId ? '編輯商品' : '新增商品'}</h2>
+              <form onSubmit={handleSubmit}>
+                <label className="form-label" htmlFor="product-name">商品名稱</label>
+                <input id="product-name" className="form-control mb-3" maxLength="100" value={formData.name} onChange={(event) => setFormData({ ...formData, name: event.target.value })} required />
+                <div className="form-check mb-3">
+                  <input id="product-sellable" className="form-check-input" type="checkbox" checked={formData.is_sellable} onChange={(event) => updateField('is_sellable', event.target.checked)} />
+                  <label className="form-check-label" htmlFor="product-sellable">可加入訂單銷售</label>
+                </div>
+                {formData.is_sellable ? (
+                  <>
+                    <label className="form-label" htmlFor="product-price">售價</label>
+                    <input id="product-price" className="form-control mb-3" type="number" min="1" step="1" value={formData.price} onChange={(event) => setFormData({ ...formData, price: event.target.value })} required />
+                  </>
+                ) : <p className="form-text">此品項只管理庫存，不會出現在訂單或線上加購。</p>}
+                <label className="form-label" htmlFor="product-unit">計量單位</label>
+                <input id="product-unit" className="form-control mb-3" maxLength="20" value={formData.unit} onChange={(event) => updateField('unit', event.target.value)} required />
+                <label className="form-label" htmlFor="product-stock">庫存數量</label>
+                <input id="product-stock" className="form-control mb-3" type="number" min="0" step="1" value={formData.stock_quantity} onChange={(event) => setFormData({ ...formData, stock_quantity: event.target.value })} required />
+                <div className="d-flex gap-2">
+                  <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? '儲存中...' : '儲存'}</button>
+                  {editingId ? <button type="button" className="btn btn-outline-secondary" onClick={resetForm}>取消</button> : null}
+                </div>
+              </form>
+            </div>
+          </div>
+        ) : null}
+          <div className={canManage ? 'col-lg-8' : 'col-12'}>
+            <div className="foundation-panel">
+              <h2 className="h5 mb-3">商品列表</h2>
+              {loading ? <p className="text-muted mb-0">商品載入中...</p> : products.length === 0 ? <div className="alert alert-light border mb-0">目前沒有商品</div> : (
+                <div className="table-responsive">
+                  <table className="table align-middle mb-0">
+                    <thead><tr><th>商品名稱</th><th>售價</th><th>庫存</th><th>狀態</th><th>操作</th></tr></thead>
+                    <tbody>{products.map((product) => (
+                      <tr key={product.id}>
+                        <td>{product.name}<small className="d-block text-muted">{product.unit || '件'} / {product.is_sellable ? '可銷售' : '僅管理庫存'}</small></td>
+                        <td>{product.is_sellable ? formatMoney(product.price) : '—'}</td>
+                        <td>{product.stock_quantity ?? 0}</td>
+                        <td><span className={`badge ${product.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>{product.status === 'ACTIVE' ? '啟用中' : '已停用'}</span></td>
+                        <td>{canManage ? <div className="btn-group btn-group-sm"><button type="button" className="btn btn-outline-primary" onClick={() => startEdit(product)}>編輯</button><button type="button" className={product.status === 'ACTIVE' ? 'btn btn-outline-danger' : 'btn btn-outline-success'} disabled={saving} onClick={() => changeStatus(product)}>{product.status === 'ACTIVE' ? '停用' : '啟用'}</button><button type="button" className="btn btn-outline-danger" disabled={saving} onClick={() => removeProduct(product)}>刪除</button></div> : <span className="text-muted">僅可查看</span>}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
       </div>
     </main>
   );

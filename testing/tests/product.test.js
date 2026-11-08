@@ -57,6 +57,16 @@ describe('Product API', () => {
     expect((await agent.post(`/api/products/${productId}/enable`)).body.data.product.status).toBe('ACTIVE');
   });
 
+  test('inventory-only products can omit a sale price and are excluded from sellable lists', async () => {
+    const agent = await login();
+    const response = await agent.post('/api/products').send({ name: '藥浴藥劑', unit: '罐', stock_quantity: 5, is_sellable: false });
+    expect(response.status).toBe(201);
+    expect(response.body.data.product).toMatchObject({ price: 0, stock_quantity: 5, is_sellable: false });
+
+    const sellable = await agent.get('/api/products?status=ACTIVE&sellable=true');
+    expect(sellable.body.data.products.some((product) => product.id === response.body.data.product.id)).toBe(false);
+  });
+
   test('owner can delete an unused product but cannot delete one with order history', async () => {
     const agent = await login();
     const unused = await agent.post('/api/products').send({ name: '可刪除商品', price: 100 });
@@ -93,6 +103,7 @@ describe('Product API', () => {
     [{ name: '無效價格', price: 'abc' }, 'price'],
     [{ name: '零價格', price: 0 }, 'price'],
     [{ name: '負價格', price: -1 }, 'price'],
+    [{ name: '小數售價', price: 40.5 }, 'price'],
   ])('rejects invalid product payload %#', async (payload, field) => {
     const response = await (await login()).post('/api/products').send(payload);
     expect(response.status).toBe(400);

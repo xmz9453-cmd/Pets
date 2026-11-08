@@ -48,6 +48,7 @@ function normalizeAppointment(row) {
     service_type: row.service_type || null,
     requested_check_out: toIsoDateTimeString(row.requested_check_out),
     requested_products: row.requested_products || '',
+    requested_add_on_services: row.requested_add_on_services || '',
   };
 }
 
@@ -87,7 +88,10 @@ async function listAppointments(filters = {}) {
             MAX(brd.requested_check_out) AS requested_check_out,
             (SELECT GROUP_CONCAT(CONCAT(brp.product_name, ' ×', brp.quantity) ORDER BY brp.product_name SEPARATOR '、')
              FROM booking_request_products brp
-             WHERE brp.appointment_id = a.id AND brp.shop_id = a.shop_id) AS requested_products
+             WHERE brp.appointment_id = a.id AND brp.shop_id = a.shop_id) AS requested_products,
+            (SELECT GROUP_CONCAT(CONCAT(baos.service_name, ' ×', baos.quantity, ' ', baos.unit) ORDER BY baos.service_name SEPARATOR '、')
+             FROM booking_request_add_on_services baos
+             WHERE baos.appointment_id = a.id AND baos.shop_id = a.shop_id) AS requested_add_on_services
      FROM appointments a
      LEFT JOIN customers c ON c.id = a.customer_id AND c.shop_id = a.shop_id
      LEFT JOIN appointment_pets ap ON ap.appointment_id = a.id AND ap.shop_id = a.shop_id
@@ -120,7 +124,10 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
             brd.service_type, brd.requested_check_out
             , (SELECT GROUP_CONCAT(CONCAT(brp.product_name, ' ×', brp.quantity) ORDER BY brp.product_name SEPARATOR '、')
                FROM booking_request_products brp
-               WHERE brp.appointment_id = a.id AND brp.shop_id = a.shop_id) AS requested_products
+              WHERE brp.appointment_id = a.id AND brp.shop_id = a.shop_id) AS requested_products,
+            (SELECT GROUP_CONCAT(CONCAT(baos.service_name, ' ×', baos.quantity, ' ', baos.unit) ORDER BY baos.service_name SEPARATOR '、')
+             FROM booking_request_add_on_services baos
+             WHERE baos.appointment_id = a.id AND baos.shop_id = a.shop_id) AS requested_add_on_services
      FROM appointments a
      LEFT JOIN customers c ON c.id = a.customer_id AND c.shop_id = a.shop_id
      LEFT JOIN booking_request_details brd ON brd.appointment_id = a.id AND brd.shop_id = a.shop_id
@@ -149,7 +156,7 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
   if (appointmentPetIds.length) {
     const placeholders = appointmentPetIds.map(() => '?').join(', ');
     [serviceRows] = await connection.query(
-      `SELECT aps.appointment_pet_id, aps.service_id, aps.duration_minutes, s.name AS service_name, s.status AS service_status, s.price
+      `SELECT aps.appointment_pet_id, aps.service_id, aps.duration_minutes, s.name AS service_name, s.status AS service_status, s.price, s.unit, s.type, s.allow_fractional_quantity
        FROM appointment_pet_services aps
        INNER JOIN services s ON s.id = aps.service_id AND s.shop_id = aps.shop_id
        WHERE aps.appointment_pet_id IN (${placeholders}) AND aps.shop_id = ?
@@ -169,9 +176,38 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
       name: row.service_name,
       status: row.service_status,
       price: row.price === null || row.price === undefined ? null : Number(row.price),
+      unit: row.unit,
+      type: row.type,
+      allow_fractional_quantity: Boolean(row.allow_fractional_quantity),
       duration_minutes: row.duration_minutes === null || row.duration_minutes === undefined
         ? null
         : Number(row.duration_minutes),
+    });
+  }
+
+  let addOnServiceRows = [];
+  if (appointmentPetIds.length) {
+    const placeholders = appointmentPetIds.map(() => '?').join(', ');
+    [addOnServiceRows] = await connection.query(
+      `SELECT appointment_pet_id, service_id, service_name, unit, unit_price, quantity, allow_fractional_quantity
+       FROM booking_request_add_on_services
+       WHERE appointment_pet_id IN (${placeholders}) AND shop_id = ?
+       ORDER BY service_name ASC`,
+      [...appointmentPetIds, getCurrentShopId()],
+    );
+  }
+
+  const addOnServiceMap = new Map();
+  for (const row of addOnServiceRows) {
+    const appointmentPetId = Number(row.appointment_pet_id);
+    if (!addOnServiceMap.has(appointmentPetId)) addOnServiceMap.set(appointmentPetId, []);
+    addOnServiceMap.get(appointmentPetId).push({
+      service_id: Number(row.service_id),
+      name: row.service_name,
+      unit: row.unit,
+      price: Number(row.unit_price),
+      quantity: Number(row.quantity),
+      allow_fractional_quantity: Boolean(row.allow_fractional_quantity),
     });
   }
 
@@ -183,6 +219,7 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
     gender: petRow.gender,
     pet_status: petRow.pet_status,
     services: serviceMap.get(Number(petRow.appointment_pet_id)) || [],
+    add_on_services: addOnServiceMap.get(Number(petRow.appointment_pet_id)) || [],
   }));
 
   return {

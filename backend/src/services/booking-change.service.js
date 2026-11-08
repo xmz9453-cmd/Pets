@@ -214,6 +214,29 @@ async function listCustomerRequests() {
      ORDER BY a.created_at DESC`,
     [getCurrentShopId(), memberId],
   );
+  const appointmentIds = rows.map((row) => Number(row.appointment_id));
+  const addOnServicesByAppointment = new Map();
+  if (appointmentIds.length) {
+    const placeholders = appointmentIds.map(() => '?').join(', ');
+    const [addOnServiceRows] = await getPool().query(
+      `SELECT appointment_id, service_id, service_name, unit, unit_price, quantity
+       FROM booking_request_add_on_services
+       WHERE shop_id = ? AND appointment_id IN (${placeholders})
+       ORDER BY service_name ASC`,
+      [getCurrentShopId(), ...appointmentIds],
+    );
+    for (const addOnService of addOnServiceRows) {
+      const appointmentId = Number(addOnService.appointment_id);
+      if (!addOnServicesByAppointment.has(appointmentId)) addOnServicesByAppointment.set(appointmentId, []);
+      addOnServicesByAppointment.get(appointmentId).push({
+        service_id: Number(addOnService.service_id),
+        name: addOnService.service_name,
+        unit: addOnService.unit,
+        unit_price: Number(addOnService.unit_price),
+        quantity: Number(addOnService.quantity),
+      });
+    }
+  }
   return {
     requests: rows.map((row) => ({
       appointment_id: Number(row.appointment_id),
@@ -227,6 +250,7 @@ async function listCustomerRequests() {
       pet_id: Number(row.pet_id),
       species: row.species,
       pet_name: row.pet_name,
+      add_on_services: addOnServicesByAppointment.get(Number(row.appointment_id)) || [],
       latest_change_request: row.change_request_id ? normalizeChangeRequest({
         id: row.change_request_id,
         request_type: row.request_type,

@@ -10,10 +10,20 @@ const createEmptyForm = (type = 'GROOMING') => ({
   unit: type === 'BOARDING' ? '晚' : '次',
   species: 'CAT',
   duration_minutes: '',
+  sort_order: '',
+  allow_fractional_quantity: false,
 });
 const emptyForm = createEmptyForm();
-const typeLabels = { GROOMING: '美容', BOARDING: '住宿' };
+const typeLabels = { GROOMING: '美容', BOARDING: '住宿', ADD_ON: '加購服務' };
 const speciesLabels = { DOG: '狗', CAT: '貓', BOTH: '狗與貓' };
+
+function formatMoney(value) {
+  return Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 0 });
+}
+
+function nextSortOrder(services) {
+  return services.reduce((maximum, service) => Math.max(maximum, Number(service.sort_order) || 0), 0) + 10;
+}
 
 export default function ServicesPage() {
   const router = useRouter();
@@ -29,7 +39,13 @@ export default function ServicesPage() {
     try {
       setLoading(true);
       const result = await getServices(nextFilters);
-      setServices(result.services || []);
+      const loadedServices = result.services || [];
+      setServices(loadedServices);
+      if (!editingId) {
+        setFormData((current) => current.sort_order === ''
+          ? { ...current, sort_order: String(nextSortOrder(loadedServices)) }
+          : current);
+      }
       setError('');
     } catch (loadError) {
       setError(loadError.message || '載入服務失敗');
@@ -52,7 +68,8 @@ export default function ServicesPage() {
       ...current,
       type: nextType,
       unit: nextType === 'BOARDING' ? '晚' : '次',
-      duration_minutes: nextType === 'BOARDING' ? '' : current.duration_minutes || '',
+      duration_minutes: nextType === 'GROOMING' ? current.duration_minutes || '' : '',
+      allow_fractional_quantity: nextType === 'ADD_ON' ? current.allow_fractional_quantity : false,
     }));
     setError('');
   }
@@ -64,16 +81,18 @@ export default function ServicesPage() {
       type: service.type || 'GROOMING',
       description: service.description || '',
       price: service.price ?? '',
-      unit: service.type === 'BOARDING' ? '晚' : '次',
+      unit: service.type === 'ADD_ON' ? service.unit : service.type === 'BOARDING' ? '晚' : '次',
       species: service.species || 'CAT',
       duration_minutes: service.type === 'BOARDING' ? '' : service.duration_minutes ?? '',
+      sort_order: String(service.sort_order ?? 0),
+      allow_fractional_quantity: Boolean(service.allow_fractional_quantity),
     });
     setError('');
   }
 
   function resetForm() {
     setEditingId(null);
-    setFormData(createEmptyForm());
+    setFormData({ ...createEmptyForm(), sort_order: String(nextSortOrder(services)) });
   }
 
   async function handleSubmit(event) {
@@ -87,15 +106,16 @@ export default function ServicesPage() {
         name: formData.name.trim(),
         description: formData.description.trim() || null,
         price: Number(formData.price),
-        unit: normalizedType === 'BOARDING' ? '晚' : '次',
+        unit: normalizedType === 'ADD_ON' ? formData.unit.trim() : normalizedType === 'BOARDING' ? '晚' : '次',
         species: formData.species,
+        sort_order: Number(formData.sort_order),
       };
       if (normalizedType === 'GROOMING') {
         payload.duration_minutes = Number(formData.duration_minutes);
       } else {
         delete payload.duration_minutes;
       }
-      delete payload.sort_order;
+      payload.sort_order = Number(formData.sort_order);
       if (editingId) {
         await updateService(editingId, payload);
       } else {
@@ -149,7 +169,7 @@ export default function ServicesPage() {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <div>
           <h1 className="mb-1">服務管理</h1>
-          <p className="text-muted mb-0">管理美容與住宿服務資料。</p>
+              <p className="text-muted mb-0">管理美容、住宿與可單獨加購的服務。</p>
         </div>
       </div>
 
@@ -167,6 +187,7 @@ export default function ServicesPage() {
                   <select className="form-select" value={formData.type} onChange={(event) => handleTypeChange(event.target.value)}>
                     <option value="GROOMING">美容</option>
                     <option value="BOARDING">住宿</option>
+                    <option value="ADD_ON">加購服務</option>
                   </select>
                 </div>
                 <div className="col-6">
@@ -184,13 +205,27 @@ export default function ServicesPage() {
               <div className="row g-2 mt-1">
                 <div className="col-6">
                   <label className="form-label">價格</label>
-                  <input className="form-control" required type="number" min="0.01" step="0.01" value={formData.price} onChange={(event) => updateField('price', event.target.value)} />
+                  <input className="form-control" required type="number" min="1" step="1" value={formData.price} onChange={(event) => updateField('price', event.target.value)} />
                 </div>
                 <div className="col-6">
                   <label className="form-label">單位</label>
-                  <input className="form-control" readOnly value={formData.type === 'BOARDING' ? '晚' : '次'} />
+                  <input className="form-control" readOnly={formData.type !== 'ADD_ON'} value={formData.type === 'BOARDING' ? '晚' : formData.type === 'ADD_ON' ? formData.unit : '次'} onChange={(event) => updateField('unit', event.target.value)} />
                 </div>
               </div>
+
+              <div className="mt-3">
+                <label className="form-label" htmlFor="service-sort-order">排序序號</label>
+                <input id="service-sort-order" className="form-control" type="number" min="0" step="1" value={formData.sort_order} onChange={(event) => updateField('sort_order', event.target.value)} required />
+                <div className="form-text">數字越小，越先顯示。</div>
+              </div>
+
+              {formData.type === 'ADD_ON' ? (
+                <div className="form-check mt-3">
+                  <input id="service-fractional-quantity" className="form-check-input" type="checkbox" checked={formData.allow_fractional_quantity} onChange={(event) => updateField('allow_fractional_quantity', event.target.checked)} />
+                  <label className="form-check-label" htmlFor="service-fractional-quantity">數量允許小數</label>
+                  <div className="form-text">例如車資可按公里數計算</div>
+                </div>
+              ) : null}
 
               {formData.type === 'GROOMING' ? (
                 <div className="row g-2 mt-1">
@@ -222,6 +257,7 @@ export default function ServicesPage() {
                   <option value="ALL">全部</option>
                   <option value="GROOMING">美容</option>
                   <option value="BOARDING">住宿</option>
+                  <option value="ADD_ON">加購服務</option>
                 </select>
               </div>
               <div className="col-md-2">
@@ -264,12 +300,13 @@ export default function ServicesPage() {
                           <button type="button" className="btn btn-link p-0 text-start text-dark text-decoration-none" onClick={() => router.push(`/services/${service.id}`)}>
                             {service.name}
                             <small className="d-block text-muted">{service.description || '未填寫說明'}</small>
+                            <small className="d-block text-muted">排序序號：{service.sort_order ?? 0}</small>
                           </button>
                         </td>
                         <td>{typeLabels[service.type]}</td>
-                        <td>{service.price} / {service.unit}</td>
+                        <td>{formatMoney(service.price)} / {service.unit}</td>
                         <td>{speciesLabels[service.species]}</td>
-                        <td>{service.duration_minutes ? `${service.duration_minutes} 分鐘` : '—'}</td>
+                        <td>{service.type !== 'ADD_ON' && service.duration_minutes ? `${service.duration_minutes} 分鐘` : '—'}</td>
                         <td>
                           <span className={`badge ${service.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`}>
                             {service.status === 'ACTIVE' ? '啟用' : '停用'}

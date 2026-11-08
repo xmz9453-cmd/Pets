@@ -9,6 +9,7 @@ function normalizeService(row) {
     price: Number(row.price),
     duration_minutes: Number(row.duration_minutes),
     sort_order: Number(row.sort_order),
+    allow_fractional_quantity: Boolean(row.allow_fractional_quantity),
   };
 }
 
@@ -34,9 +35,10 @@ async function listServices(filters = {}) {
 
 async function listActiveServicesBySpecies(species, connection = getPool()) {
   const [rows] = await connection.query(
-    `SELECT id, name, type, price, unit, duration_minutes
+    `SELECT id, name, type, price, unit, duration_minutes, allow_fractional_quantity
      FROM services
      WHERE shop_id = ? AND status = 'ACTIVE'
+       AND type IN ('GROOMING', 'BOARDING')
        AND (species = 'BOTH' OR species = ?)
      ORDER BY sort_order ASC, name ASC`,
     [getCurrentShopId(), species],
@@ -49,7 +51,20 @@ async function listActiveServicesBySpecies(species, connection = getPool()) {
     price: Number(row.price),
     unit: row.unit,
     duration_minutes: Number(row.duration_minutes),
+    allow_fractional_quantity: Boolean(row.allow_fractional_quantity),
   }));
+}
+
+async function listActiveAddOnServicesBySpecies(species, connection = getPool()) {
+  const [rows] = await connection.query(
+    `SELECT id, name, type, description, price, unit, species, duration_minutes, sort_order, allow_fractional_quantity
+     FROM services
+     WHERE shop_id = ? AND status = 'ACTIVE' AND type = 'ADD_ON'
+       AND (species = 'BOTH' OR species = ?)
+     ORDER BY sort_order ASC, name ASC`,
+    [getCurrentShopId(), species],
+  );
+  return rows.map(normalizeService);
 }
 
 async function getServiceById(id, connection = getPool()) {
@@ -70,9 +85,9 @@ async function findByName(name, species, excludeId = null) {
 
 async function createService(payload) {
   const [result] = await getPool().query(
-    `INSERT INTO services (shop_id, name, type, description, price, unit, species, duration_minutes, sort_order, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
-    [getCurrentShopId(), payload.name, payload.type, payload.description || null, payload.price, payload.unit, payload.species, payload.duration_minutes, payload.sort_order],
+    `INSERT INTO services (shop_id, name, type, description, price, unit, allow_fractional_quantity, species, duration_minutes, sort_order, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
+    [getCurrentShopId(), payload.name, payload.type, payload.description || null, payload.price, payload.unit, payload.allow_fractional_quantity ?? false, payload.species, payload.duration_minutes, payload.sort_order],
   );
   return getServiceById(result.insertId);
 }
@@ -80,7 +95,7 @@ async function createService(payload) {
 async function updateService(id, payload) {
   const fields = [];
   const values = [];
-  for (const key of ['name', 'type', 'description', 'price', 'unit', 'species', 'duration_minutes', 'sort_order', 'status']) {
+  for (const key of ['name', 'type', 'description', 'price', 'unit', 'allow_fractional_quantity', 'species', 'duration_minutes', 'sort_order', 'status']) {
     if (payload[key] !== undefined) {
       fields.push(`${key} = ?`);
       values.push(payload[key] === '' ? null : payload[key]);
@@ -94,7 +109,13 @@ async function updateService(id, payload) {
 }
 
 async function countHistoricalUsage(id) {
-  const [rows] = await getPool().query('SELECT COUNT(*) AS total FROM appointment_pet_services WHERE service_id = ? AND shop_id = ?', [id, getCurrentShopId()]);
+  const [rows] = await getPool().query(
+    `SELECT (
+       (SELECT COUNT(*) FROM appointment_pet_services WHERE service_id = ? AND shop_id = ?)
+       + (SELECT COUNT(*) FROM booking_request_add_on_services WHERE service_id = ? AND shop_id = ?)
+     ) AS total`,
+    [id, getCurrentShopId(), id, getCurrentShopId()],
+  );
   return Number(rows[0].total);
 }
 
@@ -102,4 +123,4 @@ async function deleteService(id) {
   await getPool().query('DELETE FROM services WHERE id = ? AND shop_id = ?', [id, getCurrentShopId()]);
 }
 
-module.exports = { countHistoricalUsage, createService, deleteService, findByName, getServiceById, listActiveServicesBySpecies, listServices, updateService };
+module.exports = { countHistoricalUsage, createService, deleteService, findByName, getServiceById, listActiveAddOnServicesBySpecies, listActiveServicesBySpecies, listServices, updateService };

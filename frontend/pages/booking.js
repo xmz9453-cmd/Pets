@@ -79,6 +79,8 @@ export default function BookingPage() {
   const [slots, setSlots] = useState([]);
   const [selectedTime, setSelectedTime] = useState('');
   const [addOns, setAddOns] = useState({});
+  const [addOnServices, setAddOnServices] = useState([]);
+  const [addOnServiceQuantities, setAddOnServiceQuantities] = useState({});
   const [busy, setBusy] = useState(false);
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [submittedRequest, setSubmittedRequest] = useState(null);
@@ -147,6 +149,7 @@ export default function BookingPage() {
   useEffect(() => {
     if (!member || !selectedSpecies) {
       setServices([]);
+      setAddOnServices([]);
       setProducts([]);
       return;
     }
@@ -160,6 +163,7 @@ export default function BookingPage() {
     ]).then(([serviceResult, productResult]) => {
       if (!active) return;
       setServices(serviceResult.services || []);
+      setAddOnServices(serviceResult.add_on_services || []);
       setProducts(productResult.products || []);
     }).catch((loadError) => {
       if (active) setError(loadError.message || '目前無法載入服務與商品，請稍後再試。');
@@ -171,6 +175,7 @@ export default function BookingPage() {
     () => products.filter((product) => product.species === 'BOTH' || product.species === selectedSpecies),
     [products, selectedSpecies],
   );
+  const visibleAddOnServices = addOnServices.filter((service) => service.species === 'BOTH' || service.species === selectedSpecies);
 
   async function handleLoadSlots(event) {
     event.preventDefault();
@@ -221,6 +226,9 @@ export default function BookingPage() {
         ...(selectedService?.type === 'BOARDING'
           ? { check_out_date: checkOutDate, check_out_time: checkOutTime }
           : {}),
+        add_on_services: Object.entries(addOnServiceQuantities)
+          .filter(([, quantity]) => Number(quantity) > 0)
+          .map(([addOnServiceId, quantity]) => ({ service_id: Number(addOnServiceId), quantity: Number(quantity) })),
         add_ons: Object.entries(addOns)
           .filter(([, quantity]) => Number(quantity) > 0)
           .map(([productId, quantity]) => ({ product_id: Number(productId), quantity: Number(quantity) })),
@@ -229,7 +237,8 @@ export default function BookingPage() {
       setRequests((current) => [result.request, ...current]);
       setSlots([]);
       setSelectedTime('');
-      setMessage(`預約申請已送出（申請編號 ${result.request.appointment_id}）。時段尚未保留，需店家確認；商品也需店家確認庫存，到店付款。`);
+      setAddOnServiceQuantities({});
+      setMessage(`預約申請已送出（申請編號 ${result.request.appointment_id}）。時段尚未保留，需店家確認；加購服務與商品將由店家一併確認。`);
     } catch (submitError) {
       setError(submitError.message || '預約申請未能送出，請重新查詢時段後再試。');
     } finally {
@@ -391,6 +400,7 @@ export default function BookingPage() {
                           onClick={() => {
                             setBookingType(type);
                             setServiceId('');
+                            setAddOnServiceQuantities({});
                             setAppointmentDate('');
                             setCheckOutDate('');
                             setCheckOutTime('');
@@ -453,6 +463,7 @@ export default function BookingPage() {
                     onChange={(event) => {
                       setPetId(event.target.value);
                       setServiceId('');
+                      setAddOnServiceQuantities({});
                       setSlots([]);
                       setSelectedTime('');
                     }}
@@ -478,6 +489,7 @@ export default function BookingPage() {
                           onChange={(event) => {
                             setSpecies(event.target.value);
                             setServiceId('');
+                            setAddOnServiceQuantities({});
                             setSlots([]);
                             setSelectedTime('');
                           }}
@@ -494,7 +506,7 @@ export default function BookingPage() {
                   {selectedSpecies ? (
                     <div className="mb-3">
                       <label className="form-label" htmlFor="booking-service">預約服務</label>
-                      <select id="booking-service" className="form-select" value={serviceId} onChange={(event) => { setServiceId(event.target.value); setSlots([]); setSelectedTime(''); }}>
+                      <select id="booking-service" className="form-select" value={serviceId} onChange={(event) => { setServiceId(event.target.value); setAddOnServiceQuantities({}); setSlots([]); setSelectedTime(''); }}>
                         <option value="">請選擇{bookingType === 'GROOMING' ? '美容' : '住宿'}服務</option>
                         {visibleServices.map((service) => (
                           <option key={service.id} value={service.id}>
@@ -515,6 +527,49 @@ export default function BookingPage() {
 
                   {selectedService?.type === 'GROOMING' && selectedPet && !selectedPet.weight ? (
                     <p className="alert alert-warning">此美容服務需要寵物體重；請先聯絡店家補登資料後再申請。</p>
+                  ) : null}
+
+                  {selectedService && visibleAddOnServices.length ? (
+                    <div className="border-top pt-3 mt-3">
+                      <h3 className="h6 mb-2">加購服務</h3>
+                      <div className="d-grid gap-2">
+                        {visibleAddOnServices.map((service) => {
+                          const quantity = Number(addOnServiceQuantities[service.id] || 0);
+                          return (
+                            <div key={service.id} className="d-flex flex-wrap align-items-center gap-2 border rounded p-2">
+                              <div className="flex-grow-1">
+                                <label className="form-check-label" htmlFor={`addon-service-${service.id}`}>
+                                  <input
+                                    id={`addon-service-${service.id}`}
+                                    className="form-check-input me-2"
+                                    type="checkbox"
+                                    checked={quantity > 0}
+                                    onChange={(event) => setAddOnServiceQuantities((current) => ({
+                                      ...current,
+                                      [service.id]: event.target.checked ? 1 : 0,
+                                    }))}
+                                  />
+                                  {service.name}｜{CURRENCY_FORMATTER.format(service.price)}／{service.unit}
+                                </label>
+                                {service.description ? <small className="d-block text-muted ms-4">{service.description}</small> : null}
+                              </div>
+                              {quantity > 0 ? (
+                                <input
+                                  className="form-control"
+                                  style={{ maxWidth: '110px' }}
+                                  type="number"
+                                  min={service.allow_fractional_quantity ? '0.01' : '1'}
+                                  step={service.allow_fractional_quantity ? '0.01' : '1'}
+                                  aria-label={`${service.name}數量`}
+                                  value={addOnServiceQuantities[service.id]}
+                                  onChange={(event) => setAddOnServiceQuantities((current) => ({ ...current, [service.id]: event.target.value }))}
+                                />
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   ) : null}
                 </div>
               </section>
@@ -626,6 +681,11 @@ export default function BookingPage() {
                             <strong>{STATUS_LABELS[request.status] || '處理中'}</strong>
                           </div>
                           {request.status === 'PENDING' ? <small className="text-muted">時段尚未保留，需店家確認。</small> : null}
+                          {request.add_on_services?.length ? (
+                            <small className="d-block text-muted mt-1">
+                              加購服務：{request.add_on_services.map((service) => `${service.name} ×${service.quantity}${service.unit ? ` ${service.unit}` : ''}`).join('、')}
+                            </small>
+                          ) : null}
                           {request.status === 'AWAITING_CUSTOMER' ? (
                             <button type="button" className="btn btn-sm btn-primary mt-2" onClick={() => openOnboarding(request.appointment_id)} disabled={busy}>
                               補齊資料與簽署契約
