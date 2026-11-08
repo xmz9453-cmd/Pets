@@ -9,7 +9,7 @@ This document provides standard operating procedures (SOP) for **Pets 2.0 Produc
 ### Key Infrastructure Baseline
 - **OS**: Ubuntu 24.04.5 LTS
 - **User**: `zhe` (`/home/zhe/pets`)
-- **Runtime**: Node.js `v24.22.1` (LTS), npm `11.19.1`, MySQL Community Server `8.4.13` (LTS), Nginx `1.24.0` (Ubuntu 24.04 package)
+- **Runtime**: Node.js `v24.22.2` (LTS), npm `11.19.1`, MySQL Community Server `8.4.13` (LTS), Nginx `1.24.0` (Ubuntu 24.04 package), Git `2.43.0`
 - **Application dependencies** (locked by package-lock files): Backend Express `5.3.0`, mysql2 `3.24.6`, dotenv `18.0.9`, cors `2.8.6`, multer `2.5.0`; Frontend Next.js `16.4.3`, React `19.3.1`, Bootstrap `5.3.8`
 - **Git Repository**: `https://github.com/xmz9453-cmd/Pets.git` (`master` branch)
 - **Database Target**: `psop_one` (MySQL)
@@ -41,7 +41,7 @@ The verified backup bundle contains the compressed MySQL dump, Contract PDFs, Sh
 
 Deployment creates this backup before applying pending migrations. The backup script checks whether optional Logo and Portal Background reference columns exist, so a valid pre-migration database can still be backed up; when a reference column is absent, its files are included but cannot be cross-checked against that column. The database account does not need the MySQL `PROCESS` privilege for tablespace metadata.
 
-Application source is recovered by checking out the recorded `app_commit` from the private Git repository. The bundle does not include `.env` or other secrets: store those separately in an encrypted, access-controlled backup. This is an application-level recovery set, not a full VM or operating-system image.
+Application source is recovered by checking out the recorded `app_commit` from the GitHub repository. The bundle does not include `.env` or other secrets: store those separately in an encrypted, access-controlled backup. This is an application-level recovery set, not a full VM or operating-system image.
 
 The migration sequence snapshots existing portal footer and background metadata before migration 034 and restores it after the shop-scoping changes; do not edit migration 034 in place.
 
@@ -73,7 +73,44 @@ The restore script validates archive members, checksums, PDF and media manifests
 
 ## 3. Environment Installation (First Time Setup)
 
-Run the installer script to initialize required directories and permissions:
+`deploy/install.sh` only initializes the application's backup and deployment-state directories. It does **not** install Ubuntu packages, MySQL, Node.js, Nginx, or the application services.
+
+The management-center first-build workflow uses `deploy/bootstrap-ubuntu.sh` for a new Ubuntu 24.04 VM. The MVP's live inventory reported Node.js `v24.22.2`, npm `11.19.1`, MySQL Community Server `8.4.13`, Nginx `1.24.0`, and Git `2.43.0`. The bootstrap uses NodeSource's Node.js 24.x channel and Oracle's signed MySQL 8.4 LTS APT repository; it verifies the installed Node.js and MySQL major versions before continuing. The MySQL repository's current Ubuntu 24.04 candidate is `8.4.13`, matching the observed MVP patch version; future runs may use a newer security patch within the 8.4 LTS series.
+
+While the MVP VM is available, run this read-only inventory on it:
+
+```bash
+lsb_release -ds
+node --version
+npm --version
+mysql --version
+sudo mysql --batch --skip-column-names -e "SELECT VERSION();"
+nginx -v 2>&1
+git --version
+```
+
+`mysql --version` reports the client; the SQL query reports the server version. Re-run this inventory before a future replacement if the MVP runtime has changed. The `xmz9453-cmd/Pets` GitHub repository is currently public, so the bootstrap's HTTPS clone requires no credential.
+
+The first-build flow also requires Ubuntu 24.04, SSH enabled and reachable, the `zhe` account with sudo access, and the management computer's SSH public key installed for that account. If SSH was not selected during Ubuntu setup, use the VM console:
+
+```bash
+sudo apt update
+sudo apt install -y openssh-server
+sudo systemctl enable --now ssh
+sudo install -d -m 700 -o zhe -g zhe /home/zhe/.ssh
+sudo nano /home/zhe/.ssh/authorized_keys
+sudo chown zhe:zhe /home/zhe/.ssh/authorized_keys
+sudo chmod 600 /home/zhe/.ssh/authorized_keys
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+In the Windows management computer, display only the matching public key with `ssh-keygen -y -f "$HOME\.ssh\pets3_production"` and paste its full output as a line in `authorized_keys`. Never copy the private key to Ubuntu or share it in chat. The last Ubuntu command displays the fingerprint to compare with the management-center scan. Configure VMware networking and any active firewall to permit SSH before Bootstrap and HTTP after it. The bootstrap does not configure VMware networking, DNS, a firewall, or TLS. The repository is currently public and is cloned over HTTPS without credentials; if its visibility changes, design a dedicated read-only authentication flow before running the bootstrap. Never put a personal access token in the script or `.env`.
+
+Once these prerequisites and versions are confirmed, select the PETS host profile in the management center and run **核對新主機指紋** followed by **首次建置 Ubuntu**. The first-build script refuses to initialize an existing project, service configuration, MySQL database/account, or data directory. It creates a fresh database and seed administrator; the initial administrator password is removed from `.env` after the seed succeeds. It also installs a `visudo`-validated sudoers rule allowing `zhe` to restart only `pets-backend.service` and `pets-frontend.service`, as required by the standard non-interactive deployment workflow. Verify the site in a browser and complete the existing human deployment-confirmation step afterward.
+
+If a first build has initialized the VM but the standard deployment exits with a `FAILED` deployment state, inspect the reported deployment log before retrying. After confirming the failure did not complete successfully, use the Ubuntu VM console to run `sudo bash /home/zhe/pets/deploy/clear-state.sh` and enter `CLEAR_STATE`; this clears only the abnormal deployment-state marker, not the database, backups, logs, or application files. Then rerun Bootstrap to resume the incomplete first build.
+
+For an already prepared VM, run the installer script to initialize required directories and permissions:
 
 ```bash
 cd /home/zhe/pets

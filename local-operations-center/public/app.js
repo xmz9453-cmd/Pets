@@ -15,10 +15,66 @@ let busy = false;
 let currentOperationId = null;
 let handledPrompt = null;
 let currentChanges = [];
+let hosts = [];
+let activeHostId = 'mvp';
 
 const changeList = document.querySelector('#change-list');
 const changeSummary = document.querySelector('#changes-summary');
 const commitButton = document.querySelector('#commit-selected');
+
+function selectedHost() {
+  return hosts.find((host) => host.id === activeHostId) || hosts.find((host) => host.id === 'mvp') || null;
+}
+
+async function loadHosts() {
+  const result = await api('/api/hosts');
+  hosts = result.hosts;
+  const selector = document.querySelector('#host-profile');
+  selector.replaceChildren();
+  for (const host of hosts) {
+    const option = element('option', '', `${host.name} · ${host.host}${host.trusted ? '' : '（尚未信任）'}`);
+    option.value = host.id;
+    selector.append(option);
+  }
+  if (!hosts.some((host) => host.id === activeHostId)) activeHostId = 'mvp';
+  selector.value = activeHostId;
+  updateSelectedHost();
+}
+
+function updateSelectedHost() {
+  const host = selectedHost();
+  if (!host) return;
+  activeHostId = host.id;
+  document.querySelector('#service-status').textContent =
+    `${host.name} · ${host.trusted ? '主機指紋已信任' : '尚未信任主機指紋'}`;
+  document.querySelector('#status-message').textContent = host.trusted
+    ? `目前選擇：${host.name}（${host.host}）。`
+    : `目前選擇：${host.name}。請先核對新主機指紋，才能連線。`;
+}
+
+async function trustSelectedHost() {
+  const host = selectedHost();
+  if (!host) throw new Error('目前沒有可選的主機設定。');
+  if (host.id === 'mvp') throw new Error('MVP 主機信任設定受保護，不會在此流程變更。');
+  const answer = await openConfirmation({
+    title: `核對並信任 ${host.name}`, eyebrow: 'SSH 主機身分驗證',
+    paragraphs: [
+      { text: `目標：${host.username}@${host.host}。管理中心會掃描該主機公開的 ED25519 金鑰。` },
+      { text: '請先在該 Ubuntu VM 的主控台執行 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub，將 SHA256 指紋與下方掃描結果比對。只有完全相符才會儲存此主機專用的信任記錄。', note: true },
+      { text: '若目前開啟的是舊 VM，請勿把它的指紋登記成新主機；取消即可。' },
+    ],
+    fields: [{ name: 'fingerprint', label: 'Ubuntu 主控台顯示的 SHA256 指紋', placeholder: 'SHA256:...' }],
+    confirmText: '比對並信任此主機',
+    validate: (value) => /^SHA256:[A-Za-z0-9+/]{43}$/.test(value.fingerprint.trim())
+      ? '' : '請輸入完整的 SHA256: 指紋（不含尾端等號）。',
+  });
+  if (!answer) return;
+  const result = await api(`/api/hosts/${encodeURIComponent(host.id)}/trust`, {
+    method: 'POST', body: JSON.stringify({ fingerprint: answer.fingerprint.trim() }),
+  });
+  await loadHosts();
+  setPanel(`${host.name} 主機指紋已核對並分開儲存：${result.fingerprint}`, 'success');
+}
 
 function element(name, className, text) {
   const node = document.createElement(name);
@@ -88,15 +144,21 @@ function displayCompletedDeployment(operation) {
 }
 
 async function refreshStatus() {
+  const host = selectedHost();
+  if (!host) throw new Error('目前沒有可選的主機設定。');
+  if (!host.trusted) {
+    setPanel('此主機尚未完成 ED25519 指紋核對；請先使用「核對新主機指紋」。', 'error');
+    return;
+  }
   const credentials = await openConfirmation({
-    title: '查詢 Production 狀態', eyebrow: '唯讀查詢',
+    title: `查詢 ${host.name} 狀態`, eyebrow: '唯讀查詢',
     paragraphs: [
-      { text: '請輸入 Production 帳號與密碼。資料只用於這次唯讀狀態查詢，不會儲存。' },
-      { text: '查詢只會讀取部署狀態檔，並核對固定的 Production 主機指紋。若伺服器不允許密碼登入，查詢仍會失敗。', note: true },
+      { text: `目標主機：${host.username}@${host.host}。請輸入該主機的 SSH 帳號與密碼。資料只用於這次唯讀查詢，不會儲存。` },
+      { text: `主機指紋：${host.fingerprint}。此設定與其他主機分開保存。`, note: true },
     ],
     fields: [
-      { name: 'username', label: 'Production 帳號', value: 'zhe', autocomplete: 'username' },
-      { name: 'password', label: 'Production 密碼', type: 'password', autocomplete: 'current-password' },
+      { name: 'username', label: 'SSH 帳號', value: host.username, autocomplete: 'username' },
+      { name: 'password', label: 'SSH 密碼', type: 'password', autocomplete: 'current-password' },
     ],
     confirmText: '查詢狀態', validate: (value) => !value.username || !value.password ? '請輸入帳號與密碼。' : '',
   });
@@ -110,7 +172,7 @@ async function refreshStatus() {
   try {
     const [localResult, productionResult] = await Promise.allSettled([
       api('/api/status/local'),
-      api('/api/status/production', { method: 'POST', body: JSON.stringify(credentials) }),
+      api('/api/status/production', { method: 'POST', body: JSON.stringify({ ...credentials, hostId: host.id }) }),
     ]);
     if (localResult.status === 'fulfilled') {
       const local = localResult.value;
@@ -132,8 +194,8 @@ async function refreshStatus() {
       : { available: false, reason: productionResult.reason.message || '查詢失敗。' };
     displayProductionStatus(production);
     document.querySelector('#service-status').textContent = production.available
-      ? '管理中心已連線；正式環境狀態已更新'
-      : '管理中心已連線；正式環境查詢失敗';
+      ? `管理中心已連線；${host.name} 狀態已更新`
+      : `管理中心已連線；${host.name} 查詢失敗`;
     const localAvailable = localResult.status === 'fulfilled';
     document.querySelector('#status-message').textContent = localAvailable
       ? production.available ? '狀態已更新；Production 查詢為唯讀。' : `本機狀態已更新；Production 查詢未完成：${production.reason}`
@@ -159,7 +221,7 @@ async function refreshStatus() {
   }
 }
 
-function openConfirmation({ title, eyebrow = '確認操作', paragraphs = [], fields = [], checkbox, confirmText = '確認', validate }) {
+function openConfirmation({ title, eyebrow = '確認操作', paragraphs = [], fields = [], checkbox, checkboxes = [], confirmText = '確認', validate }) {
   return new Promise((resolve) => {
     dialogTitle.textContent = title;
     dialogEyebrow.textContent = eyebrow;
@@ -192,16 +254,15 @@ function openConfirmation({ title, eyebrow = '確認操作', paragraphs = [], fi
       dialogContent.append(label);
       controls.set(field.name, input);
     }
-    let checkInput = null;
-    if (checkbox) {
+    for (const item of [...(checkbox ? [checkbox] : []), ...checkboxes]) {
       const label = element('label', 'dialog-check');
-      checkInput = element('input');
-      checkInput.type = 'checkbox';
-      checkInput.name = checkbox.name;
-      const text = element('span', '', checkbox.label);
-      label.append(checkInput, text);
+      const input = element('input');
+      input.type = 'checkbox';
+      input.name = item.name;
+      const text = element('span', '', item.label);
+      label.append(input, text);
       dialogContent.append(label);
-      controls.set(checkbox.name, checkInput);
+      controls.set(item.name, input);
     }
     const errorNode = element('p', 'dialog-error', '');
     errorNode.setAttribute('role', 'alert');
@@ -288,7 +349,7 @@ const promptDetails = {
   }),
   'browser-acceptance': () => ({
     title: '完成網站人工驗收', eyebrow: '部署步驟 3',
-    paragraphs: [{ text: '部署已完成技術檢查。請開啟 http://175.183.34.91/ 手動驗收正式網站，確認正常後再輸入 PASS。' }, { text: '若驗收未通過，請取消；系統不會送出最終確認。', note: true }],
+    paragraphs: [{ text: '部署已完成技術檢查。請開啟部署入口顯示的網址，手動驗收目前所選主機，確認正常後再輸入 PASS。' }, { text: '若驗收未通過，請取消；系統不會送出最終確認。', note: true }],
     fields: [{ name: 'value', label: '人工驗收結果' }], confirmText: '送出驗收結果',
     validate: (value) => value.value === 'PASS' ? '' : '請輸入精確的 PASS。',
   }),
@@ -351,7 +412,7 @@ async function watchOperation(operationId) {
 }
 
 function setButtonsDisabled(disabled) {
-  document.querySelectorAll('.card-action, #refresh-status, #load-changes').forEach((button) => { button.disabled = disabled; });
+  document.querySelectorAll('.card-action, #refresh-status, #trust-host, #host-profile, #load-changes').forEach((button) => { button.disabled = disabled; });
   commitButton.disabled = disabled || currentChanges.filter((file) => !file.sensitive).length === 0;
 }
 
@@ -440,14 +501,16 @@ async function commitReviewedChanges() {
 }
 
 async function beginBackup() {
+  const host = selectedHost();
+  if (!host?.trusted) throw new Error('所選主機尚未完成指紋核對；未連線。');
   const credentials = await openConfirmation({
-    title: '連線查詢備份清單', eyebrow: 'Production 帳號驗證',
+    title: `連線查詢 ${host.name} 備份清單`, eyebrow: '主機帳號驗證',
     paragraphs: [
-      { text: '請輸入 Production SSH 帳號與密碼。密碼只用於本次清單查詢及備份操作，操作結束後會清除。' },
-      { text: '連線會核對固定的伺服器主機指紋；管理中心不會儲存密碼。', note: true },
+      { text: `目標主機：${host.username}@${host.host}。密碼只用於本次操作，結束後會清除。` },
+      { text: `已核對的主機指紋：${host.fingerprint}。管理中心不會儲存密碼。`, note: true },
     ],
     fields: [
-      { name: 'username', label: 'Production 帳號', value: 'zhe', autocomplete: 'username' },
+      { name: 'username', label: 'SSH 帳號', value: host.username, autocomplete: 'username' },
       { name: 'password', label: 'Production 密碼', type: 'password', autocomplete: 'current-password' },
     ],
     confirmText: '查詢備份清單',
@@ -456,7 +519,7 @@ async function beginBackup() {
   if (!credentials) return;
   let target;
   try {
-    target = await api('/api/backups', { method: 'POST', body: JSON.stringify(credentials) });
+    target = await api('/api/backups', { method: 'POST', body: JSON.stringify({ ...credentials, hostId: host.id }) });
   } catch (error) {
     credentials.password = '';
     throw error;
@@ -464,7 +527,7 @@ async function beginBackup() {
   const answer = await openConfirmation({
     title: '建立 Production 備份', eyebrow: '建立備份',
     paragraphs: [
-      { text: `目標資料庫：${target.database}` },
+      { text: `目標主機：${host.name}；資料庫：${target.database}` },
       { text: '備份包含資料庫與合約 PDF，完成後會驗證備份及 checksum。' },
       { text: '既有備份政策會刪除超過 30 天的備份檔及其 checksum。此操作會寫入 Production 資料。', note: true },
       { text: '請輸入 BACKUP 確認執行。' },
@@ -474,21 +537,23 @@ async function beginBackup() {
   });
   if (!answer) { credentials.password = ''; return; }
   try {
-    await beginOperation('backup', { confirmation: answer.value, credentials });
+    await beginOperation('backup', { confirmation: answer.value, credentials, hostId: host.id });
   } finally {
     credentials.password = '';
   }
 }
 
 async function verifyExistingBackup() {
+  const host = selectedHost();
+  if (!host?.trusted) throw new Error('所選主機尚未完成指紋核對；未連線。');
   const credentials = await openConfirmation({
-    title: '驗證既有備份', eyebrow: '唯讀檢查',
+    title: `驗證 ${host.name} 備份`, eyebrow: '唯讀檢查',
     paragraphs: [
-      { text: '輸入 Production SSH 帳號密碼後，選擇要檢查的備份。這只會讀取備份檔與 checksum，不會建立、刪除或修改檔案。' },
-      { text: '連線會核對固定的伺服器主機指紋；密碼不會儲存。', note: true },
+      { text: `目標主機：${host.username}@${host.host}。選擇備份後只會讀取檔案與 checksum。` },
+      { text: `已核對的主機指紋：${host.fingerprint}；密碼不會儲存。`, note: true },
     ],
     fields: [
-      { name: 'username', label: 'Production 帳號', value: 'zhe', autocomplete: 'username' },
+      { name: 'username', label: 'SSH 帳號', value: host.username, autocomplete: 'username' },
       { name: 'password', label: 'Production 密碼', type: 'password', autocomplete: 'current-password' },
     ],
     confirmText: '載入備份清單',
@@ -500,7 +565,7 @@ async function verifyExistingBackup() {
   operationOutput.replaceChildren();
   try {
     setPanel('正在唯讀載入 Production 備份清單…');
-    const target = await api('/api/backups', { method: 'POST', body: JSON.stringify(credentials) });
+    const target = await api('/api/backups', { method: 'POST', body: JSON.stringify({ ...credentials, hostId: host.id }) });
     if (!target.backups.length) {
       setPanel(`Production 資料庫 ${target.database} 目前沒有可供檢查的備份。`, 'error');
       return;
@@ -508,7 +573,7 @@ async function verifyExistingBackup() {
     const choice = await openConfirmation({
       title: '選擇要驗證的備份', eyebrow: '唯讀檢查',
       paragraphs: [
-        { text: `目標資料庫：${target.database}` },
+        { text: `目標主機：${host.name}；資料庫：${target.database}` },
         { text: '此操作只讀取所選備份及 checksum，驗證完成後會顯示明確結果。' },
       ],
       fields: [{ name: 'backupName', label: '備份檔案', options: target.backups.map((name) => ({ value: name, label: window.OperationsTime.formatBackupOption(name) })) }],
@@ -517,7 +582,7 @@ async function verifyExistingBackup() {
     if (!choice) return;
     setPanel(`正在唯讀驗證 ${choice.backupName}…`);
     const result = await api('/api/backups/verify', {
-      method: 'POST', body: JSON.stringify({ ...credentials, backupName: choice.backupName }),
+      method: 'POST', body: JSON.stringify({ ...credentials, backupName: choice.backupName, hostId: host.id }),
     });
     setPanel(`驗證成功：${result.backupName}；備份檔存在且 checksum 相符。`, 'success');
     operationOutput.replaceChildren(element('li', '', result.detail));
@@ -529,14 +594,17 @@ async function verifyExistingBackup() {
 }
 
 async function beginDeployment() {
+  const host = selectedHost();
+  if (!host?.trusted) throw new Error('所選主機尚未完成指紋核對；未連線。');
   const local = await api('/api/status/local');
   if (local.branch !== 'master' || !local.clean) {
     setPanel(`部署已阻擋：分支為「${local.branch}」，工作樹${local.clean ? '乾淨' : `有 ${local.changedCount} 項變更`}。請先處理本機 Git 狀態。`, 'error');
     return;
   }
   const answer = await openConfirmation({
-    title: '更新 Production 網站', eyebrow: '更新網站',
+    title: `更新 ${host.name} 網站`, eyebrow: '更新網站',
     paragraphs: [
+      { text: `部署目標：${host.username}@${host.host}（${host.siteUrl}）` },
       { text: `目標版本：${local.head}` },
       { text: '此流程會執行既有部署預檢；若 GitHub master 落後，之後會另外要求你確認是否推送。' },
       { text: '部署會更新 Production 網站服務，並可能建立正式備份。請先確認你要繼續。', note: true },
@@ -546,11 +614,70 @@ async function beginDeployment() {
     validate: (value) => value.value === 'DEPLOY' ? '' : '請輸入精確的 DEPLOY。',
   });
   if (!answer) return;
-  await beginOperation('deploy', { confirmation: answer.value });
+  await beginOperation('deploy', { confirmation: answer.value, hostId: host.id });
+}
+
+async function beginBootstrap() {
+  const host = selectedHost();
+  if (!host) throw new Error('目前沒有可選的主機設定。');
+  if (host.id === 'mvp') throw new Error('首次建置僅能選擇 PETS 或 PETS 2.0，MVP 主機受到保護。');
+  if (!host.trusted) throw new Error('請先核對新主機的 ED25519 指紋；尚未連線。');
+  const answer = await openConfirmation({
+    title: `首次建置 ${host.name}`, eyebrow: '新 Ubuntu 主機初始化',
+    paragraphs: [
+      { text: `唯一目標：${host.name}（${host.username}@${host.host}），網站網址 ${host.siteUrl}。` },
+      { text: '這會在所選主機安裝 Node.js 24、Git、MySQL、Nginx，建立空白正式資料庫、專案服務及初始管理者，並執行既有部署檢查。MVP profile 不可用此功能。' },
+      { text: '版本基準已盤點：MVP 為 Node.js 24.22.2、MySQL 8.4.13；腳本安裝 Node.js 24.x 與 Oracle MySQL 8.4 LTS，並驗證 major version。MySQL patch 更新時可能比 MVP 新，請確認仍在 8.4 LTS 系列。', note: true },
+      { text: 'GitHub Repository 目前公開，腳本透過無憑證 HTTPS 讀取；若日後改為 private，必須先設計安全的唯讀存取方式。' },
+      { text: '前提：Ubuntu 24.04 已完成安裝、SSH 服務可連線、管理端部署公鑰已加入此帳號，且此帳號具備 sudo 權限。請先從該 VM 主控台核對指紋。', note: true },
+      { text: 'sudo 密碼只經 SSH 加密輸入流傳送，不會儲存；初始管理者密碼只供 seed 使用，成功後會從 .env 移除，請自行妥善保存。' },
+      { text: '若主機已有資料庫表格或 .env，初始化會拒絕覆寫。確認這是可初始化的新主機後，輸入 BOOTSTRAP。' },
+    ],
+    fields: [
+      { name: 'sudoPassword', label: `SSH 帳號 ${host.username} 的 sudo 密碼`, type: 'password', autocomplete: 'current-password' },
+      { name: 'ownerUsername', label: '初始系統管理者帳號', value: 'owner', autocomplete: 'username' },
+      { name: 'ownerPassword', label: '初始系統管理者密碼（至少 16 字元）', type: 'password', autocomplete: 'new-password' },
+      { name: 'confirmation', label: '輸入 BOOTSTRAP 確認' },
+    ],
+    checkboxes: [
+      { name: 'runtimeConfirmed', label: '我已完成 MVP 版本盤點，並確認此 Bootstrap 的 Node.js／MySQL 版本適用於專案。' },
+      { name: 'githubReadConfirmed', label: '我已確認 GitHub Repository 可由此新主機讀取，且不需在腳本或 .env 中放入個人存取權杖。' },
+    ],
+    confirmText: '開始新主機建置',
+    validate: (value) => !value.sudoPassword ? '請輸入 sudo 密碼。'
+      : !value.runtimeConfirmed ? '請先完成版本盤點並確認執行環境相容。'
+        : !value.githubReadConfirmed ? '請先確認新主機可以安全讀取 GitHub Repository。'
+        : !/^[A-Za-z0-9._-]{1,64}$/.test(value.ownerUsername) ? '管理者帳號格式無效。'
+        : value.ownerPassword.length < 16 ? '初始管理者密碼至少需要 16 個字元。'
+        : /[\x00-\x1f\x7f]/.test(value.ownerPassword) ? '初始管理者密碼不可包含控制字元。'
+          : value.confirmation !== 'BOOTSTRAP' ? '請輸入精確的 BOOTSTRAP。' : '',
+  });
+  if (!answer) return;
+  try {
+    const operation = await api('/api/operations', {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'bootstrap',
+        hostId: host.id,
+        sudoPassword: answer.sudoPassword,
+        ownerUsername: answer.ownerUsername,
+        ownerPassword: answer.ownerPassword,
+        runtimeConfirmed: answer.runtimeConfirmed,
+        githubReadConfirmed: answer.githubReadConfirmed,
+        confirmation: answer.confirmation,
+      }),
+    });
+    await watchOperation(operation.id);
+  } finally {
+    answer.sudoPassword = '';
+    answer.ownerPassword = '';
+  }
 }
 
 async function beginRestore() {
-  const target = await api('/api/backups');
+  const host = selectedHost();
+  if (!host?.trusted) throw new Error('所選主機尚未完成指紋核對；未連線。');
+  const target = await api(`/api/backups?hostId=${encodeURIComponent(host.id)}`);
   if (target.backups.length === 0) {
     setPanel(`Production 資料庫 ${target.database} 的備份目錄目前沒有可用備份。`, 'error');
     return;
@@ -558,7 +685,7 @@ async function beginRestore() {
   const answer = await openConfirmation({
     title: '還原 Production 資料', eyebrow: '破壞性操作',
     paragraphs: [
-      { text: `目標資料庫：${target.database}` },
+      { text: `目標主機：${host.name}；資料庫：${target.database}` },
       { text: '還原會覆寫資料庫現有資料及合約 PDF。管理中心不會自動停止服務。', note: true },
       { text: '只有在 pets-backend.service 與 pets-frontend.service 都已停止時才可繼續。請先確認備份選擇正確。' },
     ],
@@ -587,6 +714,7 @@ async function beginRestore() {
     backupName: answer.backupName,
     servicesStopped: answer.servicesStopped,
     confirmation: second.confirmation,
+    hostId: host.id,
   });
 }
 
@@ -599,6 +727,11 @@ async function beginOperation(kind, payload) {
 }
 
 document.querySelector('#refresh-status').addEventListener('click', () => refreshStatus().catch((error) => setPanel(error.message, 'error')));
+document.querySelector('#host-profile').addEventListener('change', () => {
+  activeHostId = document.querySelector('#host-profile').value;
+  updateSelectedHost();
+});
+document.querySelector('#trust-host').addEventListener('click', () => trustSelectedHost().catch((error) => setPanel(error.message, 'error')));
 document.querySelector('#load-changes').addEventListener('click', () => loadChanges().catch((error) => { changeSummary.textContent = error.message; setPanel(error.message, 'error'); }));
 commitButton.addEventListener('click', () => commitReviewedChanges().catch((error) => setPanel(error.message, 'error')));
 document.querySelectorAll('[data-action]').forEach((button) => {
@@ -607,6 +740,7 @@ document.querySelectorAll('[data-action]').forEach((button) => {
     try {
       const action = button.dataset.action;
       if (action === 'status') await refreshStatus();
+      else if (action === 'bootstrap') await beginBootstrap();
       else if (action === 'backup') await beginBackup();
       else if (action === 'verify-backup') await verifyExistingBackup();
       else if (action === 'deploy') await beginDeployment();
@@ -614,5 +748,11 @@ document.querySelectorAll('[data-action]').forEach((button) => {
     } catch (error) {
       setPanel(error.message, 'error');
     }
+  });
+
+  loadHosts().catch((error) => {
+    setPanel(`無法載入主機設定：${error.message}`, 'error');
+    document.querySelector('#host-profile').disabled = true;
+    document.querySelector('#trust-host').disabled = true;
   });
 });

@@ -32,7 +32,11 @@
         <p class="service-label">本機服務</p>
         <p class="service-value" id="service-status">管理中心已連線</p>
       </div>
-      <button id="refresh-status" class="secondary-button service-query-button" type="button">查詢正式環境</button>
+      <label class="host-selector-label" for="host-profile">操作主機
+        <select id="host-profile" aria-label="選擇操作主機"></select>
+      </label>
+      <button id="trust-host" class="secondary-button" type="button">核對新主機指紋</button>
+      <button id="refresh-status" class="secondary-button service-query-button" type="button">查詢所選主機</button>
       <span class="service-badge"><span class="pulse"></span>本機服務運作中</span>
     </section>
 
@@ -42,7 +46,7 @@
           <p class="eyebrow">TOOLS</p>
           <h2 id="tools-title">管理工具</h2>
         </div>
-        <span class="tool-count">04 項工具</span>
+        <span class="tool-count">05 項工具</span>
       </div>
 
       <section class="status-grid" aria-label="專案及正式環境狀態">
@@ -65,7 +69,7 @@
           </dl>
         </article>
       </section>
-      <div class="status-actions"><span id="status-message" role="status">點選上方「查詢正式環境」即可更新 Production 狀態。</span></div>
+      <div class="status-actions"><span id="status-message" role="status">選擇主機後，點選「查詢所選主機」更新部署狀態。</span></div>
 
       <section class="review-card" aria-labelledby="review-title">
         <div class="section-heading">
@@ -82,6 +86,12 @@
       </section>
 
       <div class="tool-grid">
+        <article class="tool-card" data-feature="bootstrap">
+          <div class="card-top"><span class="tool-icon icon-update" aria-hidden="true">＋</span><span class="status-pill enabled-pill">僅限新主機</span></div>
+          <h3>首次建置 Ubuntu</h3>
+          <p>安裝網站執行環境、資料庫、Nginx 與服務，再部署目前 master。</p>
+          <button class="card-action" type="button" data-action="bootstrap">建置所選新主機 <span aria-hidden="true">→</span></button>
+        </article>
         <article class="tool-card" data-feature="update">
           <div class="card-top"><span class="tool-icon icon-update" aria-hidden="true">↻</span><span class="status-pill enabled-pill">需確認後執行</span></div>
           <h3>更新網站</h3>

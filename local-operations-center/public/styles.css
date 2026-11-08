@@ -31,6 +31,9 @@ h1 span { font-weight: 500; }
 .service-label { margin: 0 0 4px; color: #748077; font-size: 13px; }
 .service-value { margin: 0; color: #29382f; font-size: 15px; font-weight: 600; }
 .service-query-button { flex: 0 0 auto; }
+.host-selector-label { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; color: #64736a; font-size: 13px; font-weight: 600; }
+.host-selector-label select { max-width: 190px; min-height: 38px; padding: 7px 28px 7px 9px; border: 1px solid #dfe7df; border-radius: 8px; background: #fff; color: #20392d; font: inherit; }
+.service-panel button:disabled, .host-selector-label select:disabled { opacity: .6; }
 .service-badge { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border-radius: 20px; background: #edf7f0; color: #337c55; font-size: 13px; font-weight: 700; }
 .pulse { width: 6px; height: 6px; box-shadow: 0 0 0 3px #43a97820; }
 .tools-section { padding-top: 39px; }

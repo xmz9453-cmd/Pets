@@ -6,17 +6,19 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
+const { DEFAULTS: DEFAULT_HOSTS, HostRegistry } = require('./hosts');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
+const DEFAULT_HOST_ID = 'mvp';
 const PRODUCTION = Object.freeze({
-  host: '175.183.34.91',
-  username: 'zhe',
-  projectRoot: '/home/zhe/pets',
-  backupDirectory: '/home/zhe/pets-backups',
-  stateFile: '/home/zhe/pets-deploy-state/deployment.state',
+  host: DEFAULT_HOSTS[0].host,
+  username: DEFAULT_HOSTS[0].username,
+  projectRoot: DEFAULT_HOSTS[0].projectRoot,
+  backupDirectory: DEFAULT_HOSTS[0].backupDirectory,
+  stateFile: DEFAULT_HOSTS[0].stateFile,
 });
 const SAFE_BACKUP_NAME = /^pets_backup_\d{8}_\d{6}\.tar\.gz$/;
-const MUTATING_ACTIONS = new Set(['backup', 'deploy', 'restore']);
+const MUTATING_ACTIONS = new Set(['backup', 'bootstrap', 'deploy', 'restore']);
 const OPERATION_OUTPUT_LIMIT = 80;
 const OUTPUT_LINE_LIMIT = 1200;
 const GIT_MUTATION_TIMEOUT = 120000;
@@ -166,10 +168,13 @@ function createChild(command, args, { cwd, timeoutMs, onLine, onSpawn, rawStdout
 }
 
 class OperationsManager {
-  constructor({ root = PROJECT_ROOT, spawnImpl = spawn, clock = () => new Date() } = {}) {
+  constructor({ root = PROJECT_ROOT, spawnImpl = spawn, clock = () => new Date(), hostRegistry } = {}) {
     this.root = root;
     this.spawnImpl = spawnImpl;
     this.clock = clock;
+    this.hostRegistry = hostRegistry || new HostRegistry({
+      scanHostKey: (host) => this.scanHostKey(host),
+    });
     this.token = randomBytes(32).toString('hex');
     this.operations = new Map();
     this.activeMutationId = null;
@@ -419,46 +424,122 @@ class OperationsManager {
     return path.join(os.homedir(), '.ssh', 'pets3_production');
   }
 
-  async runSsh(remoteCommand, { timeoutMs = 30000, stdinText, onSpawn } = {}) {
+  async scanHostKey(host) {
+    if (process.platform !== 'win32') throw new Error('主機指紋管理僅支援此 Windows 管理中心。');
+    const windowsKeyscan = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh-keyscan.exe');
+    const candidates = [
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'usr', 'bin', 'ssh-keyscan.exe'),
+      windowsKeyscan,
+    ];
+    let sshKeyscan = null;
+    for (const candidate of candidates) {
+      try {
+        await fs.access(candidate);
+        sshKeyscan = candidate;
+        break;
+      } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'EACCES') throw error;
+      }
+    }
+    if (!sshKeyscan) throw new Error('找不到 Git for Windows 或 Windows OpenSSH 的 ssh-keyscan.exe。');
+    const result = await this.run(sshKeyscan, ['-T', '8', '-t', 'ed25519', '-p', '22', host], {
+      cwd: this.root, timeoutMs: 12000,
+    });
+    if (result.error || result.timedOut || result.exitCode !== 0 || !result.stdout.trim()) {
+      throw new Error('無法取得主機 ED25519 公開金鑰；尚未變更任何主機信任設定。');
+    }
+    return result.stdout;
+  }
+
+  async windowsShortPath(filePath) {
+    if (process.platform !== 'win32' || !/\s/.test(filePath)) return filePath;
+    const powershell = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const encodedPath = Buffer.from(filePath, 'utf16le').toString('base64');
+    const command = [
+      `$path = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedPath}'))`,
+      "Add-Type -TypeDefinition 'using System; using System.Text; using System.Runtime.InteropServices; public static class PetsOperationsPath { [DllImport(\"kernel32.dll\", CharSet=CharSet.Unicode, SetLastError=true)] public static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint bufferSize); }'",
+      '$buffer = New-Object System.Text.StringBuilder 32768',
+      '$length = [PetsOperationsPath]::GetShortPathName($path, $buffer, $buffer.Capacity)',
+      'if ($length -eq 0 -or $length -ge $buffer.Capacity) { exit 1 }',
+      '[Console]::Out.WriteLine($buffer.ToString())',
+    ].join('; ');
+    const result = await this.run(powershell, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+      Buffer.from(command, 'utf16le').toString('base64'),
+    ], { cwd: this.root, timeoutMs: 10000 });
+    const shortPath = String(result.stdout || '').trim();
+    if (result.error || result.timedOut || result.exitCode !== 0 || !shortPath || /\s/.test(shortPath)) {
+      throw new Error('無法將含空格的 SSH known_hosts 路徑轉換為 Windows 短路徑；未建立 SSH 連線。');
+    }
+    return shortPath;
+  }
+
+  listHosts() {
+    return this.hostRegistry.list();
+  }
+
+  async trustHostKey(hostId, fingerprint) {
+    if (hostId === 'mvp') throw new Error('MVP 主機信任設定受保護；請勿使用新主機註冊流程修改它。');
+    return this.hostRegistry.trust(hostId, fingerprint);
+  }
+
+  getHost(hostId = DEFAULT_HOST_ID) {
+    const host = this.hostRegistry.get(hostId);
+    if (!host.fingerprint) throw new Error('所選主機尚未完成指紋核對與信任；未建立 SSH 連線。');
+    return host;
+  }
+
+  async runSsh(remoteCommand, { timeoutMs = 30000, stdinText, onSpawn, hostId = DEFAULT_HOST_ID } = {}) {
     if (process.platform !== 'win32') throw new Error('正式環境操作僅支援此 Windows 管理中心。');
+    const host = this.getHost(hostId);
     const sshPath = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe');
     const key = this.sshKeyPath();
     await Promise.all([fs.access(sshPath), fs.access(key)]).catch(() => {
       throw new Error('找不到 Windows OpenSSH 或 Production 私鑰，未建立連線。');
     });
+    const knownHostsFile = hostId === 'mvp' ? null
+      : await this.windowsShortPath(this.hostRegistry.knownHostsFile(hostId));
     const args = [
       '-T', '-i', key,
       '-o', 'IdentitiesOnly=yes',
       '-o', 'StrictHostKeyChecking=yes',
       '-o', 'BatchMode=yes',
+      '-o', `HostKeyAlias=${host.hostKeyAlias}`,
+      ...(knownHostsFile ? ['-o', `UserKnownHostsFile=${knownHostsFile}`] : []),
       '-o', 'ConnectTimeout=15',
       '-o', 'ServerAliveInterval=15',
       '-o', 'ServerAliveCountMax=2',
-      `${PRODUCTION.username}@${PRODUCTION.host}`,
+      `${host.username}@${host.host}`,
       remoteCommand,
     ];
     return this.run(sshPath, args, { cwd: this.root, timeoutMs, stdinText, onSpawn });
   }
 
-  async runPasswordSshStatus(username, password, action = 'status', backupName) {
+  async runPasswordSshStatus(username, password, action = 'status', backupName, hostId = DEFAULT_HOST_ID) {
     if (process.platform !== 'win32') throw new Error('Production 密碼 SSH 操作僅支援此 Windows 管理中心。');
+    const host = this.getHost(hostId);
     const script = path.join(__dirname, 'ssh-password-status.ps1');
     await fs.access(script);
     const powershell = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const result = await this.run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], {
       cwd: __dirname, timeoutMs: action === 'backup' ? 60 * 60 * 1000 : 45000,
-      stdinText: JSON.stringify({ username, password, action, backupName }),
+      stdinText: JSON.stringify({
+        username, password, action, backupName,
+        host: host.host, fingerprint: host.fingerprint.slice('SHA256:'.length),
+        hostId: host.id, projectRoot: host.projectRoot, backupDirectory: host.backupDirectory,
+        stateFile: host.stateFile,
+      }),
     });
     return result;
   }
 
-  async getProductionStatus(credentials) {
+  async getProductionStatus(credentials, hostId = DEFAULT_HOST_ID) {
     let result;
     try {
       if (!credentials || typeof credentials.username !== 'string' || typeof credentials.password !== 'string') {
         throw new Error('請輸入 Production 帳號與密碼。');
       }
-      result = await this.runPasswordSshStatus(credentials.username, credentials.password);
+      result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'status', undefined, hostId);
     } catch (error) {
       return { available: false, reason: safeText(error.message || 'Production 狀態查詢未能啟動。') };
     }
@@ -523,20 +604,21 @@ class OperationsManager {
     }
   }
 
-  async listBackups(credentials) {
+  async listBackups(credentials, hostId = DEFAULT_HOST_ID) {
+    const host = this.getHost(hostId);
     let result;
     if (credentials && typeof credentials.username === 'string' && typeof credentials.password === 'string') {
-      result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'list-backups');
+      result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'list-backups', undefined, hostId);
     } else {
       const command = [
-        `cd -- ${quotePosix(PRODUCTION.projectRoot)} || exit 90`,
+        `cd -- ${quotePosix(host.projectRoot)} || exit 90`,
         "database='psop_one'",
         'if [ -r .env ]; then configured_database=$(sed -n \'s/^DB_NAME=//p\' .env | tail -n 1 | tr -d \'"\\r\'); if [ -n "$configured_database" ]; then database="$configured_database"; fi; fi',
         'if [[ ! "$database" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then exit 91; fi',
         'printf "DATABASE=%s\\n" "$database"',
-        `if [ -d ${quotePosix(PRODUCTION.backupDirectory)} ]; then find -- ${quotePosix(PRODUCTION.backupDirectory)} -mindepth 1 -maxdepth 1 -type f -name 'pets_backup_????????_??????.tar.gz' -printf '%f\\n' | sort -r; fi`,
+        `if [ -d ${quotePosix(host.backupDirectory)} ]; then find -- ${quotePosix(host.backupDirectory)} -mindepth 1 -maxdepth 1 -type f -name 'pets_backup_????????_??????.tar.gz' -printf '%f\\n' | sort -r; fi`,
       ].join('\n');
-      result = await this.runSsh(command);
+      result = await this.runSsh(command, { hostId });
     }
     if (result.timedOut) throw new Error('Production 備份清單查詢逾時。');
     if (result.error || result.exitCode !== 0) {
@@ -559,14 +641,14 @@ class OperationsManager {
     return { database: databases[0].slice('DATABASE='.length), backups: names };
   }
 
-  async verifyBackupArtifact(credentials, backupName) {
+  async verifyBackupArtifact(credentials, backupName, hostId = DEFAULT_HOST_ID) {
     if (!credentials || typeof credentials.username !== 'string' ||
         !/^[A-Za-z0-9._-]{1,64}$/.test(credentials.username) ||
         typeof credentials.password !== 'string' || credentials.password.length < 1 || credentials.password.length > 1024 ||
         !SAFE_BACKUP_NAME.test(String(backupName || ''))) {
       throw new Error('帳號、密碼或備份檔名無效；未執行檢查。');
     }
-    const result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'backup-verify', backupName);
+    const result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'backup-verify', backupName, hostId);
     if (result.timedOut || result.error) throw new Error('備份檢查連線中斷或逾時；結果未確認。');
     const marker = String(result.stdout || '').match(/(?:^|\r?\n)BACKUP_VERIFY=([A-Z_]+)(?:\r?\n|$)/)?.[1];
     if (result.exitCode !== 0 || marker !== 'PASS') {
@@ -613,11 +695,25 @@ class OperationsManager {
   async startOperation(kind, payload = {}) {
     if (this.gitMutation) throw new Error('目前已有本機版本操作執行中，請等待它完成。');
     if (!MUTATING_ACTIONS.has(kind)) throw new Error('不支援的管理操作。');
+    this.getHost(payload.hostId || DEFAULT_HOST_ID);
     if (kind === 'backup' && payload.confirmation !== 'BACKUP') throw new Error('備份確認文字不符；未執行操作。');
     if (kind === 'backup' && (!payload.credentials || typeof payload.credentials.username !== 'string' ||
         !/^[A-Za-z0-9._-]{1,64}$/.test(payload.credentials.username) ||
         typeof payload.credentials.password !== 'string' || payload.credentials.password.length < 1 || payload.credentials.password.length > 1024)) {
       throw new Error('請重新輸入有效的 Production 帳號與密碼；未執行備份。');
+    }
+    if (kind === 'bootstrap') {
+      const host = this.getHost(payload.hostId || DEFAULT_HOST_ID);
+      if (host.id === 'mvp') throw new Error('為保護現有主機，首次建置只允許 PETS 或 PETS 2.0 主機設定。');
+      if (payload.confirmation !== 'BOOTSTRAP' ||
+          typeof payload.sudoPassword !== 'string' || payload.sudoPassword.length < 1 ||
+          payload.sudoPassword.length > 1024 || /[\r\n\0]/.test(payload.sudoPassword) ||
+          typeof payload.ownerUsername !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(payload.ownerUsername) ||
+          typeof payload.ownerPassword !== 'string' || payload.ownerPassword.length < 16 ||
+          payload.ownerPassword.length > 1024 || /[\x00-\x1f\x7f]/.test(payload.ownerPassword) ||
+          payload.runtimeConfirmed !== true || payload.githubReadConfirmed !== true) {
+        throw new Error('首次建置資料無效；需完成版本相容與 GitHub 讀取方式確認，並提供有效的管理者帳密。');
+      }
     }
     if (kind === 'deploy' && payload.confirmation !== 'DEPLOY') throw new Error('部署確認文字不符；未執行操作。');
     if (kind === 'restore' && (!SAFE_BACKUP_NAME.test(String(payload.backupName || '')) ||
@@ -633,6 +729,8 @@ class OperationsManager {
       })
       .finally(() => {
         if (payload.credentials) payload.credentials.password = '';
+        if (typeof payload.sudoPassword === 'string') payload.sudoPassword = '';
+        if (typeof payload.ownerPassword === 'string') payload.ownerPassword = '';
         operation.confirmation = null;
         operation.pendingPrompt = null;
         operation.promptResolver = null;
@@ -644,15 +742,59 @@ class OperationsManager {
 
   async performOperation(operation, payload) {
     if (operation.kind === 'backup') await this.performBackup(operation, payload);
+    else if (operation.kind === 'bootstrap') await this.performBootstrap(operation, payload);
     else if (operation.kind === 'restore') await this.performRestore(operation, payload);
-    else await this.performDeployment(operation);
+    else await this.performDeployment(operation, payload);
+  }
+
+  async performBootstrap(operation, payload) {
+    const host = this.getHost(payload.hostId || DEFAULT_HOST_ID);
+    if (host.id === 'mvp') throw new Error('為保護現有主機，拒絕對 MVP 執行首次建置。');
+    const scriptPath = path.join(this.root, 'deploy', 'bootstrap-ubuntu.sh');
+    const script = await fs.readFile(scriptPath, 'utf8').then((contents) => contents.replace(/\r\n?/g, '\n')).catch(() => {
+      throw new Error('找不到 Ubuntu 首次建置腳本；未連線主機。');
+    });
+    const ownerPasswordBase64 = Buffer.from(payload.ownerPassword, 'utf8').toString('base64');
+    const scriptInput = [
+      `export PETS_BOOTSTRAP_USER=${quotePosix(host.username)}`,
+      `export PETS_BOOTSTRAP_HOST_ID=${quotePosix(host.id)}`,
+      `export PETS_BOOTSTRAP_OWNER_USERNAME=${quotePosix(payload.ownerUsername)}`,
+      `export PETS_BOOTSTRAP_OWNER_PASSWORD_B64=${quotePosix(ownerPasswordBase64)}`,
+      script,
+    ].join('\n');
+    operation.stage = '以已核對的 SSH 主機身分執行 Ubuntu 初始化';
+    this.addOutput(operation, `目標：${host.name}（${host.username}@${host.host}）。安裝過程不會套用到 MVP 主機。`);
+    const result = await this.runSsh("sudo -k -S -p '' bash -s", {
+      hostId: host.id,
+      timeoutMs: 3 * 60 * 60 * 1000,
+      stdinText: `${payload.sudoPassword}\n${scriptInput}`,
+      onSpawn: () => { operation.sideEffectStarted = true; },
+    });
+    for (const line of `${result.stdout}\n${result.stderr}`.split(/\r?\n/).filter(Boolean)) {
+      this.addOutput(operation, line);
+      const progress = /^\[bootstrap(?: SUCCESS)?\](.*)$/.exec(line);
+      if (progress) operation.stage = `首次建置：${safeText(progress[1]).trim()}`;
+    }
+    if (result.timedOut || result.error) {
+      throw new Error('Ubuntu 初始化連線中斷或逾時；主機可能已部分變更。請先查詢主機與服務狀態，不要直接重試。');
+    }
+    if (result.exitCode !== 0 || !/^\[bootstrap SUCCESS\]/m.test(result.stdout)) {
+      const error = new Error('Ubuntu 首次建置未回報成功；請依操作摘要檢查主機後再決定下一步。');
+      error.operationStatus = 'failed';
+      throw error;
+    }
+    operation.status = 'succeeded';
+    operation.stage = 'Ubuntu 首次建置與部署技術檢查完成';
+    operation.result = { hostId: host.id, siteUrl: host.siteUrl, technicalChecksPassed: true };
+    operation.summary = `${host.name} 首次建置完成；部署技術檢查通過。請人工驗收網站後，再執行既有部署確認。`;
   }
 
   async performBackup(operation, payload) {
     operation.stage = '連線並執行備份腳本';
     this.addOutput(operation, '正在連線並準備執行 Production 備份；請保持管理中心視窗開啟。');
     const credentials = payload.credentials;
-    const result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'backup');
+    const host = this.getHost(payload.hostId || DEFAULT_HOST_ID);
+    const result = await this.runPasswordSshStatus(credentials.username, credentials.password, 'backup', undefined, host.id);
     operation.sideEffectStarted = /(?:^|\r?\n)PROD_SSH_COMMAND_STARTED=1(?:\r?\n|$)/.test(result.stderr || '');
     for (const line of `${result.stdout}\n${result.stderr}`.split(/\r?\n/).filter((line) => line && line !== 'PROD_SSH_COMMAND_STARTED=1')) this.addOutput(operation, line);
     if (result.timedOut || result.error) {
@@ -672,12 +814,12 @@ class OperationsManager {
     const markers = result.stdout.split(/\r?\n/).filter((line) => line.startsWith('BACKUP_FILE='));
     if (markers.length !== 1) throw new Error('備份腳本沒有唯一回報備份檔；結果未確認。');
     const backupPath = markers[0].slice('BACKUP_FILE='.length);
-    const prefix = PRODUCTION.backupDirectory + '/';
+    const prefix = host.backupDirectory + '/';
     const name = backupPath.startsWith(prefix) ? backupPath.slice(prefix.length) : '';
     if (!SAFE_BACKUP_NAME.test(name)) throw new Error('備份檔路徑或檔名不符合允許格式；結果未確認。');
     operation.stage = '驗證備份檔與 checksum';
     try {
-      await this.verifyBackupArtifact(credentials, name);
+      await this.verifyBackupArtifact(credentials, name, host.id);
     } catch (verificationError) {
       const error = new Error(`${verificationError.message} 不能回報備份成功。`);
       error.operationStatus = 'failed';
@@ -690,20 +832,22 @@ class OperationsManager {
   }
 
   async performRestore(operation, payload) {
+    const host = this.getHost(payload.hostId || DEFAULT_HOST_ID);
     const name = String(payload.backupName || '');
     if (!SAFE_BACKUP_NAME.test(name)) throw new Error('所選備份檔名無效。');
     if (payload.servicesStopped !== true) throw new Error('必須先確認 pets-backend.service 與 pets-frontend.service 均已停止。');
     if (payload.confirmation !== 'RESTORE') throw new Error('還原確認文字不符；未送出還原命令。');
     operation.stage = '再次確認所選備份仍存在';
-    const exactPath = PRODUCTION.backupDirectory + '/' + name;
-    const check = await this.runSsh(`test -f ${quotePosix(exactPath)} && test ! -L ${quotePosix(exactPath)}`, { timeoutMs: 30000 });
+    const exactPath = host.backupDirectory + '/' + name;
+    const check = await this.runSsh(`test -f ${quotePosix(exactPath)} && test ! -L ${quotePosix(exactPath)}`, { timeoutMs: 30000, hostId: host.id });
     if (check.error || check.timedOut || check.exitCode !== 0) throw new Error('所選 Production 備份不存在或無法確認；未送出還原命令。');
     operation.stage = '執行正式資料還原';
     this.addOutput(operation, `正在連線並準備還原：${name}。請保持管理中心視窗開啟。`);
-    const restoreScript = PRODUCTION.projectRoot + '/deploy/restore.sh';
-    const remoteCommand = `cd -- ${quotePosix(PRODUCTION.projectRoot)} && printf '%s\\n' RESTORE | exec bash ${quotePosix(restoreScript)} ${quotePosix(exactPath)}`;
+    const restoreScript = host.projectRoot + '/deploy/restore.sh';
+    const remoteCommand = `cd -- ${quotePosix(host.projectRoot)} && printf '%s\\n' RESTORE | exec bash ${quotePosix(restoreScript)} ${quotePosix(exactPath)}`;
     const result = await this.runSsh(remoteCommand, {
       timeoutMs: 60 * 60 * 1000,
+      hostId: host.id,
       onSpawn: () => { operation.sideEffectStarted = true; },
     });
     for (const line of `${result.stdout}\n${result.stderr}`.split(/\r?\n/).filter(Boolean)) this.addOutput(operation, line);
@@ -764,7 +908,8 @@ class OperationsManager {
     return value;
   }
 
-  async performDeployment(operation) {
+  async performDeployment(operation, payload = {}) {
+    const host = this.getHost(payload.hostId || DEFAULT_HOST_ID);
     const status = await this.getLocalStatus();
     if (status.branch !== 'master') throw new Error(`目前分支為「${status.branch}」，部署只允許 master。`);
     if (!status.clean) throw new Error(`工作樹有 ${status.changedCount} 項未提交或未追蹤變更；既有部署安全檢查會阻擋部署。`);
@@ -778,7 +923,17 @@ class OperationsManager {
       throw new Error('找不到部署入口 deploy-production.ps1；未啟動部署或連線 Production。');
     }
     const parsed = { prompt: null, result: null };
-    const processHandle = createChild(powershell, ['-NoProfile', '-File', script, '-ExpectedCommit', status.head, '-WebControl'], {
+    const knownHostsFile = await this.windowsShortPath(
+      this.hostRegistry.knownHostsFile(host.id) || path.join(os.homedir(), '.ssh', 'known_hosts'),
+    );
+    const processHandle = createChild(powershell, [
+      '-NoProfile', '-File', script, '-ExpectedCommit', status.head, '-WebControl',
+      '-SshTarget', `${host.username}@${host.host}`,
+      '-ProductionRoot', host.projectRoot, '-StateFile', host.stateFile,
+      '-BackupDirectory', host.backupDirectory, '-SiteUrl', host.siteUrl,
+      '-HostKeyAlias', host.hostKeyAlias,
+      '-KnownHostsFile', knownHostsFile,
+    ], {
       cwd: this.root,
       timeoutMs: 3 * 60 * 60 * 1000,
       spawnImpl: this.spawnImpl,

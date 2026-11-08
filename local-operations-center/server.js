@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const http = require('node:http');
 const fs = require('node:fs');
@@ -55,6 +55,10 @@ async function readJsonBody(request, maxBytes = 8192) {
   }
 }
 
+function validHostId(value) {
+  return value === undefined || (typeof value === 'string' && /^[a-z0-9-]{1,32}$/.test(value));
+}
+
 function createServer({ host = HOST, port = PORT, operations = new OperationsManager() } = {}) {
   const server = http.createServer(async (request, response) => {
     if (request.method !== 'GET' && request.method !== 'HEAD' &&
@@ -67,8 +71,7 @@ function createServer({ host = HOST, port = PORT, operations = new OperationsMan
     let pathname;
     try {
       parsedUrl = new URL(request.url, `http://${HOST}:${PORT}`);
-      pathname = parsedUrl.pathname;
-      pathname = decodeURIComponent(pathname);
+      pathname = decodeURIComponent(parsedUrl.pathname);
     } catch {
       return sendText(response, 400, '網址格式無效。');
     }
@@ -83,12 +86,22 @@ function createServer({ host = HOST, port = PORT, operations = new OperationsMan
           originUrl.port === String(server.address()?.port || port);
       } catch {}
       if (request.headers.host !== authority || (request.method === 'POST' && !validOrigin) ||
-          (origin && !validOrigin) ||
-          request.headers['x-ops-token'] !== operations.token) {
+          (origin && !validOrigin) || request.headers['x-ops-token'] !== operations.token) {
         return sendJson(response, 403, { error: '本機管理頁面驗證失敗，請重新載入頁面。' });
       }
 
       try {
+        if (request.method === 'GET' && pathname === '/api/hosts') {
+          return sendJson(response, 200, { hosts: operations.listHosts() });
+        }
+        const hostTrustRoute = /^\/api\/hosts\/([a-z0-9-]{1,32})\/trust$/.exec(pathname);
+        if (request.method === 'POST' && hostTrustRoute) {
+          const body = await readJsonBody(request);
+          if (typeof body.fingerprint !== 'string' || body.fingerprint.length > 64) {
+            return sendJson(response, 400, { error: '請輸入從 Ubuntu 主機本機取得的 SHA256 ED25519 指紋。' });
+          }
+          return sendJson(response, 200, await operations.trustHostKey(hostTrustRoute[1], body.fingerprint));
+        }
         if (request.method === 'GET' && pathname === '/api/status/local') {
           return sendJson(response, 200, await operations.getLocalStatus());
         }
@@ -109,57 +122,89 @@ function createServer({ host = HOST, port = PORT, operations = new OperationsMan
               typeof body.message !== 'string' || typeof body.expectedHead !== 'string' || body.confirmation !== 'COMMIT') {
             return sendJson(response, 400, { error: '提交資料或確認內容無效，未執行提交。' });
           }
-          return sendJson(response, 200, await operations.commitAll(body.expectedHead, body.expectedFiles, body.message, body.confirmation));
+          return sendJson(response, 200, await operations.commitAll(
+            body.expectedHead, body.expectedFiles, body.message, body.confirmation,
+          ));
         }
         if (request.method === 'POST' && pathname === '/api/status/production') {
           const body = await readJsonBody(request);
-          if (typeof body.username !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(body.username) ||
+          if (!validHostId(body.hostId) || typeof body.username !== 'string' ||
+              !/^[A-Za-z0-9._-]{1,64}$/.test(body.username) ||
               typeof body.password !== 'string' || body.password.length < 1 || body.password.length > 1024) {
             return sendJson(response, 400, { error: '請輸入有效的 Production 帳號與密碼。' });
           }
           const credentials = { username: body.username, password: body.password };
-          try { return sendJson(response, 200, await operations.getProductionStatus(credentials)); }
-          finally { credentials.password = ''; }
+          try {
+            return sendJson(response, 200, await operations.getProductionStatus(credentials, body.hostId));
+          } finally {
+            credentials.password = '';
+          }
         }
         if (request.method === 'POST' && pathname === '/api/backups') {
           const body = await readJsonBody(request);
-          if (typeof body.username !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(body.username) ||
+          if (!validHostId(body.hostId) || typeof body.username !== 'string' ||
+              !/^[A-Za-z0-9._-]{1,64}$/.test(body.username) ||
               typeof body.password !== 'string' || body.password.length < 1 || body.password.length > 1024) {
             return sendJson(response, 400, { error: '請輸入有效的 Production 帳號與密碼。' });
           }
           const credentials = { username: body.username, password: body.password };
-          try { return sendJson(response, 200, await operations.listBackups(credentials)); }
-          finally { credentials.password = ''; }
+          try {
+            return sendJson(response, 200, await operations.listBackups(credentials, body.hostId));
+          } finally {
+            credentials.password = '';
+          }
         }
         if (request.method === 'POST' && pathname === '/api/backups/verify') {
           const body = await readJsonBody(request);
-          if (typeof body.username !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(body.username) ||
+          if (!validHostId(body.hostId) || typeof body.username !== 'string' ||
+              !/^[A-Za-z0-9._-]{1,64}$/.test(body.username) ||
               typeof body.password !== 'string' || body.password.length < 1 || body.password.length > 1024 ||
               typeof body.backupName !== 'string' || !SAFE_BACKUP_NAME.test(body.backupName)) {
             return sendJson(response, 400, { error: '帳號、密碼或備份檔名無效；未執行檢查。' });
           }
           const credentials = { username: body.username, password: body.password };
-          try { return sendJson(response, 200, await operations.verifyBackupArtifact(credentials, body.backupName)); }
-          finally { credentials.password = ''; }
+          try {
+            return sendJson(response, 200, await operations.verifyBackupArtifact(
+              credentials, body.backupName, body.hostId,
+            ));
+          } finally {
+            credentials.password = '';
+          }
         }
         if (request.method === 'GET' && pathname === '/api/backups') {
-          return sendJson(response, 200, await operations.listBackups());
+          const hostId = parsedUrl.searchParams.get('hostId') || undefined;
+          if (!validHostId(hostId)) return sendJson(response, 400, { error: '目標主機設定無效。' });
+          return sendJson(response, 200, await operations.listBackups(undefined, hostId));
         }
         if (request.method === 'POST' && pathname === '/api/operations') {
           const body = await readJsonBody(request);
-          if (!['backup', 'deploy', 'restore'].includes(body.kind)) {
+          if (!['backup', 'bootstrap', 'deploy', 'restore'].includes(body.kind)) {
             return sendJson(response, 400, { error: '不支援的操作。' });
+          }
+          if (!validHostId(body.hostId)) {
+            return sendJson(response, 400, { error: '目標主機設定無效；未執行操作。' });
           }
           if (body.kind === 'backup' && body.confirmation !== 'BACKUP') {
             return sendJson(response, 400, { error: '備份確認文字不符，未執行操作。' });
           }
           if (body.kind === 'backup' && (!body.credentials || typeof body.credentials.username !== 'string' ||
               !/^[A-Za-z0-9._-]{1,64}$/.test(body.credentials.username) ||
-              typeof body.credentials.password !== 'string' || body.credentials.password.length < 1 || body.credentials.password.length > 1024)) {
+              typeof body.credentials.password !== 'string' ||
+              body.credentials.password.length < 1 || body.credentials.password.length > 1024)) {
             return sendJson(response, 400, { error: '請輸入有效的 Production 帳號與密碼，未執行備份。' });
           }
           if (body.kind === 'deploy' && body.confirmation !== 'DEPLOY') {
             return sendJson(response, 400, { error: '部署確認文字不符，未執行操作。' });
+          }
+          if (body.kind === 'bootstrap' &&
+              (body.confirmation !== 'BOOTSTRAP' || typeof body.sudoPassword !== 'string' ||
+               body.sudoPassword.length < 1 || body.sudoPassword.length > 1024 ||
+               /[\r\n\0]/.test(body.sudoPassword) ||
+               typeof body.ownerUsername !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(body.ownerUsername) ||
+               typeof body.ownerPassword !== 'string' || body.ownerPassword.length < 16 ||
+               body.ownerPassword.length > 1024 || /[\x00-\x1f\x7f]/.test(body.ownerPassword) ||
+               body.runtimeConfirmed !== true || body.githubReadConfirmed !== true)) {
+            return sendJson(response, 400, { error: '首次建置資料無效；需完成版本相容與 GitHub 讀取方式確認，並提供有效的管理者帳密。' });
           }
           if (body.kind === 'restore' && (!SAFE_BACKUP_NAME.test(String(body.backupName || '')) ||
               body.servicesStopped !== true || body.confirmation !== 'RESTORE')) {
@@ -203,33 +248,31 @@ function createServer({ host = HOST, port = PORT, operations = new OperationsMan
         return sendText(response, 403, '禁止存取此路徑。');
       }
       fs.stat(resolvedFilePath, (statError, stat) => {
-        if (statError || !stat.isFile()) {
-        return sendText(response, 404, '找不到此頁面。');
-      }
-      const contentType = MIME_TYPES.get(path.extname(resolvedFilePath).toLowerCase());
-      if (!contentType) return sendText(response, 404, '找不到此頁面。');
+        if (statError || !stat.isFile()) return sendText(response, 404, '找不到此頁面。');
+        const contentType = MIME_TYPES.get(path.extname(resolvedFilePath).toLowerCase());
+        if (!contentType) return sendText(response, 404, '找不到此頁面。');
 
-      response.writeHead(200, {
-        'Content-Type': contentType,
-        'X-Content-Type-Options': 'nosniff',
-        'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-        'Referrer-Policy': 'no-referrer',
-        'Cache-Control': 'no-store',
-      });
-      if (request.method === 'HEAD') return response.end();
-      if (path.basename(resolvedFilePath) === 'index.html') {
-        fs.readFile(resolvedFilePath, 'utf8', (readError, html) => {
-          if (readError) return response.destroy();
-          response.end(html.replace('<!-- OPS_TOKEN -->', `<meta name="ops-token" content="${operations.token}">`));
+        response.writeHead(200, {
+          'Content-Type': contentType,
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+          'Referrer-Policy': 'no-referrer',
+          'Cache-Control': 'no-store',
         });
-        return;
-      }
-      const stream = fs.createReadStream(resolvedFilePath);
-      stream.on('error', () => {
-        if (!response.headersSent) sendText(response, 500, '讀取頁面時發生錯誤。');
-        else response.destroy();
-      });
-      stream.pipe(response);
+        if (request.method === 'HEAD') return response.end();
+        if (path.basename(resolvedFilePath) === 'index.html') {
+          fs.readFile(resolvedFilePath, 'utf8', (readError, html) => {
+            if (readError) return response.destroy();
+            response.end(html.replace('<!-- OPS_TOKEN -->', `<meta name="ops-token" content="${operations.token}">`));
+          });
+          return;
+        }
+        const stream = fs.createReadStream(resolvedFilePath);
+        stream.on('error', () => {
+          if (!response.headersSent) sendText(response, 500, '讀取頁面時發生錯誤。');
+          else response.destroy();
+        });
+        stream.pipe(response);
       });
     });
   });

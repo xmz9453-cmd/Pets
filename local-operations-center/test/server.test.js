@@ -20,7 +20,7 @@ test('Production 驗收時間與備份選項以台灣時間顯示', () => {
 test('正式環境查詢入口位於本機服務列，備份時間來源固定為台灣時區', () => {
   const html = fs.readFileSync(path.join(PUBLIC_ROOT, 'index.html'), 'utf8');
   const servicePanel = html.slice(html.indexOf('<section class="service-panel"'), html.indexOf('</section>', html.indexOf('<section class="service-panel"')));
-  assert.match(servicePanel, /id="refresh-status"[^>]*>查詢正式環境/);
+  assert.match(servicePanel, /id="refresh-status"[^>]*>查詢所選主機/);
   assert.equal((html.match(/id="refresh-status"/g) || []).length, 1);
 
   const backup = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy', 'backup.sh'), 'utf8');
@@ -141,6 +141,7 @@ test('四項功能提供固定操作入口，未啟用文案已移除', () => {
   for (const [name, action] of [['更新網站', 'deploy'], ['建立備份', 'backup'], ['還原資料', 'restore'], ['查看狀態', 'status']]) {
     assert.match(html, new RegExp(`<h3>${name}</h3>[\\s\\S]*?data-action="${action}"`));
   }
+  assert.match(html, /data-action="bootstrap"/);
   const js = fs.readFileSync(path.join(PUBLIC_ROOT, 'app.js'), 'utf8');
   for (const route of ['/api/status/local', '/api/status/production', '/api/backups', '/api/operations']) {
     assert.ok(js.includes(route), `missing fixed API route ${route}`);
@@ -186,6 +187,10 @@ test('API 需要本機來源與每次啟動權杖；拒絕任意操作與非法�
     assert.doesNotMatch(await statusResponse.text(), /mock-secret/);
     assert.equal((await post({ kind: 'arbitrary-command', command: 'not allowed' })).status, 400);
     assert.equal((await post({ kind: 'restore', backupName: '../../secret', servicesStopped: true, confirmation: 'RESTORE' })).status, 400);
+    assert.equal((await post({
+      kind: 'bootstrap', confirmation: 'BOOTSTRAP', hostId: 'pets',
+      sudoPassword: 'sudo', ownerUsername: 'owner', ownerPassword: 'a'.repeat(16),
+    })).status, 400);
     assert.deepEqual(calls, [{ productionStatus: { username: 'zhe', password: 'mock-secret' } }]);
   }, operations);
 });
@@ -299,8 +304,158 @@ test('Production 狀態查詢轉送 SSH.NET 命令輸出', () => {
   const helper = fs.readFileSync(path.join(__dirname, '..', 'ssh-password-status.ps1'), 'utf8');
   assert.match(helper, /\$commandOutput = \$sshCommand\.Execute\(\)\s*if \(\$commandOutput\) \{ \[Console\]::Out\.Write\(\$commandOutput\) \}/);
   assert.match(helper, /PETS_LIVE_COMMIT=%s/);
-  assert.match(helper, /git -C '\/home\/zhe\/pets' rev-parse --verify 'HEAD\^\{commit\}'/);
+  assert.match(helper, /git -C '\$projectRoot' rev-parse --verify 'HEAD\^\{commit\}'/);
   assert.doesNotMatch(helper, /\$result\.Output/);
+});
+
+test('主機指紋以每個 profile 獨立核對並保存，錯誤指紋不會寫入信任檔', async () => {
+  const { mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
+  const { tmpdir } = require('node:os');
+  const { createHash } = require('node:crypto');
+  const { HostRegistry } = require('../hosts');
+  const directory = await mkdtemp(path.join(tmpdir(), 'pets-host-profile-test-'));
+  try {
+    const key = Buffer.from('mock-ed25519-public-key');
+    const fingerprint = `SHA256:${createHash('sha256').update(key).digest('base64').replace(/=+$/, '')}`;
+    const registry = new HostRegistry({
+      configPath: path.join(directory, 'hosts.json'),
+      dataDirectory: directory,
+      scanHostKey: async () => `175.183.34.91 ssh-ed25519 ${key.toString('base64')}\n`,
+    });
+    await assert.rejects(registry.trust('pets', 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'), /不符/);
+    await assert.rejects(readFile(path.join(directory, 'known_hosts', 'pets.known_hosts')), { code: 'ENOENT' });
+    await registry.trust('pets', fingerprint);
+    assert.equal(registry.get('pets').fingerprint, fingerprint);
+    assert.match(await readFile(path.join(directory, 'known_hosts', 'pets.known_hosts'), 'utf8'), /^pets-new-host ssh-ed25519 /);
+    assert.notEqual(registry.knownHostsFile('pets'), registry.knownHostsFile('pets-2'));
+    assert.equal(registry.get('mvp').fingerprint, 'SHA256:YWPE7arZLZ8/67Ta6hLRdBj73eNdk24klgUo+rRBm6s');
+    assert.equal(registry.knownHostsFile('mvp'), null);
+    await writeFile(path.join(directory, 'hosts.json'), JSON.stringify([{
+      ...registry.get('mvp'), host: 'attacker.example',
+    }]));
+    const tamperedRegistry = new HostRegistry({
+      configPath: path.join(directory, 'hosts.json'),
+      dataDirectory: directory,
+      scanHostKey: async () => '',
+    });
+    assert.throws(() => tamperedRegistry.get('mvp'), /設定格式無效/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('主機金鑰掃描優先使用 Git for Windows 的 ssh-keyscan', () => {
+  const operations = fs.readFileSync(path.join(__dirname, '..', 'operations.js'), 'utf8');
+  const candidates = operations.slice(operations.indexOf('const candidates = ['), operations.indexOf('let sshKeyscan'));
+  const gitScanner = candidates.indexOf("'Git', 'usr', 'bin', 'ssh-keyscan.exe'");
+  const windowsScanner = candidates.indexOf('windowsKeyscan');
+  assert.ok(gitScanner < windowsScanner, 'Git for Windows scanner must be tried before the incompatible Windows scanner');
+});
+
+test('Windows SSH 路徑含空格時轉成短路徑供 OpenSSH 使用', async () => {
+  if (process.platform !== 'win32') return;
+  const { mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
+  const { tmpdir } = require('node:os');
+  const { OperationsManager } = require('../operations');
+  const directory = await mkdtemp(path.join(tmpdir(), 'pets short path test-'));
+  const manager = new OperationsManager();
+  const file = path.join(directory, 'known hosts');
+  try {
+    await writeFile(file, 'fixture');
+    const result = await manager.windowsShortPath(file);
+    assert.doesNotMatch(result, /\s/);
+    assert.match(result, /^[A-Za-z]:\\/);
+    assert.equal(await readFile(result, 'utf8'), 'fixture');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('新主機 bootstrap 被限制在已信任的非 MVP profile', async () => {
+  const { OperationsManager } = require('../operations');
+  const { DEFAULTS } = require('../hosts');
+  const registry = { get: (id) => DEFAULTS.find((profile) => profile.id === id) };
+  const manager = new OperationsManager({ hostRegistry: registry });
+  await assert.rejects(manager.startOperation('bootstrap', {
+    hostId: 'mvp', confirmation: 'BOOTSTRAP', sudoPassword: 'sudo',
+    ownerUsername: 'owner', ownerPassword: 'a'.repeat(16),
+  }), /只允許 PETS/);
+  await assert.rejects(manager.startOperation('bootstrap', {
+    hostId: 'pets', confirmation: 'BOOTSTRAP', sudoPassword: 'sudo',
+    ownerUsername: 'owner', ownerPassword: 'a'.repeat(16),
+  }), /尚未完成指紋核對/);
+});
+
+test('Ubuntu bootstrap 使用官方 MySQL 8.4 LTS 並驗證安裝版本', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..');
+  const bootstrap = fs.readFileSync(path.join(projectRoot, 'deploy', 'bootstrap-ubuntu.sh'), 'utf8');
+  assert.match(bootstrap, /repo\.mysql\.com\/RPM-GPG-KEY-mysql-2025/);
+  assert.match(bootstrap, /BCA43417C3B485DD128EC6D4B7B3B788A8D3785C/);
+  assert.match(bootstrap, /repo\.mysql\.com\/apt\/ubuntu\/ noble mysql-8\.4-lts/);
+  assert.match(bootstrap, /MYSQL_SERVER_CANDIDATE.*\^8\\\.4\\\./);
+  assert.match(bootstrap, /MYSQL_SERVER_VERSION.*\^8\\\.4\\\./);
+  assert.match(bootstrap, /AUTH_FOUNDATION_OWNER_PASSWORD=/);
+  assert.match(bootstrap, /sed -E -i .*AUTH_FOUNDATION_OWNER_/);
+});
+
+test('Ubuntu bootstrap 只為應用服務重啟配置已驗證的 sudo 權限', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..');
+  const bootstrap = fs.readFileSync(path.join(projectRoot, 'deploy', 'bootstrap-ubuntu.sh'), 'utf8');
+  assert.match(bootstrap, /\/etc\/sudoers\.d\/pets-service-restart/);
+  assert.match(bootstrap, /NOPASSWD: \/usr\/bin\/systemctl restart pets-backend\.service, \/usr\/bin\/systemctl restart pets-frontend\.service/);
+  assert.match(bootstrap, /visudo -cf "\$\{sudoers_tmp\}"/);
+  assert.match(bootstrap, /visudo -cf \/etc\/sudoers/);
+  assert.doesNotMatch(bootstrap, /NOPASSWD:\s+ALL/);
+});
+
+test('Ubuntu bootstrap 傳送前將 Windows CRLF 換行正規化為 LF', async () => {
+  const os = require('node:os');
+  const { OperationsManager } = require('../operations');
+  const { DEFAULTS } = require('../hosts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pets-bootstrap-test-'));
+  const deployDirectory = path.join(root, 'deploy');
+  fs.mkdirSync(deployDirectory);
+  fs.writeFileSync(path.join(deployDirectory, 'bootstrap-ubuntu.sh'), '#!/usr/bin/env bash\r\nset -euo pipefail\r\necho BOOTSTRAP\r\n');
+  try {
+    const manager = new OperationsManager({ root });
+    manager.getHost = () => DEFAULTS.find((host) => host.id === 'pets');
+    let sentInput;
+    manager.runSsh = async (_command, options) => {
+      sentInput = options.stdinText;
+      return { stdout: '[bootstrap SUCCESS] done\n', stderr: '', error: null, timedOut: false, exitCode: 0 };
+    };
+    const operation = { output: [], updatedAt: null };
+    await manager.performBootstrap(operation, {
+      hostId: 'pets', ownerPassword: 'a'.repeat(16), ownerUsername: 'owner', sudoPassword: 'sudo',
+    });
+    assert.doesNotMatch(sentInput, /\r/);
+    assert.match(sentInput, /set -euo pipefail\necho BOOTSTRAP/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('管理中心只允許透過本機驗證權杖讀取主機 profiles 與註冊核對指紋', async () => {
+  const calls = [];
+  const operations = {
+    token: 'host-test-token',
+    listHosts() { return [{ id: 'mvp', name: 'MVP', trusted: true }, { id: 'pets', name: 'PETS', trusted: false }]; },
+    async trustHostKey(id, fingerprint) { calls.push({ id, fingerprint }); return { id, fingerprint, trusted: true }; },
+  };
+  await withServer(async (base) => {
+    const denied = await fetch(`${base}/api/hosts`);
+    assert.equal(denied.status, 403);
+    const headers = { 'X-Ops-Token': operations.token, Origin: base };
+    const profiles = await fetch(`${base}/api/hosts`, { headers });
+    assert.equal(profiles.status, 200);
+    assert.deepEqual((await profiles.json()).hosts.map((host) => host.id), ['mvp', 'pets']);
+    const trusted = await fetch(`${base}/api/hosts/pets/trust`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fingerprint: 'SHA256:' + 'A'.repeat(43) }),
+    });
+    assert.equal(trusted.status, 200);
+    assert.deepEqual(calls, [{ id: 'pets', fingerprint: 'SHA256:' + 'A'.repeat(43) }]);
+  }, operations);
 });
 
 test('確認文字必須精確符合目前等待中的部署關卡', async () => {
@@ -379,6 +534,13 @@ test('confirmed deployment sends final state to the page and updates all SHA fie
   assert.match(app, /本機、GitHub、Production SHA 已一致/);
 });
 
+test('deployment console messages remain visible without analyzer Write-Host warnings', () => {
+  const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy-production.ps1'), 'utf8');
+  assert.match(deployment, /function Write-DeploymentMessage/);
+  assert.match(deployment, /\[Console\]::Out\.WriteLine\(\$Message\)/);
+  assert.doesNotMatch(deployment, /\bWrite-Host\b/);
+});
+
 test('Production deployment target preflight runs read-only before freeze authorization', () => {
   const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy-production.ps1'), 'utf8');
   const sshAuth = deployment.indexOf('Test-ProductionSshAuthentication');
@@ -396,9 +558,13 @@ test('Production deployment target preflight runs read-only before freeze author
   assert.match(targetFunction, /PETS_DEPLOY_PREFLIGHT_READY/);
   assert.match(targetFunction, /deploy\/deploy\.sh/);
 
+  const bootstrap = deployment.slice(deployment.indexOf('$bootstrapScript = @\''), deployment.indexOf("\n'@", deployment.indexOf('$bootstrapScript = @\'')));
+  assert.match(bootstrap, /bash "\$tmp_dir\/deploy\/deploy\.sh"/);
+  assert.match(bootstrap, /BACKUP_DIR='__BACKUP_DIRECTORY__'/);
+  assert.match(bootstrap, /STATE_DIR='__STATE_DIRECTORY__'/);
   const deployCommand = deployment.match(/\$deployCommand = "([^"]+)"/)?.[1];
   assert.ok(deployCommand);
-  assert.match(deployCommand, /deploy\/deploy\.sh/);
+  assert.match(deployCommand, /base64 -d/);
   assert.doesNotMatch(deployCommand, /ls-remote|remote_url/);
   const mutationStart = deployment.indexOf("$script:DeploymentPhase = 'production-deploy'");
   const mutationFlag = deployment.indexOf('$script:WebRemoteMutationStarted = $true', mutationStart);

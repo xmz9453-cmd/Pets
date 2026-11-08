@@ -23,6 +23,19 @@ try {
         [string]::IsNullOrEmpty($credentials.password) -or $credentials.password.Length -gt 1024) {
         throw '帳號或密碼格式無效。'
     }
+    $hostAddress = [string]$credentials.host
+    $expectedFingerprint = [string]$credentials.fingerprint
+    $projectRoot = [string]$credentials.projectRoot
+    $backupDirectory = [string]$credentials.backupDirectory
+    $stateFile = [string]$credentials.stateFile
+    if ($credentials.hostId -cnotmatch '\A[a-z0-9-]{1,32}\z' -or
+        $hostAddress -cnotmatch '\A[A-Za-z0-9.-]{1,253}\z' -or
+        $expectedFingerprint -cnotmatch '\A[A-Za-z0-9+/]{43}\z' -or
+        $projectRoot -cnotmatch '\A/[A-Za-z0-9._/-]+\z' -or
+        $backupDirectory -cnotmatch '\A/[A-Za-z0-9._/-]+\z' -or
+        $stateFile -cnotmatch '\A/[A-Za-z0-9._/-]+\z') {
+        throw '伺服器連線設定格式無效。'
+    }
     $action = if ($credentials.action) { [string]$credentials.action } else { 'status' }
     if ($action -cnotin @('status', 'list-backups', 'backup', 'backup-verify')) { throw '操作類型無效。' }
     $backupName = [string]$credentials.backupName
@@ -183,10 +196,10 @@ namespace PetsOperations
 
     $stage = 'AUTHENTICATION_SETUP'
     $authentication = New-Object Renci.SshNet.PasswordAuthenticationMethod($credentials.username, $credentials.password)
-    $connection = New-Object Renci.SshNet.ConnectionInfo('175.183.34.91', 22, $credentials.username, $authentication)
+    $connection = New-Object Renci.SshNet.ConnectionInfo($hostAddress, 22, $credentials.username, $authentication)
     $connection.Timeout = [TimeSpan]::FromSeconds(15)
     $client = New-Object Renci.SshNet.SshClient($connection)
-    $expected = 'YWPE7arZLZ8/67Ta6hLRdBj73eNdk24klgUo+rRBm6s'
+    $expected = $expectedFingerprint
     $stage = 'CONNECT'
     $hostKeyVerifier = [PetsOperations.SshHostKeyVerifier]::new($hostKeyState, $expected)
     $hostKeyEvent = $client.GetType().GetEvent('HostKeyReceived')
@@ -202,27 +215,27 @@ namespace PetsOperations
     switch ($action) {
         'status' {
             $remoteCommand = @(
-                'if [ -f /home/zhe/pets-deploy-state/deployment.state ]; then cat -- /home/zhe/pets-deploy-state/deployment.state; else exit 44; fi'
-                "live_commit=`$(git -C '/home/zhe/pets' rev-parse --verify 'HEAD^{commit}') || exit 45"
+                "if [ -f '$stateFile' ]; then cat -- '$stateFile'; else exit 44; fi"
+                "live_commit=`$(git -C '$projectRoot' rev-parse --verify 'HEAD^{commit}') || exit 45"
                 'if [[ ! "$live_commit" =~ ^[0-9a-f]{40}$ ]]; then exit 45; fi'
                 'printf ''PETS_LIVE_COMMIT=%s\n'' "$live_commit"'
             ) -join "`n"
         }
         'list-backups' {
             $remoteCommand = @(
-                'cd -- /home/zhe/pets || exit 90'
+                "cd -- '$projectRoot' || exit 90"
                 "database='psop_one'"
                 'if [ -r .env ]; then configured_database=$(sed -n ''s/^DB_NAME=//p'' .env | tail -n 1 | tr -d ''"\r''); if [ -n "$configured_database" ]; then database="$configured_database"; fi; fi'
                 'if [[ ! "$database" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then exit 91; fi'
                 'printf ''DATABASE=%s\n'' "$database"'
-                'if [ -d /home/zhe/pets-backups ]; then find -- /home/zhe/pets-backups -mindepth 1 -maxdepth 1 -type f -name ''pets_backup_????????_??????.tar.gz'' -printf ''%f\n'' | sort -r; fi'
+                "if [ -d '$backupDirectory' ]; then find -- '$backupDirectory' -mindepth 1 -maxdepth 1 -type f -name 'pets_backup_????????_??????.tar.gz' -printf '%f\n' | sort -r; fi"
             ) -join "`n"
         }
-        'backup' { $remoteCommand = "cd -- '/home/zhe/pets' && exec bash '/home/zhe/pets/deploy/backup.sh'" }
+        'backup' { $remoteCommand = "cd -- '$projectRoot' && exec bash '$projectRoot/deploy/backup.sh'" }
         'backup-verify' {
             $quotedName = "'" + $backupName + "'"
             $remoteCommand = @(
-                "cd -- '/home/zhe/pets-backups' || exit 90"
+                "cd -- '$backupDirectory' || exit 90"
                 "backup_name=$quotedName"
                 'sidecar="$backup_name.sha256"'
                 'if [ -L "$backup_name" ] || [ ! -f "$backup_name" ] || [ ! -s "$backup_name" ]; then printf ''BACKUP_VERIFY=ARCHIVE_INVALID\n''; exit 92; fi'

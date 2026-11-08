@@ -3,7 +3,22 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$ExpectedCommit,
-    [switch]$WebControl
+    [switch]$WebControl,
+    [ValidatePattern('^[a-z0-9-]{1,32}$')]
+    [ValidatePattern('^[A-Za-z0-9._-]{1,64}@[A-Za-z0-9.-]{1,253}$')]
+    [string]$SshTarget = 'zhe@175.183.34.91',
+    [ValidatePattern('^/[A-Za-z0-9._/-]+$')]
+    [string]$ProductionRoot = '/home/zhe/pets',
+    [ValidatePattern('^/[A-Za-z0-9._/-]+$')]
+    [string]$StateFile = '/home/zhe/pets-deploy-state/deployment.state',
+    [ValidatePattern('^/[A-Za-z0-9._/-]+$')]
+    [string]$BackupDirectory = '/home/zhe/pets-backups',
+    [ValidatePattern('^https?://[A-Za-z0-9.-]+(?::\d{1,5})?/?$')]
+    [string]$SiteUrl = 'http://175.183.34.91/',
+    [ValidatePattern('^[A-Za-z0-9.-]{1,253}$')]
+    [string]$HostKeyAlias = '175.183.34.91',
+    [ValidateNotNullOrEmpty()]
+    [string]$KnownHostsFile = (Join-Path $HOME '.ssh\known_hosts')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,13 +26,23 @@ $ErrorActionPreference = 'Stop'
 $script:RepositoryRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:SshPath = Join-Path $env:WINDIR 'System32\OpenSSH\ssh.exe'
 $script:SshKey = Join-Path $HOME '.ssh\pets3_production'
-$script:SshTarget = 'zhe@175.183.34.91'
-$script:ProductionRoot = '/home/zhe/pets'
-$script:StateFile = '/home/zhe/pets-deploy-state/deployment.state'
+$script:SshTarget = $SshTarget
+$script:ProductionRoot = $ProductionRoot
+$script:StateFile = $StateFile
+$script:StateDirectory = $StateFile.Substring(0, $StateFile.LastIndexOf('/'))
+$script:BackupDirectory = $BackupDirectory
+$script:SiteUrl = $SiteUrl.TrimEnd('/')
+$script:HostKeyAlias = $HostKeyAlias
+$script:KnownHostsFile = $KnownHostsFile
 $script:ExpectedRemoteUrl = 'https://github.com/xmz9453-cmd/Pets.git'
 $script:WebRemoteMutationStarted = $false
 $script:DeploymentPhase = 'preflight'
 $script:DeploymentFinalState = $null
+
+function Write-DeploymentMessage {
+    param([AllowEmptyString()][string]$Message)
+    [Console]::Out.WriteLine($Message)
+}
 
 function Read-DeploymentAuthorization {
     param(
@@ -31,12 +56,12 @@ function Read-DeploymentAuthorization {
         return Read-Host $Message
     }
 
-    $event = [pscustomobject]@{
+    $authorizationEvent = [pscustomobject]@{
         type = $Kind
         message = $Message
         expectedCommit = $PromptCommit.ToLowerInvariant()
     } | ConvertTo-Json -Compress
-    [Console]::Out.WriteLine("OPS_PROMPT:$event")
+    [Console]::Out.WriteLine("OPS_PROMPT:$authorizationEvent")
     [Console]::Out.Flush()
     $response = [Console]::In.ReadLine()
     if ($null -eq $response) {
@@ -54,7 +79,7 @@ function Write-DeploymentResultEvent {
         [bool]$RemoteMutationStarted = $false
     )
     if (-not $WebControl) { return }
-    $event = [pscustomobject]@{
+    $resultEvent = [pscustomobject]@{
         type = $Type
         status = if ($Type -eq 'deployment-complete') { 'SUCCESS' } else { $null }
         commit = $ExpectedCommit.ToLowerInvariant()
@@ -70,7 +95,7 @@ function Write-DeploymentResultEvent {
         remoteMutationStarted = $RemoteMutationStarted
         phase = $script:DeploymentPhase
     } | ConvertTo-Json -Compress
-    [Console]::Out.WriteLine("OPS_RESULT:$event")
+    [Console]::Out.WriteLine("OPS_RESULT:$resultEvent")
     [Console]::Out.Flush()
 }
 
@@ -141,6 +166,8 @@ function Invoke-ReadOnlySsh {
         '-T', '-i', $script:SshKey,
         '-o', 'IdentitiesOnly=yes',
         '-o', 'StrictHostKeyChecking=yes',
+        '-o', "HostKeyAlias=$script:HostKeyAlias",
+        '-o', "UserKnownHostsFile=`"$script:KnownHostsFile`"",
         '-o', 'BatchMode=yes',
         '-o', 'ConnectTimeout=15',
         '-o', 'ConnectionAttempts=1',
@@ -198,6 +225,8 @@ function Test-ProductionSshAuthentication {
     $output = & $script:SshPath -T -i $script:SshKey `
         -o IdentitiesOnly=yes `
         -o StrictHostKeyChecking=yes `
+        -o "HostKeyAlias=$script:HostKeyAlias" `
+        -o "UserKnownHostsFile=`"$script:KnownHostsFile`"" `
         -o BatchMode=yes `
         -o ConnectTimeout=15 `
         -o ServerAliveInterval=15 `
@@ -365,13 +394,13 @@ try {
 
     $remoteSha = Get-GitHubMasterSha
     if ($remoteSha -cne $ExpectedCommit) {
-        $ancestorOutput = & git.exe -C $script:RepositoryRoot merge-base --is-ancestor $remoteSha $ExpectedCommit 2>&1
+        $null = & git.exe -C $script:RepositoryRoot merge-base --is-ancestor $remoteSha $ExpectedCommit 2>&1
         $ancestorExitCode = $LASTEXITCODE
         if ($ancestorExitCode -ne 0) {
             throw "GitHub master ($remoteSha) is not an ancestor of expected commit ($ExpectedCommit); refusing deployment."
         }
 
-        Write-Host "GitHub master is behind the requested deployment commit."
+        Write-DeploymentMessage "GitHub master is behind the requested deployment commit."
         $pushAuthorization = Read-DeploymentAuthorization -Kind 'push-authorization' `
             -Message "To authorize pushing exactly $ExpectedCommit to origin/master, type that full SHA" `
             -ExpectedValue $ExpectedCommit
@@ -398,13 +427,13 @@ try {
         throw 'GitHub master changed before deployment; deployment stopped.'
     }
 
-    Write-Host 'Checking Production SSH key authentication before the final deployment confirmation.'
+    Write-DeploymentMessage 'Checking Production SSH key authentication before the final deployment confirmation.'
     Test-ProductionSshAuthentication
-    Write-Host 'Production SSH key authentication succeeded.'
+    Write-DeploymentMessage 'Production SSH key authentication succeeded.'
 
-    Write-Host 'Checking Production deployment target before the final deployment confirmation.'
+    Write-DeploymentMessage 'Checking Production deployment target before the final deployment confirmation.'
     Test-ProductionDeploymentTarget -ExpectedSha $ExpectedCommit
-    Write-Host 'Production deployment target is ready.'
+    Write-DeploymentMessage 'Production deployment target is ready.'
 
     $existingState = Get-ProductionState
     $recoverUnverified = $false
@@ -449,12 +478,14 @@ fi
 tmp_dir=$(mktemp -d /tmp/pets-deploy-bootstrap.XXXXXX)
 trap 'rm -rf -- "$tmp_dir"' EXIT
 git archive '__EXPECTED_SHA__' deploy | tar -x -C "$tmp_dir"
-exec 9>'/home/zhe/pets-deploy-state/deployment.lock'
+exec 9>'__STATE_DIRECTORY__/deployment.lock'
 if ! flock -n 9; then
   echo 'Another Production deployment process holds the lock.' >&2
   exit 43
 fi
 export PETS_DEPLOY_ROOT='__PRODUCTION_ROOT__'
+export BACKUP_DIR='__BACKUP_DIRECTORY__'
+export STATE_DIR='__STATE_DIRECTORY__'
 export PETS_DEPLOY_LOCK_HELD=1
 if bash "$tmp_dir/deploy/deploy.sh" '__EXPECTED_SHA__'__RECOVERY_ARGUMENT__; then
   deploy_exit_code=0
@@ -464,18 +495,22 @@ fi
 exit "$deploy_exit_code"
 '@
     $bootstrapScript = $bootstrapScript.Replace('__PRODUCTION_ROOT__', $script:ProductionRoot)
+    $bootstrapScript = $bootstrapScript.Replace('__STATE_DIRECTORY__', $script:StateDirectory)
+    $bootstrapScript = $bootstrapScript.Replace('__BACKUP_DIRECTORY__', $script:BackupDirectory)
     $bootstrapScript = $bootstrapScript.Replace('__EXPECTED_REMOTE_URL__', $script:ExpectedRemoteUrl)
     $bootstrapScript = $bootstrapScript.Replace('__EXPECTED_SHA__', $ExpectedCommit)
     $bootstrapScript = $bootstrapScript.Replace('__RECOVERY_ARGUMENT__', $recoveryArgument)
     $bootstrapBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bootstrapScript))
     $deployCommand = "printf '%s' '$bootstrapBase64' | base64 -d | bash -s"
 
-    Write-Host "Starting Production deployment for $ExpectedCommit."
+    Write-DeploymentMessage "Starting Production deployment for $ExpectedCommit."
     $script:DeploymentPhase = 'production-deploy'
     $script:WebRemoteMutationStarted = $true
     & $script:SshPath -T -i $script:SshKey `
         -o IdentitiesOnly=yes `
         -o StrictHostKeyChecking=yes `
+        -o "HostKeyAlias=$script:HostKeyAlias" `
+        -o "UserKnownHostsFile=`"$script:KnownHostsFile`"" `
         -o BatchMode=yes `
         -o ConnectTimeout=15 `
         -o ServerAliveInterval=15 `
@@ -489,11 +524,11 @@ exit "$deploy_exit_code"
     $deployedState = Get-ProductionState
     Assert-ProductionState -State $deployedState -ExpectedStatus 'DEPLOYED' -ExpectedVerification 'pending' -ExpectedSha $ExpectedCommit
 
-    Write-Host ''
-    Write-Host 'Deployment completed its technical checks. Perform Browser Acceptance manually at:'
-    Write-Host 'http://175.183.34.91/'
+    Write-DeploymentMessage ''
+    Write-DeploymentMessage 'Deployment completed its technical checks. Perform Browser Acceptance manually at:'
+    Write-DeploymentMessage $script:SiteUrl
     $acceptance = Read-DeploymentAuthorization -Kind 'browser-acceptance' `
-        -Message 'After Browser Acceptance passes, type PASS to continue' `
+        -Message "After Browser Acceptance passes at $script:SiteUrl, type PASS to continue" `
         -ExpectedValue 'PASS'
     if ($acceptance -cne 'PASS') {
         throw 'Browser Acceptance was not confirmed with PASS; remote confirmation was not called.'
@@ -511,6 +546,8 @@ exit "$deploy_exit_code"
         & $script:SshPath -T -i $script:SshKey `
             -o IdentitiesOnly=yes `
             -o StrictHostKeyChecking=yes `
+            -o "HostKeyAlias=$script:HostKeyAlias" `
+            -o "UserKnownHostsFile=`"$script:KnownHostsFile`"" `
             -o BatchMode=yes `
             -o ConnectTimeout=15 `
             -o ServerAliveInterval=15 `
@@ -519,10 +556,12 @@ exit "$deploy_exit_code"
     } else {
         $script:DeploymentPhase = 'production-confirmation'
         $confirmCommand = "cd $script:ProductionRoot && exec bash $script:ProductionRoot/deploy/confirm.sh"
-        Write-Host "Starting the existing Production confirmation script. It will request the separate remote input 'CONFIRM'."
+        Write-DeploymentMessage "Starting the existing Production confirmation script. It will request the separate remote input 'CONFIRM'."
         & $script:SshPath -tt -i $script:SshKey `
             -o IdentitiesOnly=yes `
             -o StrictHostKeyChecking=yes `
+            -o "HostKeyAlias=$script:HostKeyAlias" `
+            -o "UserKnownHostsFile=`"$script:KnownHostsFile`"" `
             -o BatchMode=yes `
             -o ConnectTimeout=15 `
             -o ServerAliveInterval=15 `
@@ -538,7 +577,7 @@ exit "$deploy_exit_code"
     Assert-ProductionState -State $finalState -ExpectedStatus 'SUCCESS' -ExpectedVerification 'PASS' -ExpectedSha $ExpectedCommit
     $script:DeploymentFinalState = $finalState
 
-    Write-Host "Production deployment verified: commit $ExpectedCommit, status SUCCESS, verification PASS."
+    Write-DeploymentMessage "Production deployment verified: commit $ExpectedCommit, status SUCCESS, verification PASS."
     Write-DeploymentResultEvent -Type 'deployment-complete' -RemoteMutationStarted $script:WebRemoteMutationStarted
 }
 catch {
