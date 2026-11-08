@@ -4,7 +4,6 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$ExpectedCommit,
     [switch]$WebControl,
-    [ValidatePattern('^[a-z0-9-]{1,32}$')]
     [ValidatePattern('^[A-Za-z0-9._-]{1,64}@[A-Za-z0-9.-]{1,253}$')]
     [string]$SshTarget = 'zhe@175.183.34.91',
     [ValidatePattern('^/[A-Za-z0-9._/-]+$')]
