@@ -1,17 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import {
-  API_BASE_URL,
-  createProduct,
-  deleteProduct,
-  disableProduct,
-  enableProduct,
-  getCurrentStaff,
-  getProducts,
-  removeProductImage,
-  updateProduct,
-  uploadProductImage,
-} from '../api/client';
+import { createProduct, deleteProduct, disableProduct, enableProduct, getCurrentStaff, getProducts, updateProduct } from '../api/client';
 
 const emptyForm = { name: '', price: '', unit: '件', stock_quantity: '0', is_sellable: true };
 
@@ -24,25 +13,11 @@ export default function ProductsPage() {
   const [products, setProducts] = useState([]);
   const [staff, setStaff] = useState(null);
   const [formData, setFormData] = useState(emptyForm);
-  const [imageFile, setImageFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState('');
-  const [removeExistingImage, setRemoveExistingImage] = useState(false);
-  const [existingImageUrl, setExistingImageUrl] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-
-  useEffect(() => {
-    if (!imageFile) {
-      setImagePreview('');
-      return undefined;
-    }
-    const url = URL.createObjectURL(imageFile);
-    setImagePreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [imageFile]);
 
   async function loadProducts() {
     try {
@@ -69,9 +44,6 @@ export default function ProductsPage() {
   function resetForm() {
     setFormData(emptyForm);
     setEditingId(null);
-    setImageFile(null);
-    setExistingImageUrl('');
-    setRemoveExistingImage(false);
   }
 
   function updateField(field, value) {
@@ -81,9 +53,6 @@ export default function ProductsPage() {
 
   function startEdit(product) {
     setEditingId(product.id);
-    setImageFile(null);
-    setExistingImageUrl(product.image_url || '');
-    setRemoveExistingImage(false);
     setFormData({ name: product.name, price: product.is_sellable ? String(Math.round(product.price)) : '', unit: product.unit || '件', stock_quantity: String(product.stock_quantity ?? 0), is_sellable: Boolean(product.is_sellable) });
     setError('');
     setSuccess('');
@@ -110,27 +79,17 @@ export default function ProductsPage() {
       setSaving(true);
       setError('');
       setSuccess('');
-      let productId = editingId;
       if (editingId) {
         await updateProduct(editingId, { name, price, unit: formData.unit.trim(), stock_quantity: stockQuantity, is_sellable: formData.is_sellable });
         setSuccess('商品已更新');
       } else {
-        const result = await createProduct({ name, price, unit: formData.unit.trim(), stock_quantity: stockQuantity, is_sellable: formData.is_sellable });
-        productId = result.product.id;
-        setEditingId(productId);
+        await createProduct({ name, price, unit: formData.unit.trim(), stock_quantity: stockQuantity, is_sellable: formData.is_sellable });
         setSuccess('商品已新增');
-      }
-      if (imageFile) {
-        await uploadProductImage(productId, imageFile);
-        setSuccess('商品與主圖已儲存');
-      } else if (editingId && removeExistingImage) {
-        await removeProductImage(productId);
-        setSuccess('商品圖片已移除');
       }
       resetForm();
       await loadProducts();
     } catch (submitError) {
-      setError(submitError.message || '商品儲存失敗，請確認資料後再試');
+      setError('商品儲存失敗，請確認資料後再試');
     } finally {
       setSaving(false);
     }
@@ -206,34 +165,6 @@ export default function ProductsPage() {
                 <input id="product-unit" className="form-control mb-3" maxLength="20" value={formData.unit} onChange={(event) => updateField('unit', event.target.value)} required />
                 <label className="form-label" htmlFor="product-stock">庫存數量</label>
                 <input id="product-stock" className="form-control mb-3" type="number" min="0" step="1" value={formData.stock_quantity} onChange={(event) => setFormData({ ...formData, stock_quantity: event.target.value })} required />
-                <label className="form-label" htmlFor="product-image">商品主圖</label>
-                <input
-                  id="product-image"
-                  className="form-control"
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0] || null;
-                    if (file && file.size > 2 * 1024 * 1024) {
-                      setError('商品圖片不可超過 2 MiB。');
-                      event.target.value = '';
-                      return;
-                    }
-                    setImageFile(file);
-                    setRemoveExistingImage(false);
-                    setError('');
-                  }}
-                  disabled={saving}
-                />
-                <small className="form-text d-block mb-2">支援 JPG、PNG、WebP，單張上限 2 MiB。</small>
-                {(imagePreview || (existingImageUrl && !removeExistingImage)) ? (
-                  <div className="mb-3">
-                    <img src={imagePreview || `${API_BASE_URL}${existingImageUrl}`} alt="商品主圖預覽" className="img-thumbnail" style={{ maxWidth: '180px', maxHeight: '140px', objectFit: 'cover' }} />
-                    {editingId && !imageFile ? (
-                      <button type="button" className="btn btn-sm btn-outline-danger d-block mt-2" onClick={() => setRemoveExistingImage(true)}>移除主圖</button>
-                    ) : null}
-                  </div>
-                ) : null}
                 <div className="d-flex gap-2">
                   <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? '儲存中...' : '儲存'}</button>
                   {editingId ? <button type="button" className="btn btn-outline-secondary" onClick={resetForm}>取消</button> : null}
@@ -248,10 +179,9 @@ export default function ProductsPage() {
               {loading ? <p className="text-muted mb-0">商品載入中...</p> : products.length === 0 ? <div className="alert alert-light border mb-0">目前沒有商品</div> : (
                 <div className="table-responsive">
                   <table className="table align-middle mb-0">
-                    <thead><tr><th>主圖</th><th>商品名稱</th><th>售價</th><th>庫存</th><th>狀態</th><th>操作</th></tr></thead>
+                    <thead><tr><th>商品名稱</th><th>售價</th><th>庫存</th><th>狀態</th><th>操作</th></tr></thead>
                     <tbody>{products.map((product) => (
                       <tr key={product.id}>
-                        <td>{product.image_url ? <img src={`${API_BASE_URL}${product.image_url}`} alt={`${product.name}主圖`} loading="lazy" style={{ width: '64px', height: '64px', objectFit: 'cover' }} className="rounded border" /> : <span className="text-muted small">無圖片</span>}</td>
                         <td>{product.name}<small className="d-block text-muted">{product.unit || '件'} / {product.is_sellable ? '可銷售' : '僅管理庫存'}</small></td>
                         <td>{product.is_sellable ? formatMoney(product.price) : '—'}</td>
                         <td>{product.stock_quantity ?? 0}</td>

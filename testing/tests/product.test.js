@@ -1,13 +1,10 @@
 const request = require('supertest');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 const envPath = path.resolve(__dirname, '..', '..', '.env');
 if (fs.existsSync(envPath)) fs.readFileSync(envPath, 'utf8').split(/\r?\n/).forEach((line) => { const match = line.match(/^\s*([^#=\s]+)\s*=\s*(.*)\s*$/); if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2]; });
 process.env.NODE_ENV = 'test'; process.env.DB_NAME = process.env.TEST_DB_NAME || 'psop_test';
-const productImageStorageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pets-product-image-test-'));
-process.env.PRODUCT_IMAGE_STORAGE_ROOT = productImageStorageRoot;
 
 const app = require('../../backend/src/app');
 const { setup } = require('../../database/scripts/setup');
@@ -42,7 +39,7 @@ async function createRoleStaff(roleCode) {
 describe('Product API', () => {
   beforeAll(async () => { await setup(); });
   beforeEach(async () => { await getPool().query('DELETE FROM order_items'); await getPool().query('DELETE FROM products'); await getPool().query('DELETE FROM auth_sessions'); });
-  afterAll(async () => { await closePool(); fs.rmSync(productImageStorageRoot, { recursive: true, force: true }); });
+  afterAll(async () => { await closePool(); });
 
   test('owner can create, read, list, update, disable, and enable a product', async () => {
     const agent = await login();
@@ -58,39 +55,6 @@ describe('Product API', () => {
     expect(updated.body.data.product).toMatchObject({ name: '護毛精', price: 350 });
     expect((await agent.post(`/api/products/${productId}/disable`)).body.data.product.status).toBe('INACTIVE');
     expect((await agent.post(`/api/products/${productId}/enable`)).body.data.product.status).toBe('ACTIVE');
-  });
-
-  test('owner can upload, replace, serve, and remove a validated product image', async () => {
-    const agent = await login();
-    const created = await agent.post('/api/products').send({ name: '主圖商品', price: 250 });
-    const productId = created.body.data.product.id;
-    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2]);
-    const firstUpload = await agent.post(`/api/products/${productId}/image`)
-      .attach('file', png, { filename: 'product.png', contentType: 'image/png' });
-    expect(firstUpload.status).toBe(201);
-    expect(firstUpload.body.data.product.image_url).toContain('/api/public/products/');
-
-    const imageResponse = await request(app).get(firstUpload.body.data.product.image_url);
-    expect(imageResponse.status).toBe(200);
-    expect(imageResponse.headers['content-type']).toContain('image/png');
-    expect(imageResponse.body).toEqual(png);
-
-    const invalidUpload = await agent.post(`/api/products/${productId}/image`)
-      .attach('file', Buffer.from('<svg></svg>'), { filename: 'product.svg', contentType: 'image/svg+xml' });
-    expect(invalidUpload.status).toBe(400);
-
-    const replacement = Buffer.from([255, 216, 255, 1, 2, 3]);
-    const replaced = await agent.post(`/api/products/${productId}/image`)
-      .attach('file', replacement, { filename: 'product.jpg', contentType: 'image/jpeg' });
-    expect(replaced.status).toBe(201);
-    expect(replaced.body.data.product.image_url).not.toBe(firstUpload.body.data.product.image_url);
-    expect((await request(app).get(firstUpload.body.data.product.image_url)).status).toBe(404);
-    expect((await request(app).get(replaced.body.data.product.image_url)).body).toEqual(replacement);
-
-    const removed = await agent.delete(`/api/products/${productId}/image`);
-    expect(removed.status).toBe(200);
-    expect(removed.body.data.product.image_url).toBeNull();
-    expect((await request(app).get(replaced.body.data.product.image_url)).status).toBe(404);
   });
 
   test('inventory-only products can omit a sale price and are excluded from sellable lists', async () => {

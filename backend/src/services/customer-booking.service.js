@@ -4,8 +4,6 @@ const customerRepository = require('../data/customer.repository');
 const petRepository = require('../data/pet.repository');
 const serviceRepository = require('../data/service.repository');
 const productRepository = require('../data/product.repository');
-const groomingPhotoRepository = require('../data/grooming-photo.repository');
-const groomingPhotoStorage = require('../utils/grooming-photo-storage');
 const publicBookingService = require('./public-booking.service');
 const {
   getCurrentCustomerMemberId,
@@ -96,110 +94,6 @@ async function listPets() {
   };
 }
 
-async function listCompletedGroomingRecords() {
-  const memberId = getCurrentCustomerMemberId();
-  const shopId = getCurrentShopId();
-  const [rows] = await getPool().query(
-    `SELECT g.id AS grooming_id, g.daily_operation_id, g.pet_id,
-            g.before_condition, g.actual_grooming_content, g.grooming_result, g.note,
-            a.id AS appointment_id, a.appointment_date, a.appointment_time,
-            p.name AS pet_name, p.species,
-            GROUP_CONCAT(DISTINCT s.name ORDER BY s.name SEPARATOR ', ') AS service_names
-     FROM groomings g
-     INNER JOIN daily_operations d ON d.id = g.daily_operation_id AND d.shop_id = g.shop_id
-     INNER JOIN appointments a ON a.id = d.appointment_id AND a.shop_id = g.shop_id
-     INNER JOIN pets p ON p.id = g.pet_id AND p.shop_id = g.shop_id
-     INNER JOIN pet_customer_relationships pcr
-       ON pcr.shop_id = g.shop_id AND pcr.pet_id = g.pet_id AND pcr.customer_id = a.customer_id
-     INNER JOIN customer_member_customers cmc
-       ON cmc.shop_id = a.shop_id AND cmc.customer_id = a.customer_id
-     LEFT JOIN appointment_pets ap
-       ON ap.shop_id = g.shop_id AND ap.appointment_id = a.id AND ap.pet_id = g.pet_id
-     LEFT JOIN appointment_pet_services aps
-       ON aps.shop_id = g.shop_id AND aps.appointment_pet_id = ap.id
-     LEFT JOIN services s ON s.id = aps.service_id AND s.shop_id = g.shop_id
-     WHERE g.shop_id = ? AND cmc.customer_member_id = ?
-       AND d.status = 'COMPLETED' AND a.status <> 'CANCELLED'
-       AND EXISTS (
-         SELECT 1
-         FROM appointment_pets eligible_ap
-         INNER JOIN appointment_pet_services eligible_aps
-           ON eligible_aps.shop_id = eligible_ap.shop_id AND eligible_aps.appointment_pet_id = eligible_ap.id
-         INNER JOIN services eligible_s
-           ON eligible_s.id = eligible_aps.service_id AND eligible_s.shop_id = eligible_aps.shop_id
-         WHERE eligible_ap.shop_id = g.shop_id AND eligible_ap.appointment_id = a.id
-           AND eligible_ap.pet_id = g.pet_id AND eligible_s.type = 'GROOMING'
-       )
-     GROUP BY g.id, g.daily_operation_id, g.pet_id, g.before_condition,
-              g.actual_grooming_content, g.grooming_result, g.note,
-              a.id, a.appointment_date, a.appointment_time, p.name, p.species
-     ORDER BY a.appointment_date DESC, a.appointment_time DESC, g.id DESC`,
-    [shopId, memberId],
-  );
-  const photos = await groomingPhotoRepository.listByGroomingIds(rows.map((row) => Number(row.grooming_id)));
-  const photosByGrooming = new Map();
-  for (const photo of photos) {
-    const groomingId = Number(photo.grooming_id);
-    if (!photosByGrooming.has(groomingId)) photosByGrooming.set(groomingId, []);
-    photosByGrooming.get(groomingId).push({
-      id: Number(photo.id),
-      category: photo.category,
-      image_url: `/api/public/member/grooming-photos/${Number(photo.id)}?shop_id=${shopId}`,
-    });
-  }
-  return {
-    records: rows.map((row) => ({
-      grooming_id: Number(row.grooming_id),
-      appointment_id: Number(row.appointment_id),
-      appointment_date: String(row.appointment_date).slice(0, 10),
-      appointment_time: String(row.appointment_time).slice(0, 8),
-      pet_id: Number(row.pet_id),
-      pet_name: row.pet_name,
-      species: row.species,
-      service_names: row.service_names || '',
-      before_condition: row.before_condition,
-      actual_grooming_content: row.actual_grooming_content,
-      grooming_result: row.grooming_result,
-      note: row.note,
-      photos: photosByGrooming.get(Number(row.grooming_id)) || [],
-    })),
-  };
-}
-
-async function getCompletedGroomingPhotoImage(photoIdValue) {
-  const photoId = Number(photoIdValue);
-  if (!Number.isSafeInteger(photoId) || photoId <= 0) {
-    throw createError('找不到美容照片。', 404, 'GROOMING_PHOTO_NOT_FOUND');
-  }
-  const [rows] = await getPool().query(
-    `SELECT gp.storage_key, gp.mime_type
-     FROM grooming_photos gp
-     INNER JOIN groomings g ON g.id = gp.grooming_id AND g.shop_id = gp.shop_id
-     INNER JOIN daily_operations d ON d.id = g.daily_operation_id AND d.shop_id = g.shop_id
-     INNER JOIN appointments a ON a.id = d.appointment_id AND a.shop_id = g.shop_id
-     INNER JOIN pet_customer_relationships pcr
-       ON pcr.shop_id = g.shop_id AND pcr.pet_id = g.pet_id AND pcr.customer_id = a.customer_id
-     INNER JOIN customer_member_customers cmc
-       ON cmc.shop_id = a.shop_id AND cmc.customer_id = a.customer_id
-     WHERE gp.id = ? AND gp.shop_id = ? AND cmc.customer_member_id = ?
-       AND d.status = 'COMPLETED' AND a.status <> 'CANCELLED'
-       AND EXISTS (
-         SELECT 1
-         FROM appointment_pets eligible_ap
-         INNER JOIN appointment_pet_services eligible_aps
-           ON eligible_aps.shop_id = eligible_ap.shop_id AND eligible_aps.appointment_pet_id = eligible_ap.id
-         INNER JOIN services eligible_s
-           ON eligible_s.id = eligible_aps.service_id AND eligible_s.shop_id = eligible_aps.shop_id
-         WHERE eligible_ap.shop_id = g.shop_id AND eligible_ap.appointment_id = a.id
-           AND eligible_ap.pet_id = g.pet_id AND eligible_s.type = 'GROOMING'
-       )
-     LIMIT 1`,
-    [photoId, getCurrentShopId(), getCurrentCustomerMemberId()],
-  );
-  if (!rows[0]) throw createError('找不到已完成的美容照片。', 404, 'GROOMING_PHOTO_NOT_FOUND');
-  return groomingPhotoStorage.readStoredImage(rows[0].storage_key, rows[0].mime_type);
-}
-
 async function listForSpecies(species) {
   const [services, addOnServices] = await Promise.all([
     serviceRepository.listActiveServicesBySpecies(species),
@@ -272,7 +166,7 @@ async function listProducts(speciesValue) {
   const species = String(speciesValue || '');
   if (!['DOG', 'CAT'].includes(species)) throw validation({ species: '請選擇寵物種類。' });
   const [rows] = await getPool().query(
-    `SELECT id, name, description, price, unit, species, stock_quantity, image_storage_key, updated_at
+    `SELECT id, name, description, price, unit, species, stock_quantity
      FROM products
     WHERE shop_id = ? AND status = 'ACTIVE' AND is_sellable = TRUE AND stock_quantity > 0
        AND (species = 'BOTH' OR species = ?)
@@ -280,18 +174,12 @@ async function listProducts(speciesValue) {
     [getCurrentShopId(), species],
   );
   return {
-    products: rows.map((row) => {
-      const { image_storage_key: imageStorageKey, ...product } = row;
-      return {
-        ...product,
-        id: Number(product.id),
-        price: Number(product.price),
-        stock_quantity: Number(product.stock_quantity),
-        image_url: imageStorageKey
-          ? `/api/public/products/${Number(product.id)}/image?shop_id=${getCurrentShopId()}&v=${encodeURIComponent(imageStorageKey)}`
-          : null,
-      };
-    }),
+    products: rows.map((row) => ({
+      ...row,
+      id: Number(row.id),
+      price: Number(row.price),
+      stock_quantity: Number(row.stock_quantity),
+    })),
   };
 }
 
@@ -557,9 +445,7 @@ async function getOnboardingToken(appointmentIdValue) {
 
 module.exports = {
   createBookingRequest,
-  getCompletedGroomingPhotoImage,
   getOnboardingToken,
-  listCompletedGroomingRecords,
   listAvailability,
   listPets,
   listProducts,
