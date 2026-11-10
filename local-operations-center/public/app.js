@@ -110,16 +110,15 @@ async function editSelectedHost() {
   if (!host) throw new Error('目前沒有可編輯的主機設定。');
   const answer = await openConfirmation({
     title: `編輯 ${host.name}`, eyebrow: 'Pets 主機設定',
-    paragraphs: [{ text: '更新 IP／網域會清除已信任的主機指紋，必須重新從 Ubuntu 主控台核對。Pets 部署目錄仍使用既有固定設定。' }],
+    paragraphs: [{ text: '更新 IP／網域會清除已信任的主機指紋，必須重新從 Ubuntu 主控台核對。Pets 部署固定使用 zhe 帳號與既有目錄，這些設定不會在此變更。' }],
     fields: [
       { name: 'name', label: '主機名稱', value: host.name },
       { name: 'host', label: 'IP 位址或網域', value: host.host, placeholder: '192.0.2.10 或 pets.example.com' },
-      { name: 'username', label: 'Ubuntu SSH 帳號', value: host.username },
       { name: 'siteUrl', label: '網站網址', value: host.siteUrl },
     ],
     confirmText: '儲存設定',
-    validate: (value) => !value.name.trim() || !value.host.trim() || !value.username.trim() || !value.siteUrl.trim()
-      ? '請完整輸入主機名稱、IP／網域、SSH 帳號與網址。' : '',
+    validate: (value) => !value.name.trim() || !value.host.trim() || !value.siteUrl.trim()
+      ? '請完整輸入主機名稱、IP／網域與網址。' : '',
   });
   if (!answer) return;
   const result = await api(`/api/hosts/${encodeURIComponent(host.id)}/update`, {
@@ -182,7 +181,7 @@ async function rotateSelectedSshKey() {
     validate: (value) => value.password.length > 0 ? '' : '請輸入 Ubuntu SSH 密碼。',
   });
   if (!answer) return;
-  const password = answer.password;
+  let password = answer.password;
   answer.password = '';
   const button = document.querySelector('#rotate-ssh-key');
   button.disabled = true;
@@ -193,6 +192,7 @@ async function rotateSelectedSshKey() {
     await loadSshKeyStatus();
     setPanel(result.warning || `${host.name} 專用 SSH 私鑰已在 Windows 啟用，Ubuntu 公鑰登入測試成功。`, result.warning ? 'unconfirmed' : 'success');
   } finally {
+    password = '';
     button.disabled = false;
   }
 }

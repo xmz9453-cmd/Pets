@@ -330,6 +330,12 @@ test('主機指紋以每個 profile 獨立核對並保存，錯誤指紋不會�
     assert.notEqual(registry.knownHostsFile('pets'), registry.knownHostsFile('pets-2'));
     assert.equal(registry.get('mvp').fingerprint, 'SHA256:YWPE7arZLZ8/67Ta6hLRdBj73eNdk24klgUo+rRBm6s');
     assert.equal(registry.knownHostsFile('mvp'), null);
+    const saveProfiles = registry.saveProfiles.bind(registry);
+    registry.saveProfiles = async () => { throw new Error('mock config write failure'); };
+    await assert.rejects(registry.trust('mvp', fingerprint), /mock config write failure/);
+    assert.equal(registry.get('mvp').fingerprint, 'SHA256:YWPE7arZLZ8/67Ta6hLRdBj73eNdk24klgUo+rRBm6s');
+    await assert.rejects(readFile(path.join(directory, 'known_hosts', 'mvp.known_hosts')), { code: 'ENOENT' });
+    registry.saveProfiles = saveProfiles;
     await registry.trust('mvp', fingerprint);
     const managedMvpKnownHosts = path.join(directory, 'known_hosts', 'mvp.known_hosts');
     await rm(managedMvpKnownHosts);
@@ -363,11 +369,14 @@ test('Pets 固定主機可編輯、移除及還原；更換位址清除信任且
     const registry = new HostRegistry({ configPath, dataDirectory: directory });
     const original = registry.get('pets');
     const updated = await registry.update('pets', {
-      name: '實體 Ubuntu', host: 'pets.example.com', username: 'ubuntu', siteUrl: 'https://pets.example.com/',
+      name: '實體 Ubuntu', host: 'pets.example.com', siteUrl: 'https://pets.example.com/',
     });
     assert.equal(updated.trusted, false);
     assert.equal(registry.get('pets').fingerprint, '');
     assert.equal(registry.get('pets').projectRoot, original.projectRoot);
+    await assert.rejects(registry.update('pets', {
+      name: '不支援帳號', host: 'pets.example.com', username: 'ubuntu', siteUrl: 'https://pets.example.com/',
+    }), /部署帳號不可變更/);
     await assert.rejects(registry.remove('pets', '錯誤名稱'), /確認文字不符/);
     await registry.remove('pets', '實體 Ubuntu');
     assert.deepEqual(registry.list().map((host) => host.id), ['mvp', 'pets-2']);
@@ -526,6 +535,9 @@ test('管理中心只允許透過本機驗證權杖讀取主機 profiles 與註�
     async trustHostKey(id, fingerprint) { calls.push({ id, fingerprint }); return { id, fingerprint, trusted: true }; },
     async getSshKeyStatus(id) { return { configured: false, hostId: id }; },
     async rotateSshKey(id, password) { calls.push({ id, password }); return { configured: true }; },
+    async updateHostProfile(id, profile) { calls.push({ id, profile }); return { ...profile, id }; },
+    async removeHostProfile(id, confirmation) { calls.push({ id, confirmation }); return { id, removed: true }; },
+    async restoreHostProfile(id) { calls.push({ id, restored: true }); return { id, restored: true }; },
   };
   await withServer(async (base) => {
     const denied = await fetch(`${base}/api/hosts`);
@@ -548,6 +560,27 @@ test('管理中心只允許透過本機驗證權杖讀取主機 profiles 與註�
     });
     assert.equal(rotated.status, 200);
     assert.deepEqual(calls[1], { id: 'pets', password: 'ubuntu-secret' });
+    const updated = await fetch(`${base}/api/hosts/pets/update`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Ubuntu Pets', host: 'pets.example.com', siteUrl: 'https://pets.example.com/' }),
+    });
+    assert.equal(updated.status, 200);
+    assert.equal((await updated.json()).host.name, 'Ubuntu Pets');
+    const removed = await fetch(`${base}/api/hosts/pets/remove`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmation: 'Ubuntu Pets' }),
+    });
+    assert.equal(removed.status, 200);
+    const restored = await fetch(`${base}/api/hosts/pets/restore`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(restored.status, 200);
+    assert.deepEqual(calls.slice(2), [
+      { id: 'pets', profile: { name: 'Ubuntu Pets', host: 'pets.example.com', siteUrl: 'https://pets.example.com/' } },
+      { id: 'pets', confirmation: 'Ubuntu Pets' },
+      { id: 'pets', restored: true },
+    ]);
   }, operations);
 });
 

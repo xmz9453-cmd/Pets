@@ -1,6 +1,6 @@
 'use strict';
 
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -164,31 +164,40 @@ class HostRegistry {
   async saveProfiles(profiles, removed = this.removed) {
     const directory = path.dirname(this.configPath);
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-    const temporaryConfig = `${this.configPath}.${process.pid}.tmp`;
-    await fs.writeFile(temporaryConfig, `${JSON.stringify({
-      profiles,
-      removed: [...removed],
-    }, null, 2)}\n`, {
-      encoding: 'utf8', mode: 0o600, flag: 'wx',
-    });
-    await fs.rename(temporaryConfig, this.configPath);
+    const temporaryConfig = `${this.configPath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(temporaryConfig, `${JSON.stringify({
+        profiles,
+        removed: [...removed],
+      }, null, 2)}\n`, {
+        encoding: 'utf8', mode: 0o600, flag: 'wx',
+      });
+      await fs.rename(temporaryConfig, this.configPath);
+    } catch (error) {
+      try { await fs.unlink(temporaryConfig); }
+      catch (cleanupError) {
+        if (cleanupError.code !== 'ENOENT') {
+          throw new Error(`無法儲存本機主機設定，且暫存檔清理失敗：${cleanupError.message}`);
+        }
+      }
+      throw error;
+    }
   }
 
   async update(id, input) {
     const profile = this.get(id);
     if (!input || typeof input.name !== 'string' || !input.name.trim() || input.name.length > 80 ||
         typeof input.host !== 'string' || !/^[A-Za-z0-9.-]{1,253}$/.test(input.host) ||
-        typeof input.username !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(input.username) ||
+        (input.username !== undefined && input.username !== profile.username) ||
         typeof input.siteUrl !== 'string' ||
         !/^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?\/?$/.test(input.siteUrl)) {
-      throw new Error('主機設定格式無效；請檢查名稱、IP／網域、SSH 帳號及網站網址。');
+      throw new Error('主機設定格式無效；請檢查名稱、IP／網域及網站網址。Pets 部署帳號不可變更。');
     }
     const changedHost = profile.host !== input.host;
     const updated = validateProfile({
       ...profile,
       name: input.name.trim(),
       host: input.host,
-      username: input.username,
       siteUrl: input.siteUrl,
       fingerprint: changedHost ? '' : profile.fingerprint,
     });
@@ -282,14 +291,32 @@ class HostRegistry {
       if (error.code !== 'ENOENT') throw error;
     }
     const keyLine = `${profile.hostKeyAlias} ssh-ed25519 ${[...matches.values()][0]}\n`;
-    const temporaryKeyFile = `${knownHosts}.${process.pid}.tmp`;
+    const temporaryKeyFile = `${knownHosts}.${process.pid}.${randomUUID()}.tmp`;
     await fs.writeFile(temporaryKeyFile, keyLine, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-    await fs.rename(temporaryKeyFile, knownHosts);
-
     const updated = validateProfile({ ...profile, fingerprint: expected });
     const next = new Map(this.profiles);
     next.set(id, updated);
-    await this.saveProfiles([...next.values()]);
+    let profilesSaved = false;
+    try {
+      await this.saveProfiles([...next.values()]);
+      profilesSaved = true;
+      await fs.rename(temporaryKeyFile, knownHosts);
+    } catch (error) {
+      if (profilesSaved) {
+        try {
+          await this.saveProfiles([...this.profiles.values()]);
+        } catch (rollbackError) {
+          throw new Error(`主機指紋信任未完成，且無法還原本機主機設定：${rollbackError.message}`);
+        }
+      }
+      try { await fs.unlink(temporaryKeyFile); }
+      catch (cleanupError) {
+        if (cleanupError.code !== 'ENOENT') {
+          throw new Error(`主機指紋信任未完成，暫存 known_hosts 也無法清除：${cleanupError.message}`);
+        }
+      }
+      throw error;
+    }
     this.profiles = next;
     return { id, fingerprint: expected, trusted: true };
   }
