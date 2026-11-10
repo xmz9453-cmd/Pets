@@ -35,9 +35,32 @@
       <label class="host-selector-label" for="host-profile">Pets 操作主機
         <select id="host-profile" aria-label="選擇操作主機"></select>
       </label>
-      <button id="trust-host" class="secondary-button" type="button">核對新主機指紋</button>
+      <button id="trust-host" class="secondary-button" type="button">核對／更新主機指紋</button>
       <button id="refresh-status" class="secondary-button service-query-button" type="button">查詢所選主機</button>
       <span class="service-badge"><span class="pulse"></span>本機服務運作中</span>
+    </section>
+
+    <section class="host-admin" aria-label="Pets 主機與 SSH 金鑰管理">
+      <div>
+        <p class="eyebrow">HOST &amp; SSH KEY</p>
+        <h2>主機設定與登入金鑰</h2>
+        <p class="host-admin-help">可調整固定 Pets 主機的名稱、IP／網域、SSH 帳號與網址；更換 IP／網域後必須重新核對主機指紋。此處不會新增其他系統。</p>
+      </div>
+      <div class="host-admin-actions">
+        <button id="edit-host" class="secondary-button" type="button">編輯所選主機</button>
+        <button id="remove-host" class="secondary-button" type="button">移除此主機</button>
+        <label class="host-selector-label" for="removed-host-profile">還原預設主機
+          <select id="removed-host-profile" aria-label="選擇要還原的預設主機"></select>
+        </label>
+        <button id="restore-host" class="secondary-button" type="button">還原</button>
+      </div>
+      <div class="ssh-key-controls">
+        <div>
+          <strong>Windows SSH 私鑰</strong>
+          <p id="ssh-key-status" class="host-admin-help">正在檢查本機金鑰…</p>
+        </div>
+        <button id="rotate-ssh-key" class="secondary-button" type="button">設定／輪替 SSH 金鑰</button>
+      </div>
     </section>
 
     <section class="tools-section" aria-labelledby="tools-title">

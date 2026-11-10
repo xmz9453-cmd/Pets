@@ -420,8 +420,38 @@ class OperationsManager {
     };
   }
 
-  sshKeyPath() {
+  sshKeyPath(hostId = DEFAULT_HOST_ID) {
+    return path.join(os.homedir(), '.ssh', `pets3_production-${hostId}`);
+  }
+
+  legacySshKeyPath() {
     return path.join(os.homedir(), '.ssh', 'pets3_production');
+  }
+
+  async activeSshKeyPath(hostId = DEFAULT_HOST_ID) {
+    const hostKey = this.sshKeyPath(hostId);
+    try {
+      await fs.access(hostKey);
+      return hostKey;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    const legacyKey = this.legacySshKeyPath();
+    try {
+      await fs.access(legacyKey);
+      return legacyKey;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      return hostKey;
+    }
+  }
+
+  sshKeygenPath() {
+    return path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh-keygen.exe');
+  }
+
+  sshPath() {
+    return path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe');
   }
 
   async scanHostKey(host) {
@@ -478,8 +508,23 @@ class OperationsManager {
     return this.hostRegistry.list();
   }
 
+  listRemovedHosts() {
+    return this.hostRegistry.listRemoved();
+  }
+
+  async updateHostProfile(hostId, profile) {
+    return this.hostRegistry.update(hostId, profile);
+  }
+
+  async removeHostProfile(hostId, confirmation) {
+    return this.hostRegistry.remove(hostId, confirmation);
+  }
+
+  async restoreHostProfile(hostId) {
+    return this.hostRegistry.restore(hostId);
+  }
+
   async trustHostKey(hostId, fingerprint) {
-    if (hostId === 'mvp') throw new Error('MVP 主機信任設定受保護；請勿使用新主機註冊流程修改它。');
     return this.hostRegistry.trust(hostId, fingerprint);
   }
 
@@ -492,13 +537,19 @@ class OperationsManager {
   async runSsh(remoteCommand, { timeoutMs = 30000, stdinText, onSpawn, hostId = DEFAULT_HOST_ID } = {}) {
     if (process.platform !== 'win32') throw new Error('正式環境操作僅支援此 Windows 管理中心。');
     const host = this.getHost(hostId);
-    const sshPath = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe');
-    const key = this.sshKeyPath();
+    const key = await this.activeSshKeyPath(hostId);
+    return this.runSshWithKey(remoteCommand, key, { timeoutMs, stdinText, onSpawn, hostId, host });
+  }
+
+  async runSshWithKey(remoteCommand, key, { timeoutMs = 30000, stdinText, onSpawn, hostId = DEFAULT_HOST_ID, host } = {}) {
+    if (process.platform !== 'win32') throw new Error('正式環境操作僅支援此 Windows 管理中心。');
+    const target = host || this.getHost(hostId);
+    const sshPath = this.sshPath();
     await Promise.all([fs.access(sshPath), fs.access(key)]).catch(() => {
       throw new Error('找不到 Windows OpenSSH 或 Production 私鑰，未建立連線。');
     });
-    const knownHostsFile = hostId === 'mvp' ? null
-      : await this.windowsShortPath(this.hostRegistry.knownHostsFile(hostId));
+    const managedKnownHosts = this.hostRegistry.knownHostsFile(hostId);
+    const knownHostsFile = managedKnownHosts ? await this.windowsShortPath(managedKnownHosts) : null;
     const args = [
       '-T', '-i', key,
       '-o', 'IdentitiesOnly=yes',
@@ -509,13 +560,13 @@ class OperationsManager {
       '-o', 'ConnectTimeout=15',
       '-o', 'ServerAliveInterval=15',
       '-o', 'ServerAliveCountMax=2',
-      `${host.username}@${host.host}`,
+      `${target.username}@${target.host}`,
       remoteCommand,
     ];
     return this.run(sshPath, args, { cwd: this.root, timeoutMs, stdinText, onSpawn });
   }
 
-  async runPasswordSshStatus(username, password, action = 'status', backupName, hostId = DEFAULT_HOST_ID) {
+  async runPasswordSshStatus(username, password, action = 'status', backupName, hostId = DEFAULT_HOST_ID, publicKey) {
     if (process.platform !== 'win32') throw new Error('Production 密碼 SSH 操作僅支援此 Windows 管理中心。');
     const host = this.getHost(hostId);
     const script = path.join(__dirname, 'ssh-password-status.ps1');
@@ -527,10 +578,225 @@ class OperationsManager {
         username, password, action, backupName,
         host: host.host, fingerprint: host.fingerprint.slice('SHA256:'.length),
         hostId: host.id, projectRoot: host.projectRoot, backupDirectory: host.backupDirectory,
-        stateFile: host.stateFile,
+        stateFile: host.stateFile, publicKey,
       }),
     });
     return result;
+  }
+
+  async getSshKeyStatus(hostId = DEFAULT_HOST_ID) {
+    this.hostRegistry.get(hostId);
+    const privateKey = await this.activeSshKeyPath(hostId);
+    let exists = false;
+    try {
+      await fs.access(privateKey);
+      exists = true;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    let publicKey = null;
+    if (exists) publicKey = await this.readSshPublicKey(privateKey);
+    return { configured: exists, path: privateKey, publicKey };
+  }
+
+  async readSshPublicKey(privateKey) {
+    const publicPath = `${privateKey}.pub`;
+    try {
+      const content = (await fs.readFile(publicPath, 'utf8')).trim();
+      return this.validateSshPublicKey(content);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    const result = await this.run(this.sshKeygenPath(), ['-y', '-f', privateKey], {
+      cwd: this.root, timeoutMs: 15000,
+    });
+    if (result.error || result.timedOut || result.exitCode !== 0) {
+      throw new Error('無法從目前 Windows 私鑰取得公鑰；若私鑰有口令或檔案無效，請先處理後再輪替。');
+    }
+    return this.validateSshPublicKey(String(result.stdout || '').trim());
+  }
+
+  validateSshPublicKey(value) {
+    const parts = String(value || '').trim().split(/\s+/);
+    if (parts.length < 2 || parts[0] !== 'ssh-ed25519' || !/^[A-Za-z0-9+/]+={0,2}$/.test(parts[1])) {
+      throw new Error('SSH 公鑰格式無效；只接受 ED25519 公鑰。');
+    }
+    const decoded = Buffer.from(parts[1], 'base64');
+    if (decoded.length < 32 || decoded.toString('base64').replace(/=+$/, '') !== parts[1].replace(/=+$/, '')) {
+      throw new Error('SSH 公鑰資料格式無效。');
+    }
+    return `ssh-ed25519 ${parts[1]}`;
+  }
+
+  async securePrivateKey(privateKey) {
+    const systemDirectory = path.join(process.env.WINDIR || 'C:\\Windows', 'System32');
+    const identity = await this.run(path.join(systemDirectory, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], {
+      cwd: this.root, timeoutMs: 10000,
+    });
+    const accountSid = /"?(S-1-(?:\d+-)*\d+)"?\s*$/.exec(String(identity.stdout || '').trim())?.[1];
+    if (identity.error || identity.timedOut || identity.exitCode !== 0 ||
+        !accountSid) {
+      throw new Error('無法確認目前 Windows 帳號；未切換使用新私鑰。');
+    }
+    const result = await this.run(path.join(systemDirectory, 'icacls.exe'), [
+      privateKey, '/inheritance:r', '/grant:r', `*${accountSid}:(F)`,
+    ], { cwd: this.root, timeoutMs: 15000 });
+    if (result.error || result.timedOut || result.exitCode !== 0) {
+      throw new Error('無法限制新私鑰的 Windows 檔案權限；未切換使用此金鑰。');
+    }
+  }
+
+  async sharedLegacyKeyStillNeeded(hostId, host) {
+    for (const profile of this.hostRegistry.list()) {
+      if (profile.id === hostId || profile.host !== host.host || profile.username !== host.username) continue;
+      try {
+        await fs.access(this.sshKeyPath(profile.id));
+      } catch (error) {
+        if (error.code === 'ENOENT') return true;
+        throw error;
+      }
+    }
+    return false;
+  }
+
+  async rotateSshKey(hostId, password) {
+    if (process.platform !== 'win32') throw new Error('SSH 金鑰管理僅支援此 Windows 管理中心。');
+    const host = this.getHost(hostId);
+    const keyPath = this.sshKeyPath(hostId);
+    const legacyKeyPath = this.legacySshKeyPath();
+    const sshDirectory = path.dirname(keyPath);
+    await fs.mkdir(sshDirectory, { recursive: true });
+    const nextKey = `${keyPath}.next-${randomUUID()}`;
+    const nextPublicPath = `${nextKey}.pub`;
+    const suffix = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+    const previousKey = `${keyPath}.retired-${suffix}`;
+    const previousPublic = `${previousKey}.pub`;
+    let oldPublicKey = null;
+    let oldKeyMoved = false;
+    let oldPublicMoved = false;
+    let newKeyInstalled = false;
+    let remoteKeyInstallAttempted = false;
+    let rotationCompleted = false;
+    try {
+      let existingKeyPath;
+      try {
+        existingKeyPath = await this.activeSshKeyPath(hostId);
+        await fs.access(existingKeyPath);
+        oldPublicKey = await this.readSshPublicKey(existingKeyPath);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        existingKeyPath = null;
+      }
+
+      const generated = await this.run(this.sshKeygenPath(), [
+        '-q', '-t', 'ed25519', '-N', '', '-C', `pets-operations-${hostId}`, '-f', nextKey,
+      ], { cwd: this.root, timeoutMs: 30000 });
+      if (generated.error || generated.timedOut || generated.exitCode !== 0) {
+        throw new Error('Windows 無法產生新的 ED25519 SSH 金鑰；目前金鑰未變更。');
+      }
+      await this.securePrivateKey(nextKey);
+      const newPublicKey = this.validateSshPublicKey((await fs.readFile(nextPublicPath, 'utf8')).trim());
+      remoteKeyInstallAttempted = true;
+      const installed = await this.runPasswordSshStatus(host.username, password, 'install-key', undefined, hostId, newPublicKey);
+      if (installed.error || installed.timedOut || installed.exitCode !== 0) {
+        throw new Error('Ubuntu 未確認安裝新公鑰；目前 Windows 私鑰未變更。請確認 SSH、密碼登入與主機指紋。');
+      }
+
+      const verified = await this.runSshWithKey('printf PETS_SSH_KEY_AUTH_OK', nextKey, {
+        hostId,
+        host,
+        timeoutMs: 20000,
+      });
+      if (verified.error || verified.timedOut || verified.exitCode !== 0 ||
+          String(verified.stdout || '').trim() !== 'PETS_SSH_KEY_AUTH_OK') {
+        throw new Error('新公鑰已送出，但新私鑰登入測試未通過；舊私鑰仍維持使用。');
+      }
+
+      if (existingKeyPath === keyPath && existingKeyPath !== legacyKeyPath) {
+        try {
+          await fs.rename(keyPath, previousKey);
+          oldKeyMoved = true;
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+        try {
+          await fs.rename(`${keyPath}.pub`, previousPublic);
+          oldPublicMoved = true;
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
+      try {
+        await fs.rename(nextKey, keyPath);
+        newKeyInstalled = true;
+        await fs.rename(nextPublicPath, `${keyPath}.pub`);
+        rotationCompleted = true;
+      } catch (error) {
+        if (newKeyInstalled) await fs.rename(keyPath, nextKey);
+        if (oldKeyMoved) await fs.rename(previousKey, keyPath);
+        if (oldPublicMoved) await fs.rename(previousPublic, `${keyPath}.pub`);
+        throw error;
+      }
+
+      let oldKeyRevoked = !oldPublicKey;
+      const preserveSharedKey = existingKeyPath === legacyKeyPath &&
+        await this.sharedLegacyKeyStillNeeded(hostId, host);
+      let revocationError = null;
+      if (oldPublicKey && !preserveSharedKey) {
+        try {
+          const revoked = await this.runPasswordSshStatus(
+            host.username, password, 'remove-key', undefined, hostId, oldPublicKey,
+          );
+          oldKeyRevoked = !revoked.error && !revoked.timedOut && revoked.exitCode === 0;
+        } catch (error) {
+          revocationError = error;
+        }
+      }
+      let warning = null;
+      if (oldKeyRevoked) {
+        const cleanupFailures = [];
+        for (const [shouldRemove, file] of [[oldKeyMoved, previousKey], [oldPublicMoved, previousPublic]]) {
+          if (!shouldRemove) continue;
+          try { await fs.unlink(file); }
+          catch (error) {
+            if (error.code !== 'ENOENT') cleanupFailures.push(file);
+          }
+        }
+        if (cleanupFailures.length > 0) {
+          warning = `新私鑰已啟用且舊公鑰已撤銷，但 Windows 無法清理舊私鑰備份：${cleanupFailures.join('、')}`;
+        }
+      } else if (preserveSharedKey) {
+        warning = '新私鑰已啟用；因其他相同 IP／帳號設定仍沿用舊金鑰，暫時保留 Ubuntu 上的舊公鑰。輪替那些設定後，系統會再撤銷舊公鑰。';
+      } else {
+        warning = '新私鑰已啟用，但 Ubuntu 上的舊公鑰未能確認移除；舊私鑰備份留在 Windows，請勿刪除，待確認後再撤銷舊公鑰。';
+        if (revocationError) warning += ` 撤銷錯誤：${revocationError.message}`;
+      }
+      return {
+        configured: true,
+        path: keyPath,
+        publicKey: newPublicKey,
+        oldKeyRevoked,
+        warning,
+      };
+    } catch (error) {
+      if (remoteKeyInstallAttempted && !rotationCompleted) {
+        const cleanup = await this.runPasswordSshStatus(
+          host.username, password, 'remove-key', undefined, hostId,
+          (await fs.readFile(nextPublicPath, 'utf8')).trim(),
+        );
+        if (cleanup.error || cleanup.timedOut || cleanup.exitCode !== 0) {
+          throw new Error(`${error.message} 新公鑰可能仍留在 Ubuntu 的 authorized_keys，請於主機端檢查。`);
+        }
+      }
+      throw error;
+    } finally {
+      if (!rotationCompleted) {
+        for (const file of [nextKey, nextPublicPath]) {
+          try { await fs.unlink(file); }
+          catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+      }
+    }
   }
 
   async getProductionStatus(credentials, hostId = DEFAULT_HOST_ID) {

@@ -92,7 +92,45 @@ function createServer({ host = HOST, port = PORT, operations = new OperationsMan
 
       try {
         if (request.method === 'GET' && pathname === '/api/hosts') {
-          return sendJson(response, 200, { hosts: operations.listHosts() });
+          return sendJson(response, 200, {
+            hosts: operations.listHosts(),
+            removedHosts: operations.listRemovedHosts(),
+          });
+        }
+        const hostSettingsRoute = /^\/api\/hosts\/(mvp|pets|pets-2)\/(update|remove|restore)$/.exec(pathname);
+        if (request.method === 'POST' && hostSettingsRoute) {
+          const [, hostId, action] = hostSettingsRoute;
+          if (action === 'update') {
+            const body = await readJsonBody(request);
+            return sendJson(response, 200, { host: await operations.updateHostProfile(hostId, body) });
+          }
+          if (action === 'remove') {
+            const body = await readJsonBody(request);
+            if (typeof body.confirmation !== 'string' || body.confirmation.length > 80) {
+              return sendJson(response, 400, { error: '請輸入所選主機名稱以確認移除。' });
+            }
+            return sendJson(response, 200, await operations.removeHostProfile(hostId, body.confirmation));
+          }
+          return sendJson(response, 200, await operations.restoreHostProfile(hostId));
+        }
+        if (request.method === 'GET' && pathname === '/api/ssh/key') {
+          const hostId = parsedUrl.searchParams.get('hostId') || 'mvp';
+          if (!validHostId(hostId)) return sendJson(response, 400, { error: '所選主機設定無效。' });
+          return sendJson(response, 200, await operations.getSshKeyStatus(hostId));
+        }
+        if (request.method === 'POST' && pathname === '/api/ssh/key/rotate') {
+          const body = await readJsonBody(request);
+          if (!validHostId(body.hostId) || typeof body.password !== 'string' ||
+              body.password.length < 1 || body.password.length > 1024 || /[\r\n\0]/.test(body.password)) {
+            return sendJson(response, 400, { error: '請輸入所選 Ubuntu 帳號的有效 SSH 密碼。' });
+          }
+          const credentials = { password: body.password };
+          try {
+            return sendJson(response, 200, await operations.rotateSshKey(body.hostId, credentials.password));
+          } finally {
+            credentials.password = '';
+            body.password = '';
+          }
         }
         const hostTrustRoute = /^\/api\/hosts\/([a-z0-9-]{1,32})\/trust$/.exec(pathname);
         if (request.method === 'POST' && hostTrustRoute) {

@@ -330,15 +330,62 @@ test('主機指紋以每個 profile 獨立核對並保存，錯誤指紋不會�
     assert.notEqual(registry.knownHostsFile('pets'), registry.knownHostsFile('pets-2'));
     assert.equal(registry.get('mvp').fingerprint, 'SHA256:YWPE7arZLZ8/67Ta6hLRdBj73eNdk24klgUo+rRBm6s');
     assert.equal(registry.knownHostsFile('mvp'), null);
-    await writeFile(path.join(directory, 'hosts.json'), JSON.stringify([{
-      ...registry.get('mvp'), host: 'attacker.example',
-    }]));
-    const tamperedRegistry = new HostRegistry({
+    await registry.trust('mvp', fingerprint);
+    const managedMvpKnownHosts = path.join(directory, 'known_hosts', 'mvp.known_hosts');
+    await rm(managedMvpKnownHosts);
+    const persistedMvp = new HostRegistry({
       configPath: path.join(directory, 'hosts.json'),
       dataDirectory: directory,
       scanHostKey: async () => '',
     });
-    assert.throws(() => tamperedRegistry.get('mvp'), /設定格式無效/);
+    assert.equal(persistedMvp.knownHostsFile('mvp'), managedMvpKnownHosts);
+    await writeFile(path.join(directory, 'hosts.json'), JSON.stringify([{
+      ...registry.get('mvp'), host: 'edited-host.example',
+    }]));
+    const restoredRegistry = new HostRegistry({
+      configPath: path.join(directory, 'hosts.json'),
+      dataDirectory: directory,
+      scanHostKey: async () => '',
+    });
+    assert.equal(restoredRegistry.get('mvp').host, 'edited-host.example');
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('Pets 固定主機可編輯、移除及還原；更換位址清除信任且不能移除最後一台', async () => {
+  const { mkdir, mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
+  const { tmpdir } = require('node:os');
+  const { HostRegistry } = require('../hosts');
+  const directory = await mkdtemp(path.join(tmpdir(), 'pets-host-crud-test-'));
+  try {
+    const configPath = path.join(directory, 'hosts.json');
+    const registry = new HostRegistry({ configPath, dataDirectory: directory });
+    const original = registry.get('pets');
+    const updated = await registry.update('pets', {
+      name: '實體 Ubuntu', host: 'pets.example.com', username: 'ubuntu', siteUrl: 'https://pets.example.com/',
+    });
+    assert.equal(updated.trusted, false);
+    assert.equal(registry.get('pets').fingerprint, '');
+    assert.equal(registry.get('pets').projectRoot, original.projectRoot);
+    await assert.rejects(registry.remove('pets', '錯誤名稱'), /確認文字不符/);
+    await registry.remove('pets', '實體 Ubuntu');
+    assert.deepEqual(registry.list().map((host) => host.id), ['mvp', 'pets-2']);
+    assert.deepEqual(registry.listRemoved().map((host) => host.id), ['pets']);
+    await registry.restore('pets');
+    assert.equal(registry.get('pets').host, original.host);
+    assert.equal(registry.get('pets').fingerprint, '');
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')).removed, []);
+    await mkdir(path.join(directory, 'known_hosts'));
+    await writeFile(path.join(directory, 'known_hosts', 'pets.known_hosts'), 'old trusted key\n');
+    await registry.remove('pets', original.name);
+    await assert.rejects(readFile(path.join(directory, 'known_hosts', 'pets.known_hosts')), { code: 'ENOENT' });
+    await registry.remove('pets-2', registry.get('pets-2').name);
+    await assert.rejects(registry.remove('mvp', registry.get('mvp').name), /至少需保留/);
+    const mvpRegistry = new HostRegistry({ configPath: path.join(directory, 'mvp-hosts.json'), dataDirectory: directory });
+    await mvpRegistry.remove('mvp', mvpRegistry.get('mvp').name);
+    await mvpRegistry.restore('mvp');
+    assert.equal(mvpRegistry.get('mvp').fingerprint, '');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -366,7 +413,8 @@ test('本機設定升級後只載入固定 Pets 主機，不載入舊格式中�
       removed: ['pets'],
     }));
     const registry = new HostRegistry({ configPath: path.join(directory, 'hosts.json'), dataDirectory: directory });
-    assert.deepEqual(registry.list().map((profile) => profile.id), ['mvp', 'pets', 'pets-2']);
+    assert.deepEqual(registry.list().map((profile) => profile.id), ['mvp', 'pets-2']);
+    assert.deepEqual(registry.listRemoved().map((profile) => profile.id), ['pets']);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -474,7 +522,10 @@ test('管理中心只允許透過本機驗證權杖讀取主機 profiles 與註�
   const operations = {
     token: 'host-test-token',
     listHosts() { return [{ id: 'mvp', name: 'MVP', trusted: true }, { id: 'pets', name: 'PETS', trusted: false }]; },
+    listRemovedHosts() { return []; },
     async trustHostKey(id, fingerprint) { calls.push({ id, fingerprint }); return { id, fingerprint, trusted: true }; },
+    async getSshKeyStatus(id) { return { configured: false, hostId: id }; },
+    async rotateSshKey(id, password) { calls.push({ id, password }); return { configured: true }; },
   };
   await withServer(async (base) => {
     const denied = await fetch(`${base}/api/hosts`);
@@ -489,7 +540,133 @@ test('管理中心只允許透過本機驗證權杖讀取主機 profiles 與註�
     });
     assert.equal(trusted.status, 200);
     assert.deepEqual(calls, [{ id: 'pets', fingerprint: 'SHA256:' + 'A'.repeat(43) }]);
+    const keyStatus = await fetch(`${base}/api/ssh/key?hostId=pets`, { headers });
+    assert.deepEqual(await keyStatus.json(), { configured: false, hostId: 'pets' });
+    const rotated = await fetch(`${base}/api/ssh/key/rotate`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostId: 'pets', password: 'ubuntu-secret' }),
+    });
+    assert.equal(rotated.status, 200);
+    assert.deepEqual(calls[1], { id: 'pets', password: 'ubuntu-secret' });
   }, operations);
+});
+
+test('金鑰安裝 helper 防止 authorized_keys 符號連結並以公鑰資料欄位精確移除', () => {
+  const helper = fs.readFileSync(path.join(__dirname, '..', 'ssh-password-status.ps1'), 'utf8');
+  assert.match(helper, /-L "\$HOME\/\.ssh\/authorized_keys"/);
+  assert.match(helper, /mktemp "\$authorized\.pets-operations\.XXXXXX"/);
+  assert.match(helper, /awk -v key=\$quotedBlob/);
+  assert.match(helper, /END \{ exit !found \}/);
+});
+
+test('主機私鑰採用專用檔案，舊版共用私鑰只作尚未輪替主機的備援', async () => {
+  const { mkdtemp, rm, writeFile } = require('node:fs/promises');
+  const { tmpdir } = require('node:os');
+  const { OperationsManager } = require('../operations');
+  const directory = await mkdtemp(path.join(tmpdir(), 'pets-ssh-key-path-test-'));
+  try {
+    const manager = new OperationsManager();
+    manager.sshKeyPath = (id) => path.join(directory, `pets3_production-${id}`);
+    manager.legacySshKeyPath = () => path.join(directory, 'pets3_production');
+    await writeFile(manager.legacySshKeyPath(), 'legacy');
+    assert.equal(await manager.activeSshKeyPath('pets'), manager.legacySshKeyPath());
+    await writeFile(manager.sshKeyPath('pets'), 'dedicated');
+    assert.equal(await manager.activeSshKeyPath('pets'), manager.sshKeyPath('pets'));
+    assert.equal(await manager.activeSshKeyPath('pets-2'), manager.legacySshKeyPath());
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SSH 金鑰輪替先以密碼安裝並測試新金鑰，失敗時撤銷暫存公鑰並保留舊金鑰', async () => {
+  if (process.platform !== 'win32') return;
+  const { mkdtemp, readdir, readFile, rm, writeFile } = require('node:fs/promises');
+  const { tmpdir } = require('node:os');
+  const { OperationsManager } = require('../operations');
+  const { DEFAULTS } = require('../hosts');
+  const directory = await mkdtemp(path.join(tmpdir(), 'pets-ssh-rotation-test-'));
+  const host = { ...DEFAULTS.find((profile) => profile.id === 'pets'), fingerprint: `SHA256:${'A'.repeat(43)}` };
+  let generation = 0;
+  const createManager = (keyDirectory, profiles = [host], loginSucceeds = true) => {
+    const calls = [];
+    const manager = new OperationsManager({ root: keyDirectory });
+    manager.hostRegistry = {
+      get: () => host,
+      list: () => profiles,
+    };
+    manager.sshKeyPath = (id) => path.join(keyDirectory, `pets3_production-${id}`);
+    manager.legacySshKeyPath = () => path.join(keyDirectory, 'pets3_production');
+    manager.run = async (command, args) => {
+      if (command.includes('whoami.exe')) return { stdout: '"DOMAIN\\tester","S-1-5-21-1-2-3-1001"\n', exitCode: 0 };
+      if (command.includes('icacls.exe')) {
+        calls.push({ type: 'acl', args });
+        return { stdout: '', exitCode: 0 };
+      }
+      if (command.includes('ssh-keygen')) {
+        const keyIndex = args.indexOf('-f');
+        const privateKey = args[keyIndex + 1];
+        const publicKey = `ssh-ed25519 ${Buffer.alloc(32, ++generation).toString('base64')}`;
+        await writeFile(privateKey, 'mock-private-key');
+        await writeFile(`${privateKey}.pub`, publicKey);
+        return { stdout: '', exitCode: 0 };
+      }
+      throw new Error(`Unexpected process: ${command}`);
+    };
+    manager.runPasswordSshStatus = async (_username, _password, action, _backup, _hostId, publicKey) => {
+      calls.push({ type: 'password-ssh', action, publicKey });
+      return { stdout: '', exitCode: 0 };
+    };
+    manager.runSshWithKey = async (_command, key) => {
+      calls.push({ type: 'key-login', key });
+      return {
+        stdout: loginSucceeds ? 'PETS_SSH_KEY_AUTH_OK\n' : '',
+        exitCode: loginSucceeds ? 0 : 255,
+      };
+    };
+    return { manager, calls };
+  };
+  try {
+    const first = createManager(directory);
+    const rotated = await first.manager.rotateSshKey('pets', 'one-time-password');
+    const dedicatedKey = first.manager.sshKeyPath('pets');
+    assert.equal(rotated.configured, true);
+    assert.equal(rotated.oldKeyRevoked, true);
+    assert.equal(await readFile(dedicatedKey, 'utf8'), 'mock-private-key');
+    assert.deepEqual(first.calls.map((call) => call.type), ['acl', 'password-ssh', 'key-login']);
+    assert.ok(first.calls[0].args.includes('*S-1-5-21-1-2-3-1001:(F)'));
+    assert.equal(first.calls[1].action, 'install-key');
+    assert.ok(first.calls[2].key.startsWith(`${dedicatedKey}.next-`));
+
+    const sharedDirectory = path.join(directory, 'shared');
+    await require('node:fs/promises').mkdir(sharedDirectory);
+    const shared = createManager(sharedDirectory, [
+      host,
+      { ...host, id: 'pets-2' },
+    ]);
+    const legacyKey = shared.manager.legacySshKeyPath();
+    const oldPublicKey = `ssh-ed25519 ${Buffer.alloc(32, 99).toString('base64')}`;
+    await writeFile(legacyKey, 'old-private-key');
+    await writeFile(`${legacyKey}.pub`, oldPublicKey);
+    const sharedRotation = await shared.manager.rotateSshKey('pets', 'one-time-password');
+    assert.equal(sharedRotation.oldKeyRevoked, false);
+    assert.match(sharedRotation.warning, /其他相同 IP／帳號設定/);
+    assert.equal(await readFile(legacyKey, 'utf8'), 'old-private-key');
+    assert.equal(shared.calls.some((call) => call.type === 'password-ssh' && call.action === 'remove-key'), false);
+
+    const failedDirectory = path.join(directory, 'failed');
+    await require('node:fs/promises').mkdir(failedDirectory);
+    const failed = createManager(failedDirectory, [host], false);
+    const preservedLegacy = failed.manager.legacySshKeyPath();
+    const oldPublic = `ssh-ed25519 ${Buffer.alloc(32, 101).toString('base64')}`;
+    await writeFile(preservedLegacy, 'old-private-key');
+    await writeFile(`${preservedLegacy}.pub`, oldPublic);
+    await assert.rejects(failed.manager.rotateSshKey('pets', 'one-time-password'), /新私鑰登入測試未通過/);
+    assert.equal(await readFile(preservedLegacy, 'utf8'), 'old-private-key');
+    assert.deepEqual((await readdir(failedDirectory)).sort(), ['pets3_production', 'pets3_production.pub']);
+    assert.deepEqual(failed.calls.filter((call) => call.type === 'password-ssh').map((call) => call.action), ['install-key', 'remove-key']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('確認文字必須精確符合目前等待中的部署關卡', async () => {

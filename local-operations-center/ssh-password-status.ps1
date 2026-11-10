@@ -37,9 +37,27 @@ try {
         throw '伺服器連線設定格式無效。'
     }
     $action = if ($credentials.action) { [string]$credentials.action } else { 'status' }
-    if ($action -cnotin @('status', 'list-backups', 'backup', 'backup-verify')) { throw '操作類型無效。' }
+    if ($action -cnotin @('status', 'list-backups', 'backup', 'backup-verify', 'install-key', 'remove-key')) { throw '操作類型無效。' }
     $backupName = [string]$credentials.backupName
     if ($action -eq 'backup-verify' -and $backupName -cnotmatch '\Apets_backup_\d{8}_\d{6}\.tar\.gz\z') { throw '備份檔名無效。' }
+    $publicKey = [string]$credentials.publicKey
+    $publicKeyBlob = $null
+    if ($action -in @('install-key', 'remove-key')) {
+        $keyParts = @($publicKey -split '\s+')
+        if ($keyParts.Count -lt 2 -or $keyParts[0] -cne 'ssh-ed25519' -or
+            $keyParts[1] -cnotmatch '\A[A-Za-z0-9+/]+={0,2}\z') {
+            throw 'SSH 公鑰格式無效。'
+        }
+        try {
+            $decodedKey = [Convert]::FromBase64String($keyParts[1])
+            if ([Convert]::ToBase64String($decodedKey).TrimEnd('=') -cne $keyParts[1].TrimEnd('=')) {
+                throw 'invalid'
+            }
+        } catch {
+            throw 'SSH 公鑰資料格式無效。'
+        }
+        $publicKeyBlob = $keyParts[1]
+    }
 
     $stage = 'DEPENDENCY_FILE_CHECK'
     $packageRoot = Join-Path $env:LOCALAPPDATA 'Pets-Operations-Center\sshnet-2026.0.0\packages'
@@ -251,6 +269,35 @@ namespace PetsOperations
                 'listed_name="${checksum_line:66}"'
                 'if [[ ! "$expected_hash" =~ ^[0-9a-f]{64}$ ]] || [ "$separator" != "  " ] || [ "$listed_name" != "$backup_name" ]; then printf ''BACKUP_VERIFY=SIDECAR_FORMAT_INVALID\n''; exit 93; fi'
                 'if sha256sum -c -- "$sidecar" >/dev/null; then printf ''BACKUP_VERIFY=PASS\n''; else printf ''BACKUP_VERIFY=CHECKSUM_MISMATCH\n''; exit 95; fi'
+            ) -join "`n"
+        }
+        'install-key' {
+            $authorizedLine = "ssh-ed25519 $publicKeyBlob pets-operations"
+            $quotedLine = "'" + $authorizedLine + "'"
+            $remoteCommand = @(
+                'set -eu'
+                'umask 077'
+                'mkdir -p -- "$HOME/.ssh"'
+                'if [ -L "$HOME/.ssh" ] || [ ! -d "$HOME/.ssh" ] || [ -L "$HOME/.ssh/authorized_keys" ]; then exit 48; fi'
+                'chmod 700 -- "$HOME/.ssh"'
+                'touch -- "$HOME/.ssh/authorized_keys"'
+                'chmod 600 -- "$HOME/.ssh/authorized_keys"'
+                "if ! grep -Fqx -- $quotedLine `"$HOME/.ssh/authorized_keys`"; then printf '%s\n' $quotedLine >> `"$HOME/.ssh/authorized_keys`"; fi"
+                "grep -Fqx -- $quotedLine `"$HOME/.ssh/authorized_keys`""
+            ) -join "`n"
+        }
+        'remove-key' {
+            $quotedBlob = "'" + $publicKeyBlob + "'"
+            $remoteCommand = @(
+                'set -eu'
+                'authorized="$HOME/.ssh/authorized_keys"'
+                'if [ -L "$HOME/.ssh" ] || [ ! -d "$HOME/.ssh" ] || [ ! -f "$authorized" ] || [ -L "$authorized" ]; then exit 46; fi'
+                'temporary="$(mktemp "$authorized.pets-operations.XXXXXX")"'
+                'trap ''rm -f -- "$temporary"'' EXIT'
+                "awk -v key=$quotedBlob '`$1 == `"ssh-ed25519`" && `$2 == key { next } { print }' `"$authorized`" > `"$temporary`""
+                'chmod 600 -- "$temporary"'
+                'mv -f -- "$temporary" "$authorized"'
+                "if awk -v key=$quotedBlob '`$1 == `"ssh-ed25519`" && `$2 == key { found=1 } END { exit !found }' `"$authorized`"; then exit 47; fi"
             ) -join "`n"
         }
     }

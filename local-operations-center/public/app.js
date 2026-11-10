@@ -16,6 +16,7 @@ let currentOperationId = null;
 let handledPrompt = null;
 let currentChanges = [];
 let hosts = [];
+let removedHosts = [];
 let activeHostId = 'mvp';
 
 const changeList = document.querySelector('#change-list');
@@ -29,6 +30,7 @@ function selectedHost() {
 async function loadHosts() {
   const result = await api('/api/hosts');
   hosts = result.hosts;
+  removedHosts = result.removedHosts;
   const selector = document.querySelector('#host-profile');
   selector.replaceChildren();
   for (const host of hosts) {
@@ -36,9 +38,20 @@ async function loadHosts() {
     option.value = host.id;
     selector.append(option);
   }
-  if (!hosts.some((host) => host.id === activeHostId)) activeHostId = 'mvp';
+  if (!hosts.some((host) => host.id === activeHostId)) activeHostId = hosts[0]?.id || '';
   selector.value = activeHostId;
+  const removedSelector = document.querySelector('#removed-host-profile');
+  removedSelector.replaceChildren();
+  for (const host of removedHosts) {
+    const option = element('option', '', host.name);
+    option.value = host.id;
+    removedSelector.append(option);
+  }
+  removedSelector.disabled = removedHosts.length === 0;
+  document.querySelector('#restore-host').disabled = removedHosts.length === 0;
+  document.querySelector('#remove-host').disabled = hosts.length <= 1;
   updateSelectedHost();
+  await loadSshKeyStatus();
 }
 
 function updateSelectedHost() {
@@ -55,13 +68,12 @@ function updateSelectedHost() {
 async function trustSelectedHost() {
   const host = selectedHost();
   if (!host) throw new Error('目前沒有可選的主機設定。');
-  if (host.id === 'mvp') throw new Error('MVP 主機信任設定受保護，不會在此流程變更。');
   const answer = await openConfirmation({
     title: `核對並信任 ${host.name}`, eyebrow: 'SSH 主機身分驗證',
     paragraphs: [
       { text: `目標：${host.username}@${host.host}。管理中心會掃描該主機公開的 ED25519 金鑰。` },
-      { text: '請先在該 Ubuntu VM 的主控台執行 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub，將 SHA256 指紋與下方掃描結果比對。只有完全相符才會儲存此主機專用的信任記錄。', note: true },
-      { text: '若目前開啟的是舊 VM，請勿把它的指紋登記成新主機；取消即可。' },
+      { text: '請先在該 Ubuntu 主機的本機主控台執行 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub，將 SHA256 指紋與下方掃描結果比對。只有完全相符才會儲存此主機專用的信任記錄。', note: true },
+      { text: '確認你選擇的是正確的 Ubuntu 主機；若目標不符，請取消，不要信任掃描結果。' },
     ],
     fields: [{ name: 'fingerprint', label: 'Ubuntu 主控台顯示的 SHA256 指紋', placeholder: 'SHA256:...' }],
     confirmText: '比對並信任此主機',
@@ -74,6 +86,115 @@ async function trustSelectedHost() {
   });
   await loadHosts();
   setPanel(`${host.name} 主機指紋已核對並分開儲存：${result.fingerprint}`, 'success');
+}
+
+async function loadSshKeyStatus() {
+  const host = selectedHost();
+  const status = document.querySelector('#ssh-key-status');
+  if (!host) {
+    status.textContent = '目前沒有可選主機。';
+    return;
+  }
+  try {
+    const result = await api(`/api/ssh/key?hostId=${encodeURIComponent(host.id)}`);
+    status.textContent = result.configured
+      ? `已設定：${result.path}${result.path.endsWith(`pets3_production-${host.id}`) ? '（此主機專用）' : '（沿用舊版共用私鑰）'}`
+      : `尚未建立私鑰；設定時會在 Windows 產生並保護私鑰：${result.path}`;
+  } catch (error) {
+    status.textContent = `無法讀取 SSH 金鑰狀態：${error.message}`;
+  }
+}
+
+async function editSelectedHost() {
+  const host = selectedHost();
+  if (!host) throw new Error('目前沒有可編輯的主機設定。');
+  const answer = await openConfirmation({
+    title: `編輯 ${host.name}`, eyebrow: 'Pets 主機設定',
+    paragraphs: [{ text: '更新 IP／網域會清除已信任的主機指紋，必須重新從 Ubuntu 主控台核對。Pets 部署目錄仍使用既有固定設定。' }],
+    fields: [
+      { name: 'name', label: '主機名稱', value: host.name },
+      { name: 'host', label: 'IP 位址或網域', value: host.host, placeholder: '192.0.2.10 或 pets.example.com' },
+      { name: 'username', label: 'Ubuntu SSH 帳號', value: host.username },
+      { name: 'siteUrl', label: '網站網址', value: host.siteUrl },
+    ],
+    confirmText: '儲存設定',
+    validate: (value) => !value.name.trim() || !value.host.trim() || !value.username.trim() || !value.siteUrl.trim()
+      ? '請完整輸入主機名稱、IP／網域、SSH 帳號與網址。' : '',
+  });
+  if (!answer) return;
+  const result = await api(`/api/hosts/${encodeURIComponent(host.id)}/update`, {
+    method: 'POST', body: JSON.stringify(answer),
+  });
+  await loadHosts();
+  setPanel(`${result.host.name} 主機設定已儲存${result.host.trusted ? '。' : '；請重新核對主機指紋後再連線。'}`, 'success');
+}
+
+async function removeSelectedHost() {
+  const host = selectedHost();
+  if (!host) throw new Error('目前沒有可移除的主機設定。');
+  const answer = await openConfirmation({
+    title: `移除 ${host.name}`, eyebrow: '移除本機主機設定',
+    paragraphs: [
+      { text: '這只會移除此管理中心的主機設定與本機信任記錄，不會移除 Ubuntu 主機、網站檔案或 Ubuntu 上的公鑰。' },
+      { text: `請輸入「${host.name}」確認移除。`, note: true },
+    ],
+    fields: [{ name: 'confirmation', label: '主機名稱確認' }],
+    confirmText: '移除主機設定',
+    validate: (value) => value.confirmation === host.name ? '' : '主機名稱不符，未移除設定。',
+  });
+  if (!answer) return;
+  await api(`/api/hosts/${encodeURIComponent(host.id)}/remove`, {
+    method: 'POST', body: JSON.stringify(answer),
+  });
+  await loadHosts();
+  setPanel(`${host.name} 設定已移除；Ubuntu 主機與其資料未受影響。`, 'success');
+}
+
+async function restoreHost() {
+  const id = document.querySelector('#removed-host-profile').value;
+  if (!id) throw new Error('沒有可還原的預設主機。');
+  const host = removedHosts.find((item) => item.id === id);
+  const answer = await openConfirmation({
+    title: `還原 ${host?.name || id}`, eyebrow: '還原預設主機設定',
+    paragraphs: [{ text: '會還原初始預設連線資料，不會還原舊的指紋信任；還原後必須重新核對 Ubuntu 主機指紋。' }],
+    confirmText: '還原設定',
+  });
+  if (!answer) return;
+  await api(`/api/hosts/${encodeURIComponent(id)}/restore`, { method: 'POST', body: '{}' });
+  await loadHosts();
+  setPanel(`${host?.name || id} 預設設定已還原；請先核對主機指紋。`, 'success');
+}
+
+async function rotateSelectedSshKey() {
+  const host = selectedHost();
+  if (!host) throw new Error('目前沒有可用的主機設定。');
+  if (!host.trusted) throw new Error('請先完成此主機的 ED25519 指紋核對，再設定 SSH 金鑰。');
+  const answer = await openConfirmation({
+    title: `設定／輪替 ${host.name} SSH 金鑰`, eyebrow: 'Windows 私鑰與 Ubuntu 公鑰',
+    paragraphs: [
+      { text: `請輸入 ${host.username} 的 Ubuntu SSH 密碼。管理中心會在 Windows 產生新 ED25519 金鑰，暫時以密碼連線加入公鑰，再測試新私鑰登入。` },
+      { text: '私鑰只留在這台 Windows 電腦並限制檔案權限；Ubuntu 只會收到公鑰。每個主機各自使用專用私鑰；尚未輪替的主機會繼續沿用舊版共用私鑰。', note: true },
+      { text: '為支援既有非互動 SSH 操作，新私鑰不設定 passphrase；安全性依賴 Windows 帳號權限與電腦本身保護。請勿複製或傳送私鑰。' },
+      { text: 'Ubuntu 必須已啟用 SSH、網路可達，且允許此帳號使用密碼 SSH 登入一次。若尚未能登入，請先用 Ubuntu 主控台設定。' },
+    ],
+    fields: [{ name: 'password', label: 'Ubuntu SSH 密碼', type: 'password', autocomplete: 'current-password' }],
+    confirmText: '安裝並測試新公鑰',
+    validate: (value) => value.password.length > 0 ? '' : '請輸入 Ubuntu SSH 密碼。',
+  });
+  if (!answer) return;
+  const password = answer.password;
+  answer.password = '';
+  const button = document.querySelector('#rotate-ssh-key');
+  button.disabled = true;
+  try {
+    const result = await api('/api/ssh/key/rotate', {
+      method: 'POST', body: JSON.stringify({ hostId: host.id, password }),
+    });
+    await loadSshKeyStatus();
+    setPanel(result.warning || `${host.name} 專用 SSH 私鑰已在 Windows 啟用，Ubuntu 公鑰登入測試成功。`, result.warning ? 'unconfirmed' : 'success');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function element(name, className, text) {
@@ -412,7 +533,10 @@ async function watchOperation(operationId) {
 }
 
 function setButtonsDisabled(disabled) {
-  document.querySelectorAll('.card-action, #refresh-status, #trust-host, #host-profile, #load-changes').forEach((button) => { button.disabled = disabled; });
+  document.querySelectorAll('.card-action, #refresh-status, #trust-host, #host-profile, #load-changes, #edit-host, #restore-host, #removed-host-profile, #rotate-ssh-key').forEach((button) => { button.disabled = disabled; });
+  document.querySelector('#remove-host').disabled = disabled || hosts.length <= 1;
+  document.querySelector('#restore-host').disabled = disabled || removedHosts.length === 0;
+  document.querySelector('#removed-host-profile').disabled = disabled || removedHosts.length === 0;
   commitButton.disabled = disabled || currentChanges.filter((file) => !file.sensitive).length === 0;
 }
 
@@ -730,8 +854,13 @@ document.querySelector('#refresh-status').addEventListener('click', () => refres
 document.querySelector('#host-profile').addEventListener('change', () => {
   activeHostId = document.querySelector('#host-profile').value;
   updateSelectedHost();
+  loadSshKeyStatus().catch((error) => setPanel(error.message, 'error'));
 });
 document.querySelector('#trust-host').addEventListener('click', () => trustSelectedHost().catch((error) => setPanel(error.message, 'error')));
+document.querySelector('#edit-host').addEventListener('click', () => editSelectedHost().catch((error) => setPanel(error.message, 'error')));
+document.querySelector('#remove-host').addEventListener('click', () => removeSelectedHost().catch((error) => setPanel(error.message, 'error')));
+document.querySelector('#restore-host').addEventListener('click', () => restoreHost().catch((error) => setPanel(error.message, 'error')));
+document.querySelector('#rotate-ssh-key').addEventListener('click', () => rotateSelectedSshKey().catch((error) => setPanel(error.message, 'error')));
 document.querySelector('#load-changes').addEventListener('click', () => loadChanges().catch((error) => { changeSummary.textContent = error.message; setPanel(error.message, 'error'); }));
 commitButton.addEventListener('click', () => commitReviewedChanges().catch((error) => setPanel(error.message, 'error')));
 document.querySelectorAll('[data-action]').forEach((button) => {
@@ -750,9 +879,10 @@ document.querySelectorAll('[data-action]').forEach((button) => {
     }
   });
 
-  loadHosts().catch((error) => {
-    setPanel(`無法載入主機設定：${error.message}`, 'error');
-    document.querySelector('#host-profile').disabled = true;
-    document.querySelector('#trust-host').disabled = true;
-  });
+});
+
+loadHosts().catch((error) => {
+  setPanel(`無法載入主機設定：${error.message}`, 'error');
+  document.querySelector('#host-profile').disabled = true;
+  document.querySelector('#trust-host').disabled = true;
 });

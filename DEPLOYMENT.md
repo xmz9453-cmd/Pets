@@ -93,22 +93,19 @@ git --version
 
 `mysql --version` reports the client; the SQL query reports the server version. Re-run this inventory before a future replacement if the MVP runtime has changed. The `xmz9453-cmd/Pets` GitHub repository is currently public, so the bootstrap's HTTPS clone requires no credential.
 
-The first-build flow also requires Ubuntu 24.04, SSH enabled and reachable, the `zhe` account with sudo access, and the management computer's SSH public key installed for that account. If SSH was not selected during Ubuntu setup, use the VM console:
+The first-build flow also requires Ubuntu 24.04, SSH enabled and reachable, and the `zhe` account with sudo access. The management center can install its SSH public key after the host fingerprint is verified; do not copy a private key to Ubuntu. If SSH was not selected during Ubuntu setup, use the Ubuntu or VM console:
 
 ```bash
 sudo apt update
 sudo apt install -y openssh-server
 sudo systemctl enable --now ssh
-sudo install -d -m 700 -o zhe -g zhe /home/zhe/.ssh
-sudo nano /home/zhe/.ssh/authorized_keys
-sudo chown zhe:zhe /home/zhe/.ssh/authorized_keys
-sudo chmod 600 /home/zhe/.ssh/authorized_keys
+sudo systemctl status ssh
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-In the Windows management computer, display only the matching public key with `ssh-keygen -y -f "$HOME\.ssh\pets3_production"` and paste its full output as a line in `authorized_keys`. Never copy the private key to Ubuntu or share it in chat. The last Ubuntu command displays the fingerprint to compare with the management-center scan. Configure VMware networking and any active firewall to permit SSH before Bootstrap and HTTP after it. The bootstrap does not configure VMware networking, DNS, a firewall, or TLS. The repository is currently public and is cloned over HTTPS without credentials; if its visibility changes, design a dedicated read-only authentication flow before running the bootstrap. Never put a personal access token in the script or `.env`.
+The installed Ubuntu account password is the one-time initial SSH login credential. Select the correct host in the management center, compare the SHA256 fingerprint shown above using **核對／更新主機指紋**, then choose **設定／輪替 SSH 金鑰** and enter that Ubuntu account password in its password dialog. The tool installs the matching public key into that account's `authorized_keys`, tests key-based login, and keeps the private key on Windows with restricted file permissions. It does not save the password. If SSH password authentication is disabled, temporarily enable it from the Ubuntu console for this one-time key installation, validate the SSH configuration with `sudo sshd -t`, and restart SSH; after successful key login, password authentication can be disabled again if desired. Configure VMware networking and any active firewall to permit SSH before Bootstrap and HTTP after it. The bootstrap does not configure VMware networking, DNS, a firewall, or TLS. The repository is currently public and is cloned over HTTPS without credentials; if its visibility changes, design a dedicated read-only authentication flow before running the bootstrap. Never put a personal access token in the script or `.env`.
 
-Once these prerequisites and versions are confirmed, select the PETS host profile in the management center and run **核對新主機指紋** followed by **首次建置 Ubuntu**. The first-build script refuses to initialize an existing project, service configuration, MySQL database/account, or data directory. It creates a fresh database and seed administrator; the initial administrator password is removed from `.env` after the seed succeeds. It also installs a `visudo`-validated sudoers rule allowing `zhe` to restart only `pets-backend.service` and `pets-frontend.service`, as required by the standard non-interactive deployment workflow. Verify the site in a browser and complete the existing human deployment-confirmation step afterward.
+Once these prerequisites and versions are confirmed and key-based login succeeds, select the PETS host profile in the management center and run **首次建置 Ubuntu**. The first-build script refuses to initialize an existing project, service configuration, MySQL database/account, or data directory. It creates a fresh database and seed administrator; the initial administrator password is removed from `.env` after the seed succeeds. It also installs a `visudo`-validated sudoers rule allowing `zhe` to restart only `pets-backend.service` and `pets-frontend.service`, as required by the standard non-interactive deployment workflow. Verify the site in a browser and complete the existing human deployment-confirmation step afterward.
 
 If a first build has initialized the VM but the standard deployment exits with a `FAILED` deployment state, inspect the reported deployment log before retrying. After confirming the failure did not complete successfully, use the Ubuntu VM console to run `sudo bash /home/zhe/pets/deploy/clear-state.sh` and enter `CLEAR_STATE`; this clears only the abnormal deployment-state marker, not the database, backups, logs, or application files. Then rerun Bootstrap to resume the incomplete first build.
 

@@ -36,6 +36,13 @@ h1 span { font-weight: 500; }
 .service-panel button:disabled, .host-selector-label select:disabled { opacity: .6; }
 .service-badge { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border-radius: 20px; background: #edf7f0; color: #337c55; font-size: 13px; font-weight: 700; }
 .pulse { width: 6px; height: 6px; box-shadow: 0 0 0 3px #43a97820; }
+.host-admin { display: grid; gap: 18px; margin-top: 14px; padding: 19px; border: 1px solid #e5ebe4; border-radius: 13px; background: #fff; }
+.host-admin h2 { margin-bottom: 7px; }
+.host-admin-help { margin: 0; color: #68766d; font-size: 14px; line-height: 1.55; }
+.host-admin-actions, .ssh-key-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.ssh-key-controls { justify-content: space-between; padding-top: 15px; border-top: 1px solid #edf0ec; }
+.ssh-key-controls strong { display: block; margin-bottom: 5px; color: #29382f; }
+.host-admin button:disabled, .host-admin select:disabled { opacity: .6; }
 .tools-section { padding-top: 39px; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 17px; }
 .section-heading .eyebrow { margin-bottom: 5px; }
@@ -123,6 +130,6 @@ body { font-size: 18px; }
 .tool-card { min-height: 214px; }
 .page-footer { font-size: 12px; }
 @media (max-width: 760px) { .tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .intro { padding-top: 39px; } }
-@media (max-width: 560px) { .status-grid { grid-template-columns: 1fr; } .status-actions { align-items: start; flex-direction: column-reverse; } .service-panel { flex-wrap: wrap; } .service-query-button { margin-left: 52px; } .service-badge { margin-left: auto; } }
+@media (max-width: 560px) { .status-grid { grid-template-columns: 1fr; } .status-actions { align-items: start; flex-direction: column-reverse; } .service-panel { flex-wrap: wrap; } .service-query-button { margin-left: 52px; } .service-badge { margin-left: auto; } .host-admin-actions, .ssh-key-controls { align-items: stretch; flex-direction: column; } .host-admin-actions > *, .ssh-key-controls > button { width: 100%; } }
 @media (max-width: 600px) { .review-commit { align-items: stretch; flex-direction: column; } .review-commit .primary-button { width: 100%; } .change-row { align-items: start; } }
 @media (max-width: 430px) { .shell { width: min(100% - 32px, 1056px); } .tool-grid { gap: 10px; } .tool-card { min-height: 192px; padding: 14px 12px 12px; } .status-pill { padding: 5px 7px; font-size: 9px; } .page-footer { gap: 10px; flex-wrap: wrap; } .confirm-dialog form { padding: 19px; } }

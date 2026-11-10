@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -91,6 +92,7 @@ class HostRegistry {
     this.dataDirectory = options.dataDirectory || path.dirname(this.configPath);
     this.scanHostKey = options.scanHostKey;
     this.profiles = new Map(DEFAULTS.map((profile) => [profile.id, validateProfile(profile)]));
+    this.removed = new Set();
     this.loadError = null;
     this.load();
   }
@@ -98,7 +100,6 @@ class HostRegistry {
   load() {
     let text;
     try {
-      const fsSync = require('node:fs');
       if (fsSync.lstatSync(this.configPath).isSymbolicLink()) {
         this.loadError = new Error('本機主機設定是符號連結；為避免信任設定被替換，已停止載入。');
         return;
@@ -113,12 +114,17 @@ class HostRegistry {
     try {
       const parsed = JSON.parse(text);
       const saved = Array.isArray(parsed) ? parsed : parsed.profiles;
-      if (!Array.isArray(saved) || saved.length > (Array.isArray(parsed) ? 20 : 52)) throw new Error('invalid');
+      const removed = Array.isArray(parsed) ? [] : parsed.removed;
+      if (!Array.isArray(saved) || saved.length > (Array.isArray(parsed) ? 20 : 52) ||
+          !Array.isArray(removed) || removed.some((id) => !['mvp', 'pets', 'pets-2'].includes(id))) {
+        throw new Error('invalid');
+      }
       const next = new Map(this.profiles);
+      for (const id of removed) next.delete(id);
       const ids = new Set();
       for (const profile of saved) {
         const valid = validateProfile(profile);
-        if (valid.id === 'mvp' || !next.has(valid.id) || ids.has(valid.id)) {
+        if (!next.has(valid.id) || ids.has(valid.id) || removed.includes(valid.id)) {
           if (!Array.isArray(parsed) && !['mvp', 'pets', 'pets-2'].includes(valid.id)) continue;
           throw new Error('invalid profile id');
         }
@@ -126,6 +132,7 @@ class HostRegistry {
         next.set(valid.id, valid);
       }
       this.profiles = next;
+      this.removed = new Set(removed);
     } catch {
       this.loadError = new Error('本機主機設定格式無效；為避免連錯主機，已停止載入設定。');
     }
@@ -139,6 +146,14 @@ class HostRegistry {
     }));
   }
 
+  listRemoved() {
+    if (this.loadError) throw this.loadError;
+    return [...this.removed].map((id) => ({
+      id,
+      name: DEFAULTS.find((profile) => profile.id === id).name,
+    }));
+  }
+
   get(id) {
     if (this.loadError) throw this.loadError;
     const profile = this.profiles.get(id);
@@ -146,14 +161,92 @@ class HostRegistry {
     return profile;
   }
 
-  async saveProfiles(profiles) {
+  async saveProfiles(profiles, removed = this.removed) {
     const directory = path.dirname(this.configPath);
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     const temporaryConfig = `${this.configPath}.${process.pid}.tmp`;
-    await fs.writeFile(temporaryConfig, `${JSON.stringify(profiles, null, 2)}\n`, {
+    await fs.writeFile(temporaryConfig, `${JSON.stringify({
+      profiles,
+      removed: [...removed],
+    }, null, 2)}\n`, {
       encoding: 'utf8', mode: 0o600, flag: 'wx',
     });
     await fs.rename(temporaryConfig, this.configPath);
+  }
+
+  async update(id, input) {
+    const profile = this.get(id);
+    if (!input || typeof input.name !== 'string' || !input.name.trim() || input.name.length > 80 ||
+        typeof input.host !== 'string' || !/^[A-Za-z0-9.-]{1,253}$/.test(input.host) ||
+        typeof input.username !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(input.username) ||
+        typeof input.siteUrl !== 'string' ||
+        !/^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?\/?$/.test(input.siteUrl)) {
+      throw new Error('主機設定格式無效；請檢查名稱、IP／網域、SSH 帳號及網站網址。');
+    }
+    const changedHost = profile.host !== input.host;
+    const updated = validateProfile({
+      ...profile,
+      name: input.name.trim(),
+      host: input.host,
+      username: input.username,
+      siteUrl: input.siteUrl,
+      fingerprint: changedHost ? '' : profile.fingerprint,
+    });
+    const next = new Map(this.profiles);
+    next.set(id, updated);
+    await this.saveProfiles([...next.values()]);
+    this.profiles = next;
+    if (changedHost) await this.removeKnownHosts(id);
+    return {
+      id: updated.id, name: updated.name, host: updated.host, username: updated.username,
+      siteUrl: updated.siteUrl, trusted: Boolean(updated.fingerprint),
+    };
+  }
+
+  async removeKnownHosts(id) {
+    const knownHosts = knownHostsPath(id, this.dataDirectory);
+    try {
+      const directory = await fs.lstat(path.dirname(knownHosts));
+      if (directory.isSymbolicLink() || !directory.isDirectory()) {
+        throw new Error('主機專用 known_hosts 目錄不是一般目錄；未移除信任設定。');
+      }
+      const stat = await fs.lstat(knownHosts);
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        throw new Error('主機專用 known_hosts 路徑不是一般檔案；未移除信任設定。');
+      }
+      await fs.unlink(knownHosts);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+
+  async remove(id, confirmation) {
+    const profile = this.get(id);
+    if (confirmation !== profile.name) throw new Error('移除確認文字不符；主機設定未移除。');
+    if (this.profiles.size <= 1) throw new Error('至少需保留一個 Pets 主機設定。');
+    const next = new Map(this.profiles);
+    next.delete(id);
+    const removed = new Set(this.removed);
+    removed.add(id);
+    await this.saveProfiles([...next.values()], removed);
+    this.profiles = next;
+    this.removed = removed;
+    await this.removeKnownHosts(id);
+    return { id, removed: true, name: profile.name };
+  }
+
+  async restore(id) {
+    if (!this.removed.has(id)) throw new Error('所選主機並非已移除設定。');
+    await this.removeKnownHosts(id);
+    const profile = validateProfile({ ...DEFAULTS.find((item) => item.id === id), fingerprint: '' });
+    const next = new Map(this.profiles);
+    next.set(id, profile);
+    const removed = new Set(this.removed);
+    removed.delete(id);
+    await this.saveProfiles([...next.values()], removed);
+    this.profiles = next;
+    this.removed = removed;
+    return { id, name: profile.name, restored: true };
   }
 
   async trust(id, suppliedFingerprint) {
@@ -163,14 +256,15 @@ class HostRegistry {
     const output = await this.scanHostKey(profile.host);
     const keys = String(output).split(/\r?\n/).map((line) => line.trim().split(/\s+/))
       .filter((parts) => parts.length >= 3 && parts[1] === 'ssh-ed25519');
-    const matches = keys.filter(([, , encodedKey]) => {
+    const matches = new Map();
+    for (const [, , encodedKey] of keys) {
       try {
-        return fingerprintOf(Buffer.from(encodedKey, 'base64')) === expected;
+        if (fingerprintOf(Buffer.from(encodedKey, 'base64')) === expected) matches.set(encodedKey, encodedKey);
       } catch {
-        return false;
+        continue;
       }
-    });
-    if (matches.length !== 1) {
+    }
+    if (matches.size !== 1) {
       throw new Error('掃描到的 ED25519 主機金鑰與您從 Ubuntu 主機本機取得的指紋不符；未更新信任設定。');
     }
 
@@ -187,21 +281,32 @@ class HostRegistry {
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    const keyLine = `${profile.hostKeyAlias} ssh-ed25519 ${matches[0][2]}\n`;
+    const keyLine = `${profile.hostKeyAlias} ssh-ed25519 ${[...matches.values()][0]}\n`;
     const temporaryKeyFile = `${knownHosts}.${process.pid}.tmp`;
     await fs.writeFile(temporaryKeyFile, keyLine, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     await fs.rename(temporaryKeyFile, knownHosts);
 
     const updated = validateProfile({ ...profile, fingerprint: expected });
-    this.profiles.set(id, updated);
-    const savedProfiles = [...this.profiles.values()].filter((item) => item.id !== 'mvp');
-    await this.saveProfiles(savedProfiles);
+    const next = new Map(this.profiles);
+    next.set(id, updated);
+    await this.saveProfiles([...next.values()]);
+    this.profiles = next;
     return { id, fingerprint: expected, trusted: true };
   }
 
   knownHostsFile(id) {
     const profile = this.get(id);
-    return id === 'mvp' ? null : knownHostsPath(profile.id, this.dataDirectory);
+    const knownHosts = knownHostsPath(profile.id, this.dataDirectory);
+    if (id === 'mvp' && !fsSync.existsSync(knownHosts) &&
+        profile.fingerprint === DEFAULTS[0].fingerprint) return null;
+    try {
+      if (fsSync.lstatSync(knownHosts).isSymbolicLink()) {
+        throw new Error('主機專用 known_hosts 路徑是符號連結；已停止 SSH 連線。');
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    return knownHosts;
   }
 }
 

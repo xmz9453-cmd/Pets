@@ -8,7 +8,9 @@
 
 ## 功能
 
-- **Pets 主機選擇與指紋信任**：管理中心專門管理 Pets 系統，提供 MVP、PETS、PETS 2.0 三個固定主機設定，不支援新增其他系統或自訂 Profile。新主機必須先在 Ubuntu 主控台核對 ED25519 SHA256 指紋；管理中心掃描到相符的公鑰後，才會寫入該 Profile 專用的 `known_hosts`。MVP 沿用原本 Windows OpenSSH `known_hosts`，新主機不會覆蓋舊信任。
+- **Pets 主機選擇與設定**：管理中心專門管理 Pets 系統，提供 MVP、PETS、PETS 2.0 三個固定主機設定，不支援新增其他系統或自訂 Profile。可編輯名稱、IP／網域、Ubuntu SSH 帳號及網站網址，也可移除或還原預設主機設定；至少保留一個主機。移除只影響本機設定，不會操作 Ubuntu。若 IP／網域改變，原主機指紋信任會清除。
+- **主機指紋核對**：主機首次使用或連線位置變更後，必須先在 Ubuntu 主控台核對 ED25519 SHA256 指紋。管理中心掃描到相符的公鑰後，才會寫入該主機專用的 `known_hosts`；MVP 原有 Windows OpenSSH `known_hosts` 只在建立本機專用信任前作為相容性備援。
+- **SSH 金鑰設定／輪替**：在所選且已信任的主機上，點選「設定／輪替 SSH 金鑰」並輸入 Ubuntu 帳號密碼。管理中心在 Windows 產生該主機專用的 ED25519 私鑰、限制私鑰檔案權限，透過已驗證指紋的 SSH 密碼連線將公鑰加入 Ubuntu，再測試新私鑰登入；確認成功後才切換 Windows 私鑰。私鑰不會傳到 Ubuntu，密碼不會寫入設定檔。新私鑰不設 passphrase，以配合非互動 SSH；請以 Windows 帳號權限及電腦本身安全措施保護私鑰，絕不可分享或貼到聊天。未輪替的主機仍使用舊版共用私鑰；如多個主機設定指向同一 IP／帳號，需逐一輪替，工具會在尚有設定沿用舊金鑰時暫緩撤銷 Ubuntu 上的舊公鑰。若舊公鑰無法確認移除，畫面會明確顯示警告。
 - **首次建置 Ubuntu**：只允許 PETS / PETS 2.0 profile。透過已核對的 SSH 金鑰將初始化腳本送入 Ubuntu，安裝 Node.js 24、Git、MySQL、Nginx，建立空白資料庫、專案服務及初始管理者，最後執行既有部署檢查。需要 Ubuntu 24.04、SSH 已啟用、`zhe` 帳號已授權管理端公鑰且具 sudo 權限。初始管理者密碼只供首次 seed 使用，成功後會從 `.env` 移除；操作前須確認版本基準及 GitHub 讀取方式。
 - **查看狀態**：顯示本機分支、版本及工作目錄狀態；選擇目標主機後，唯讀查詢其部署狀態。
 - **建立備份**：使用既有 Production 備份腳本。確認前會告知腳本會清除超過 30 天的舊備份及 checksum；成功結果還會驗證新備份及 checksum。
@@ -18,7 +20,27 @@
 
 維運操作以 Production 為目標。網頁不保存密碼，服務端只有固定功能 API；Production 操作與本機 Git 寫入不可同時執行。Git 提交可能執行本機 hook 或檔案過濾設定。逾時或中斷而無法確認結果時，頁面會標示結果未確認，不會自動重試。服務只綁定 `127.0.0.1`，每次啟動產生新的本機請求權杖。
 
-主機設定與已核對的指紋保存在 `%LOCALAPPDATA%\Pets-Operations-Center\hosts.json` 及各 Profile 的 `known_hosts` 檔，不寫入 Git。新機指紋需先在 VM 主控台執行 `sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`，並輸入管理中心與主控台完全相同的 SHA256 值。掃描新主機金鑰時會優先使用 Git for Windows 的 `ssh-keyscan`（若已安裝），再使用 Windows OpenSSH 版本，以避開 Windows 內建掃描器與部分 Ubuntu SSH KEX 組合不相容的情形。連線參數使用專用 `known_hosts` 檔；若 Windows 使用者路徑含空格，管理中心會轉成短路徑再傳給 OpenSSH。新舊 VM 共用同一對外 IP 時，切換期間只能啟動其中一台；錯選 profile 會因主機金鑰不符而拒絕連線。
+主機設定與已核對的指紋保存在 `%LOCALAPPDATA%\Pets-Operations-Center\hosts.json` 及各主機的 `known_hosts` 檔，不寫入 Git。指紋需在 Ubuntu 主控台執行 `sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`，並輸入管理中心與主控台完全相同的 SHA256 值。掃描主機金鑰時會優先使用 Git for Windows 的 `ssh-keyscan`（若已安裝），再使用 Windows OpenSSH 版本，以避開 Windows 內建掃描器與部分 Ubuntu SSH KEX 組合不相容的情形。若 Windows 使用者路徑含空格，管理中心會將 `known_hosts` 路徑轉成短路徑再傳給 OpenSSH。新舊 VM 共用同一對外 IP 時，切換期間只能啟動其中一台；錯選設定會因主機金鑰不符而拒絕連線。
+
+### 全新 Ubuntu 首次連線
+
+全新 Ubuntu 尚未接受管理中心的 SSH 公鑰時，請先透過 Ubuntu 本機螢幕／鍵盤或 VMware 主控台完成初始設定：
+
+1. 安裝 Ubuntu 時建立一般登入帳號與密碼。預設三個 Pets 主機設定使用 SSH 帳號 `zhe`；若實際帳號不同，先在管理中心「編輯所選主機」修改帳號。
+2. 以該帳號登入 Ubuntu 主控台，安裝並啟用 OpenSSH Server：
+
+   ```bash
+   sudo apt update
+   sudo apt install -y openssh-server
+   sudo systemctl enable --now ssh
+   sudo systemctl status ssh
+   ```
+
+   若 Ubuntu 使用 UFW 防火牆且已啟用，允許 SSH：`sudo ufw allow OpenSSH`。也需確認 Windows 管理電腦可連到該主機的 TCP 22 埠。
+3. 在 Ubuntu 主控台取得 ED25519 主機指紋：`sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`。回到管理中心選擇正確主機，按「核對／更新主機指紋」，輸入完全相同的 `SHA256:...` 值。指紋不符時不要信任。
+4. 完成指紋信任後，按「設定／輪替 SSH 金鑰」。在彈出的密碼欄位輸入該 Ubuntu 帳號密碼。這是透過已核對主機指紋的一次性 SSH 密碼登入，用來安裝 Windows 新公鑰；管理中心不會保存密碼。
+
+若 Ubuntu 尚未安裝／啟用 SSH、網路不通、密碼登入被停用或帳號無法登入，管理中心無法替一台完全不可登入的主機建立第一條連線；請先從 Ubuntu 主控台修復 SSH／網路／帳號，再重試。私鑰保留在 Windows 的 `%USERPROFILE%\.ssh`；每個主機完成輪替後會有自己的 `pets3_production-<主機ID>` 私鑰。舊版 `%USERPROFILE%\.ssh\pets3_production` 會在其他設定仍使用時保留，不要手動刪除，直到相關主機都完成輪替並驗證登入。
 
 此管理中心、首次建置、部署、備份與還原皆為 Pets 專用功能，不提供 Car 或考勤等其他系統的部署流程。
 
