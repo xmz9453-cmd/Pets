@@ -704,7 +704,9 @@ class OperationsManager {
     }
     if (kind === 'bootstrap') {
       const host = this.getHost(payload.hostId || DEFAULT_HOST_ID);
-      if (host.id === 'mvp') throw new Error('為保護現有主機，首次建置只允許 PETS 或 PETS 2.0 主機設定。');
+      if (!['pets', 'pets-2'].includes(host.id)) {
+        throw new Error('首次建置僅支援 PETS 或 PETS 2.0 主機設定；未對其他目標執行。');
+      }
       if (payload.confirmation !== 'BOOTSTRAP' ||
           typeof payload.sudoPassword !== 'string' || payload.sudoPassword.length < 1 ||
           payload.sudoPassword.length > 1024 || /[\r\n\0]/.test(payload.sudoPassword) ||
@@ -749,7 +751,9 @@ class OperationsManager {
 
   async performBootstrap(operation, payload) {
     const host = this.getHost(payload.hostId || DEFAULT_HOST_ID);
-    if (host.id === 'mvp') throw new Error('為保護現有主機，拒絕對 MVP 執行首次建置。');
+    if (!['pets', 'pets-2'].includes(host.id)) {
+      throw new Error('首次建置僅支援 PETS 或 PETS 2.0 主機設定；未對其他目標執行。');
+    }
     const scriptPath = path.join(this.root, 'deploy', 'bootstrap-ubuntu.sh');
     const script = await fs.readFile(scriptPath, 'utf8').then((contents) => contents.replace(/\r\n?/g, '\n')).catch(() => {
       throw new Error('找不到 Ubuntu 首次建置腳本；未連線主機。');

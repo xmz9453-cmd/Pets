@@ -344,6 +344,34 @@ test('主機指紋以每個 profile 獨立核對並保存，錯誤指紋不會�
   }
 });
 
+test('本機設定升級後只載入固定 Pets 主機，不載入舊格式中的自訂系統 Profile', async () => {
+  const { mkdtemp, rm, writeFile } = require('node:fs/promises');
+  const { tmpdir } = require('node:os');
+  const { HostRegistry } = require('../hosts');
+  const directory = await mkdtemp(path.join(tmpdir(), 'pets-profile-upgrade-test-'));
+  try {
+    await writeFile(path.join(directory, 'hosts.json'), JSON.stringify({
+      profiles: [{
+        id: 'profile-car123',
+        name: 'Car',
+        host: 'car.example.com',
+        username: 'deploy',
+        projectRoot: '/srv/car',
+        backupDirectory: '/srv/car-backups',
+        stateFile: '/srv/car-state/deployment.state',
+        siteUrl: 'https://car.example.com/',
+        fingerprint: '',
+        hostKeyAlias: 'ops-car',
+      }],
+      removed: ['pets'],
+    }));
+    const registry = new HostRegistry({ configPath: path.join(directory, 'hosts.json'), dataDirectory: directory });
+    assert.deepEqual(registry.list().map((profile) => profile.id), ['mvp', 'pets', 'pets-2']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('主機金鑰掃描優先使用 Git for Windows 的 ssh-keyscan', () => {
   const operations = fs.readFileSync(path.join(__dirname, '..', 'operations.js'), 'utf8');
   const candidates = operations.slice(operations.indexOf('const candidates = ['), operations.indexOf('let sshKeyscan'));
@@ -374,16 +402,22 @@ test('Windows SSH 路徑含空格時轉成短路徑供 OpenSSH 使用', async ()
 test('新主機 bootstrap 被限制在已信任的非 MVP profile', async () => {
   const { OperationsManager } = require('../operations');
   const { DEFAULTS } = require('../hosts');
-  const registry = { get: (id) => DEFAULTS.find((profile) => profile.id === id) };
+  const registry = {
+    get: (id) => id === 'custom' ? { ...DEFAULTS[1], id: 'custom', fingerprint: 'trusted' } : DEFAULTS.find((profile) => profile.id === id),
+  };
   const manager = new OperationsManager({ hostRegistry: registry });
   await assert.rejects(manager.startOperation('bootstrap', {
     hostId: 'mvp', confirmation: 'BOOTSTRAP', sudoPassword: 'sudo',
     ownerUsername: 'owner', ownerPassword: 'a'.repeat(16),
-  }), /只允許 PETS/);
+  }), /僅支援 PETS/);
   await assert.rejects(manager.startOperation('bootstrap', {
     hostId: 'pets', confirmation: 'BOOTSTRAP', sudoPassword: 'sudo',
     ownerUsername: 'owner', ownerPassword: 'a'.repeat(16),
   }), /尚未完成指紋核對/);
+  await assert.rejects(manager.startOperation('bootstrap', {
+    hostId: 'custom', confirmation: 'BOOTSTRAP', sudoPassword: 'sudo',
+    ownerUsername: 'owner', ownerPassword: 'a'.repeat(16),
+  }), /僅支援 PETS/);
 });
 
 test('Ubuntu bootstrap 使用官方 MySQL 8.4 LTS 並驗證安裝版本', () => {

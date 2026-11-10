@@ -111,13 +111,17 @@ class HostRegistry {
     }
 
     try {
-      const saved = JSON.parse(text);
-      if (!Array.isArray(saved) || saved.length > 20) throw new Error('invalid');
+      const parsed = JSON.parse(text);
+      const saved = Array.isArray(parsed) ? parsed : parsed.profiles;
+      if (!Array.isArray(saved) || saved.length > (Array.isArray(parsed) ? 20 : 52)) throw new Error('invalid');
       const next = new Map(this.profiles);
       const ids = new Set();
       for (const profile of saved) {
         const valid = validateProfile(profile);
-        if (valid.id === 'mvp' || !next.has(valid.id) || ids.has(valid.id)) throw new Error('invalid profile id');
+        if (valid.id === 'mvp' || !next.has(valid.id) || ids.has(valid.id)) {
+          if (!Array.isArray(parsed) && !['mvp', 'pets', 'pets-2'].includes(valid.id)) continue;
+          throw new Error('invalid profile id');
+        }
         ids.add(valid.id);
         next.set(valid.id, valid);
       }
@@ -140,6 +144,16 @@ class HostRegistry {
     const profile = this.profiles.get(id);
     if (!profile) throw new Error('找不到所選主機設定。');
     return profile;
+  }
+
+  async saveProfiles(profiles) {
+    const directory = path.dirname(this.configPath);
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    const temporaryConfig = `${this.configPath}.${process.pid}.tmp`;
+    await fs.writeFile(temporaryConfig, `${JSON.stringify(profiles, null, 2)}\n`, {
+      encoding: 'utf8', mode: 0o600, flag: 'wx',
+    });
+    await fs.rename(temporaryConfig, this.configPath);
   }
 
   async trust(id, suppliedFingerprint) {
@@ -181,11 +195,7 @@ class HostRegistry {
     const updated = validateProfile({ ...profile, fingerprint: expected });
     this.profiles.set(id, updated);
     const savedProfiles = [...this.profiles.values()].filter((item) => item.id !== 'mvp');
-    const temporaryConfig = `${this.configPath}.${process.pid}.tmp`;
-    await fs.writeFile(temporaryConfig, `${JSON.stringify(savedProfiles, null, 2)}\n`, {
-      encoding: 'utf8', mode: 0o600, flag: 'wx',
-    });
-    await fs.rename(temporaryConfig, this.configPath);
+    await this.saveProfiles(savedProfiles);
     return { id, fingerprint: expected, trusted: true };
   }
 
