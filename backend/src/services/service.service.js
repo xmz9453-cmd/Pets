@@ -3,6 +3,8 @@ const serviceRepository = require('../data/service.repository');
 const VALID_TYPES = new Set(['GROOMING', 'BOARDING', 'ADD_ON']);
 const VALID_SPECIES = new Set(['DOG', 'CAT', 'BOTH']);
 const VALID_STATUSES = new Set(['ACTIVE', 'INACTIVE']);
+const PRICE_CATEGORIES = new Set(['STANDARD', 'BATH', 'ELECTRIC_CLIPPER', 'HAND_SCISSOR']);
+const PACKAGE_POINTS_BY_CATEGORY = { STANDARD: 0, BATH: 1, ELECTRIC_CLIPPER: 2, HAND_SCISSOR: 3 };
 
 function validation(fields) {
   const error = new Error('Validation failed');
@@ -29,6 +31,9 @@ function validatePayload(payload, partial = false) {
   if (payload.unit !== undefined && (!String(payload.unit).trim() || String(payload.unit).length > 20)) errors.unit = 'Unit must be 1-20 characters';
   if (payload.allow_fractional_quantity !== undefined && typeof payload.allow_fractional_quantity !== 'boolean') errors.allow_fractional_quantity = 'Allow fractional quantity must be a boolean';
   if (payload.allow_fractional_quantity === true && payload.type !== 'ADD_ON') errors.allow_fractional_quantity = 'Only add-on services can have fractional quantities';
+  if (payload.breed_price_category !== undefined && !PRICE_CATEGORIES.has(payload.breed_price_category)) errors.breed_price_category = 'Breed price category is invalid';
+  if (payload.breed_price_category !== undefined && payload.type !== undefined && payload.type !== 'GROOMING' && payload.breed_price_category !== 'STANDARD') errors.breed_price_category = 'Only grooming services can use breed-based prices';
+  if (payload.package_point_cost !== undefined && Number(payload.package_point_cost) !== PACKAGE_POINTS_BY_CATEGORY[payload.breed_price_category || 'STANDARD']) errors.package_point_cost = 'Package point cost must match the service price category';
   if (payload.type === 'GROOMING' && payload.unit !== undefined && String(payload.unit).trim() !== '次') {
     errors.unit = 'GROOMING unit must be 次';
   }
@@ -81,6 +86,8 @@ async function createService(payload = {}) {
     ...payload,
     name,
     sort_order: Number(payload.sort_order ?? 0),
+    breed_price_category: payload.type === 'GROOMING' ? (payload.breed_price_category || 'STANDARD') : 'STANDARD',
+    package_point_cost: payload.type === 'GROOMING' ? PACKAGE_POINTS_BY_CATEGORY[payload.breed_price_category || 'STANDARD'] : 0,
   };
   if (normalizedPayload.type === 'BOARDING' && (normalizedPayload.duration_minutes === undefined || normalizedPayload.duration_minutes === null || normalizedPayload.duration_minutes === '')) {
     normalizedPayload.duration_minutes = 60;
@@ -103,6 +110,11 @@ async function updateService(id, payload = {}) {
     throw validation({ name: 'Service name already exists' });
   }
   const nextPayload = { ...payload };
+  if (payload.breed_price_category !== undefined || payload.type !== undefined) {
+    const category = payload.breed_price_category || (nextType === 'GROOMING' ? existing.breed_price_category : 'STANDARD');
+    nextPayload.breed_price_category = nextType === 'GROOMING' ? category : 'STANDARD';
+    nextPayload.package_point_cost = nextType === 'GROOMING' ? PACKAGE_POINTS_BY_CATEGORY[category] : 0;
+  }
   if (nextType !== 'ADD_ON' && existing.allow_fractional_quantity) nextPayload.allow_fractional_quantity = false;
   if (nextPayload.name !== undefined) nextPayload.name = String(nextPayload.name).trim();
   if (nextPayload.price !== undefined) nextPayload.price = Number(nextPayload.price);

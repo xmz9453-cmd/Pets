@@ -377,6 +377,10 @@ export async function getPet(petId) {
   return request(`/api/pets/${petId}`);
 }
 
+export async function getPetBreedPrices() {
+  return request('/api/pet-breed-prices');
+}
+
 export async function createPet(payload) {
   return request('/api/pets', {
     method: 'POST',
@@ -744,6 +748,21 @@ export async function deleteOrder(orderId) { return request(`/api/orders/${order
 export async function getOrderPayments(orderId) { return request(`/api/orders/${orderId}/payments`); }
 export async function createPayment(orderId, payload) { return request(`/api/orders/${orderId}/payments`, { method: 'POST', body: JSON.stringify(payload) }); }
 export async function voidPayment(paymentId, payload = {}) { return request(`/api/payments/${paymentId}/void`, { method: 'POST', body: JSON.stringify(payload) }); }
+export async function getServicePackagePlans(params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== null && value !== '') search.append(key, String(value)); });
+  const query = search.toString();
+  return request(`/api/service-package-plans${query ? `?${query}` : ''}`);
+}
+export async function createServicePackagePlan(payload) { return request('/api/service-package-plans', { method: 'POST', body: JSON.stringify(payload) }); }
+export async function updateServicePackagePlan(planId, payload) { return request(`/api/service-package-plans/${planId}`, { method: 'PATCH', body: JSON.stringify(payload) }); }
+export async function getCustomerServicePackages(customerId, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== null && value !== '') search.append(key, String(value)); });
+  const query = search.toString();
+  return request(`/api/customers/${customerId}/service-packages${query ? `?${query}` : ''}`);
+}
+export async function purchaseServicePackage(payload) { return request('/api/service-packages/purchase', { method: 'POST', body: JSON.stringify(payload) }); }
 export async function getReport(params = {}) {
   const search = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== null && value !== '') search.append(key, String(value)); });

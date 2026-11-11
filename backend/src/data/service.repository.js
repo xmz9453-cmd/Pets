@@ -85,9 +85,9 @@ async function findByName(name, species, excludeId = null) {
 
 async function createService(payload) {
   const [result] = await getPool().query(
-    `INSERT INTO services (shop_id, name, type, description, price, unit, allow_fractional_quantity, species, duration_minutes, sort_order, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
-    [getCurrentShopId(), payload.name, payload.type, payload.description || null, payload.price, payload.unit, payload.allow_fractional_quantity ?? false, payload.species, payload.duration_minutes, payload.sort_order],
+    `INSERT INTO services (shop_id, name, type, description, price, unit, allow_fractional_quantity, species, duration_minutes, sort_order, breed_price_category, package_point_cost, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
+    [getCurrentShopId(), payload.name, payload.type, payload.description || null, payload.price, payload.unit, payload.allow_fractional_quantity ?? false, payload.species, payload.duration_minutes, payload.sort_order, payload.breed_price_category || 'STANDARD', payload.package_point_cost || 0],
   );
   return getServiceById(result.insertId);
 }
@@ -95,7 +95,7 @@ async function createService(payload) {
 async function updateService(id, payload) {
   const fields = [];
   const values = [];
-  for (const key of ['name', 'type', 'description', 'price', 'unit', 'allow_fractional_quantity', 'species', 'duration_minutes', 'sort_order', 'status']) {
+  for (const key of ['name', 'type', 'description', 'price', 'unit', 'allow_fractional_quantity', 'species', 'duration_minutes', 'sort_order', 'status', 'breed_price_category', 'package_point_cost']) {
     if (payload[key] !== undefined) {
       fields.push(`${key} = ?`);
       values.push(payload[key] === '' ? null : payload[key]);

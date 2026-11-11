@@ -61,6 +61,55 @@ async function voidPayment(paymentId, payload = {}, operatorId) {
     const order = await paymentRepository.getOrderForUpdate(payment.order_id, connection);
     if (payment.status === 'VOID') throw conflict('PAYMENT_ALREADY_VOID', 'Payment is already void');
     if (payment.order_status === 'CANCELLED') throw conflict('ORDER_CANCELLED', 'Cancelled orders cannot be changed');
+    const [packageRows] = await connection.query(
+      `SELECT id, purchased_uses, remaining_uses, status
+       FROM customer_service_packages
+       WHERE shop_id = ? AND purchase_order_id = ?
+       LIMIT 1 FOR UPDATE`,
+      [getCurrentShopId(), payment.order_id],
+    );
+    if (packageRows[0]) {
+      const purchasedPackage = packageRows[0];
+      if (Number(purchasedPackage.remaining_uses) !== Number(purchasedPackage.purchased_uses)
+        || !['ACTIVE', 'EXPIRED'].includes(purchasedPackage.status)) {
+        throw conflict('SERVICE_PACKAGE_ALREADY_USED', '已使用的服務方案不可作廢退款');
+      }
+      const [serviceBalances] = await connection.query(
+        `SELECT service_id, remaining_uses
+         FROM customer_service_package_balances
+         WHERE shop_id = ? AND customer_service_package_id = ?
+         FOR UPDATE`,
+        [getCurrentShopId(), purchasedPackage.id],
+      );
+      await connection.query(
+        `UPDATE customer_service_packages
+         SET status = 'VOID', remaining_uses = 0
+         WHERE id = ? AND shop_id = ?`,
+        [purchasedPackage.id, getCurrentShopId()],
+      );
+      await connection.query(
+        `UPDATE customer_service_package_balances
+         SET remaining_uses = 0
+         WHERE shop_id = ? AND customer_service_package_id = ?`,
+        [getCurrentShopId(), purchasedPackage.id],
+      );
+      if (serviceBalances.length === 0) {
+        await connection.query(
+          `INSERT INTO customer_service_package_transactions
+             (shop_id, customer_service_package_id, transaction_type, change_uses, order_id, operator_id, note)
+           VALUES (?, ?, 'REFUND', ?, ?, ?, '未使用方案退款')`,
+          [getCurrentShopId(), purchasedPackage.id, -Number(purchasedPackage.remaining_uses), payment.order_id, operatorId],
+        );
+      }
+      for (const balance of serviceBalances) {
+        await connection.query(
+          `INSERT INTO customer_service_package_transactions
+             (shop_id, customer_service_package_id, transaction_type, service_id, change_uses, order_id, operator_id, note)
+           VALUES (?, ?, 'REFUND', ?, ?, ?, ?, '未使用方案退款')`,
+          [getCurrentShopId(), purchasedPackage.id, balance.service_id, -Number(balance.remaining_uses), payment.order_id, operatorId],
+        );
+      }
+    }
     await paymentRepository.voidPayment(parsedPaymentId, operatorId, payload.reason, connection);
     const summary = await refreshOrderPaymentStatus(order, connection);
     await connection.commit();

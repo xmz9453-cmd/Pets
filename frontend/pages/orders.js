@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { createOrder, deleteOrder, getAppointment, getCustomers, getOrders, getProducts, getServices, getCurrentStaff } from '../api/client';
+import { createOrder, deleteOrder, getAppointment, getCustomer, getCustomerServicePackages, getCustomers, getOrders, getPetBreedPrices, getProducts, getServices, getCurrentStaff } from '../api/client';
 
 const labels = { DOG: '狗', CAT: '貓', SERVICE: '服務', PRODUCT: '商品', UNPAID: '未付款', PAID: '已付款', CANCELLED: '已取消' };
 
@@ -26,6 +26,9 @@ export default function OrdersPage() {
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
   const [appointment, setAppointment] = useState(null);
+  const [customerPackages, setCustomerPackages] = useState([]);
+  const [customerPets, setCustomerPets] = useState([]);
+  const [breedPrices, setBreedPrices] = useState([]);
   const [sourceType, setSourceType] = useState('WALK_IN');
   const [customerId, setCustomerId] = useState('');
   const [businessUnit, setBusinessUnit] = useState('DOG');
@@ -46,24 +49,39 @@ export default function OrdersPage() {
   async function load({ initializeAppointmentItems = false } = {}) {
     try {
       setLoading(true);
-      const [customerData, serviceData, productData, orderData] = await Promise.all([
+      const [customerData, serviceData, productData, orderData, breedPriceData] = await Promise.all([
         getCustomers({ status: 'ACTIVE' }),
         getServices({ status: 'ACTIVE' }),
         getProducts({ status: 'ACTIVE', sellable: true }),
         getOrders(),
+        getPetBreedPrices(),
       ]);
       setCustomers(customerData.customers || []);
       setServices(serviceData.services || []);
       setProducts(productData.products || []);
       setOrders(orderData.orders || []);
+      setBreedPrices(breedPriceData.breeds || []);
       if (router.query.source_type === 'APPOINTMENT' && router.query.appointment_id) {
         const result = await getAppointment(router.query.appointment_id);
         setSourceType('APPOINTMENT');
         setAppointment(result.appointment);
         setCustomerId(String(result.appointment.customer_id));
+        const packageData = await getCustomerServicePackages(result.appointment.customer_id, { usable_only: 'true' });
+        setCustomerPackages(packageData.packages || []);
+        setCustomerPets(result.appointment.pets || []);
         const appointmentPets = result.appointment.pets || [];
         setBusinessUnit(appointmentPets[0]?.species || 'DOG');
         if (initializeAppointmentItems) {
+          const getAppointmentPrice = (serviceId, pet, fallback) => {
+            const serviceMaster = (serviceData.services || []).find((service) => Number(service.id) === Number(serviceId));
+            const priceField = {
+              BATH: 'bath_price',
+              ELECTRIC_CLIPPER: 'electric_clipper_price',
+              HAND_SCISSOR: 'hand_scissor_price',
+            }[serviceMaster?.breed_price_category];
+            const breedPrice = (breedPriceData.breeds || []).find((item) => item.breed === pet.breed);
+            return priceField && breedPrice?.[priceField] != null ? Number(breedPrice[priceField]) : Number(fallback);
+          };
           setItems(appointmentPets.flatMap((pet) => [
             ...(pet.services || []).map((service) => ({
               itemType: 'SERVICE',
@@ -72,10 +90,10 @@ export default function OrdersPage() {
               petName: pet.name,
               name: service.name,
               unit: service.unit || (service.type === 'BOARDING' ? '晚' : '次'),
-              transaction_price: Number(service.price),
+              transaction_price: getAppointmentPrice(service.id, pet, service.price),
               allow_fractional_quantity: Boolean(service.allow_fractional_quantity),
               quantity: 1,
-              item_amount: Number(service.price),
+              item_amount: getAppointmentPrice(service.id, pet, service.price),
             })),
             ...(pet.add_on_services || []).map((service) => ({
               itemType: 'SERVICE',
@@ -94,6 +112,8 @@ export default function OrdersPage() {
       } else {
         setSourceType('WALK_IN');
         setAppointment(null);
+        setCustomerPackages([]);
+        setCustomerPets([]);
         setItems([]);
       }
       setError('');
@@ -124,12 +144,86 @@ export default function OrdersPage() {
     return services.filter((service) => !pet || service.species === 'BOTH' || service.species === pet.species);
   }
 
+  function getAvailablePackagesForItem(item, itemIndex) {
+    const service = services.find((availableService) => Number(availableService.id) === Number(item.itemId));
+    return customerPackages
+      .filter((servicePackage) => Number(servicePackage.pet_id) === Number(item.pet_id))
+      .map((servicePackage) => ({
+        ...servicePackage,
+        packagePointCost: Number(service?.package_point_cost || 0),
+        serviceBalance: servicePackage.service_balances.find((balance) => (
+          Number(balance.service_id) === Number(item.itemId) && balance.remaining_uses > 0
+        )),
+      }))
+      .filter((servicePackage) => (
+        !items.some((candidate, candidateIndex) => (
+          candidateIndex !== itemIndex
+          && Number(candidate.customer_service_package_id) === Number(servicePackage.id)
+        ))
+        && (servicePackage.is_point_package
+          ? servicePackage.packagePointCost > 0 && servicePackage.remaining_uses >= servicePackage.packagePointCost
+          : servicePackage.serviceBalance)
+      ));
+  }
+
+  function getBreedPrice(service, petId) {
+    if (!service || !service.breed_price_category || service.breed_price_category === 'STANDARD') return null;
+    const pet = sourceType === 'APPOINTMENT'
+      ? (appointment?.pets || []).find((appointmentPet) => Number(appointmentPet.pet_id) === Number(petId))
+      : customerPets.find((customerPet) => Number(customerPet.id) === Number(petId));
+    if (!pet?.breed) return null;
+    const breedPrice = breedPrices.find((item) => item.breed === pet.breed);
+    if (!breedPrice) return null;
+    const priceField = {
+      BATH: 'bath_price',
+      ELECTRIC_CLIPPER: 'electric_clipper_price',
+      HAND_SCISSOR: 'hand_scissor_price',
+    }[service.breed_price_category];
+    return breedPrice[priceField] == null ? null : Number(breedPrice[priceField]);
+  }
+
   function selectItem(value) {
     setItemId(value);
     const selected = available.find((item) => String(item.id) === value);
-    setPrice(selected ? selected.price : '');
     const appointmentPet = getAppointmentPetForService(selected);
-    setSelectedPetId(appointmentPet ? String(appointmentPet.pet_id) : '');
+    const nextPetId = appointmentPet ? String(appointmentPet.pet_id) : sourceType === 'WALK_IN' ? selectedPetId : '';
+    setSelectedPetId(nextPetId);
+    const breedPrice = itemType === 'SERVICE' ? getBreedPrice(selected, nextPetId) : null;
+    setPrice(selected ? breedPrice ?? selected.price : '');
+  }
+
+  async function selectCustomer(value) {
+    setCustomerId(value);
+    setCustomerPackages([]);
+    setCustomerPets([]);
+    setSelectedPetId('');
+    setItems([]);
+    if (!value) return;
+    try {
+      const [customerResult, packageResult] = await Promise.all([
+        getCustomer(value),
+        getCustomerServicePackages(value, { usable_only: 'true' }),
+      ]);
+      const pets = (customerResult.customer.pets || []).filter((pet) => pet.status === 'ACTIVE');
+      setCustomerPets(pets);
+      setCustomerPackages(packageResult.packages || []);
+      if (pets.length) {
+        setSelectedPetId(String(pets[0].id));
+        setBusinessUnit(pets[0].species);
+        const selectedService = services.find((service) => Number(service.id) === Number(itemId));
+        if (selectedService) {
+          const priceField = {
+            BATH: 'bath_price',
+            ELECTRIC_CLIPPER: 'electric_clipper_price',
+            HAND_SCISSOR: 'hand_scissor_price',
+          }[selectedService.breed_price_category];
+          const breedPrice = breedPrices.find((item) => item.breed === pets[0].breed);
+          setPrice(priceField && breedPrice?.[priceField] != null ? breedPrice[priceField] : selectedService.price);
+        }
+      }
+    } catch (customerError) {
+      setError(customerError.message || '載入客戶寵物與包月卡失敗');
+    }
   }
 
   function addItem() {
@@ -145,11 +239,17 @@ export default function OrdersPage() {
       setError('所選服務沒有符合預約寵物的項目');
       return;
     }
-    const petId = sourceType === 'APPOINTMENT' && itemType === 'SERVICE' ? Number(selectedPetId) : null;
+    const walkInPet = customerPets.find((pet) => String(pet.id) === selectedPetId);
+    const pet = sourceType === 'APPOINTMENT' ? appointmentPet : walkInPet;
+    if (pet && selected.species !== 'BOTH' && selected.species !== pet.species) {
+      setError('所選服務不適用於這隻寵物');
+      return;
+    }
+    const petId = itemType === 'SERVICE' && pet ? Number(pet.id || pet.pet_id) : null;
     setItems([...items, {
       itemType,
       itemId: selected.id,
-      ...(petId ? { pet_id: petId, petName: appointmentPet.name } : {}),
+      ...(petId ? { pet_id: petId, petName: pet.name } : {}),
       name: selected.name,
       unit: selected.unit || (itemType === 'SERVICE' ? '次' : '件'),
       allow_fractional_quantity: Boolean(selected.allow_fractional_quantity),
@@ -172,9 +272,25 @@ export default function OrdersPage() {
         const selected = services.find((service) => Number(service.id) === Number(value));
         next.name = selected?.name || item.name;
         if (selected) next.transaction_price = Number(selected.price);
+        next.customer_service_package_id = null;
       }
       next.item_amount = Math.round(Number(next.transaction_price) * Number(next.quantity));
       return next;
+    }));
+  }
+
+  function updatePackageForItem(index, value) {
+    setItems((current) => current.map((item, itemIndex) => {
+      if (itemIndex !== index) return item;
+      const selected = services.find((service) => Number(service.id) === Number(item.itemId));
+      const packageId = value ? Number(value) : null;
+      const transactionPrice = packageId ? 0 : Number(selected?.price ?? item.transaction_price);
+      return {
+        ...item,
+        customer_service_package_id: packageId,
+        transaction_price: transactionPrice,
+        item_amount: Math.round(transactionPrice * Number(item.quantity)),
+      };
     }));
   }
 
@@ -243,6 +359,7 @@ export default function OrdersPage() {
         items: items.map((item) => ({
           [item.itemType === 'SERVICE' ? 'service_id' : 'product_id']: item.itemId,
           ...(sourceType === 'APPOINTMENT' && item.itemType === 'SERVICE' ? { pet_id: item.pet_id } : {}),
+          ...(item.customer_service_package_id ? { customer_service_package_id: item.customer_service_package_id } : {}),
           transaction_price: item.transaction_price,
           quantity: item.quantity,
         })),
@@ -303,7 +420,7 @@ export default function OrdersPage() {
               ) : (
                 <>
                   <label className="form-label">客戶</label>
-                  <select className="form-select mb-3" value={customerId} onChange={(event) => setCustomerId(event.target.value)}>
+                  <select className="form-select mb-3" value={customerId} onChange={(event) => selectCustomer(event.target.value)}>
                     <option value="">請選擇客戶</option>
                     {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}（{customer.phone}）</option>)}
                   </select>
@@ -331,6 +448,24 @@ export default function OrdersPage() {
                 </div>
               </div>
               <div className="row g-2 mt-1">
+                {sourceType === 'WALK_IN' && customerId && itemType === 'SERVICE' ? (
+                  <div className="col-12">
+                    <label className="form-label">服務寵物（包月扣次時必選）</label>
+                    <select className="form-select" value={selectedPetId} onChange={(event) => {
+                      setSelectedPetId(event.target.value);
+                      const pet = customerPets.find((customerPet) => String(customerPet.id) === event.target.value);
+                      if (pet) setBusinessUnit(pet.species);
+                                    const breedPrice = itemType === 'SERVICE' ? getBreedPrice(selectedAvailableItem, event.target.value) : null;
+                                    if (selectedAvailableItem) setPrice(breedPrice ?? selectedAvailableItem.price);
+                                  }}>
+                      <option value="">不指定寵物</option>
+                      {customerPets
+                        .filter((pet) => !selectedAvailableItem || selectedAvailableItem.species === 'BOTH' || selectedAvailableItem.species === pet.species)
+                        .map((pet) => <option key={pet.id} value={pet.id}>{pet.name}（{pet.species === 'DOG' ? '狗' : '貓'}）</option>)}
+                    </select>
+                    {!customerPets.length ? <div className="form-text">此客戶尚無啟用中的寵物資料。</div> : null}
+                  </div>
+                ) : null}
                 <div className="col-4">
                   <label className="form-label">數量</label>
                   <input className="form-control" type="number" min={allowFractionalQuantity ? '0.01' : '1'} step={allowFractionalQuantity ? '0.01' : '1'} value={quantity} onChange={(event) => setQuantity(event.target.value)} />
@@ -392,6 +527,33 @@ export default function OrdersPage() {
                         <div>{formatAmount(item.item_amount)}</div>
                       </div>
                     </div>
+                    {item.itemType === 'SERVICE' && item.pet_id && services.find((service) => Number(service.id) === Number(item.itemId))?.type === 'GROOMING' ? (
+                      <div>
+                        <label className="form-label small mb-1" htmlFor={`package-use-${index}`}>使用美容包月卡（此項只選一種美容主服務）</label>
+                        <select
+                          id={`package-use-${index}`}
+                          className="form-select form-select-sm"
+                          value={item.customer_service_package_id || ''}
+                          onChange={(event) => updatePackageForItem(index, event.target.value)}
+                        >
+                          <option value="">不使用包套（依單價收費）</option>
+                          {Number(item.quantity) === 1 && getAvailablePackagesForItem(item, index).length === 0 ? (
+                            <option value="" disabled>此寵物／服務沒有可用美容包月卡</option>
+                          ) : null}
+                          {Number(item.quantity) === 1 ? getAvailablePackagesForItem(item, index).map((servicePackage) => (
+                              <option key={servicePackage.id} value={servicePackage.id}>
+                                {servicePackage.plan_name}（{servicePackage.pet_name}・{servicePackage.is_point_package
+                                  ? `剩餘 ${servicePackage.remaining_uses} 點，${{
+                                    BATH: '洗澡扣 1 點',
+                                    ELECTRIC_CLIPPER: '電剪（含洗澡）扣 2 點',
+                                    HAND_SCISSOR: '全手修剪（含洗澡）扣 3 點',
+                                  }[services.find((availableService) => Number(availableService.id) === Number(item.itemId))?.breed_price_category]}`
+                                  : `此服務剩餘 ${servicePackage.serviceBalance.remaining_uses} 次`}・至 {servicePackage.expires_on}）
+                              </option>
+                            )) : null}
+                        </select>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </li>)}</ul>}

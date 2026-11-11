@@ -88,7 +88,7 @@ async function getCustomerById(customerId) {
 
   const customer = normalizeCustomer(rows[0]);
   const [petRows] = await getPool().query(
-    `SELECT p.id, p.name, p.species, p.status, pcr.is_primary
+    `SELECT p.id, p.name, p.species, p.breed, p.status, pcr.is_primary
      FROM pet_customer_relationships pcr
      INNER JOIN pets p ON p.id = pcr.pet_id
      WHERE pcr.customer_id = ? AND pcr.shop_id = ? AND p.shop_id = pcr.shop_id
@@ -104,6 +104,7 @@ async function getCustomerById(customerId) {
       id: Number(pet.id),
       name: pet.name,
       species: pet.species,
+      breed: pet.breed,
       status: pet.status,
       is_primary: Boolean(pet.is_primary),
     })),

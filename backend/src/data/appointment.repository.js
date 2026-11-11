@@ -142,7 +142,7 @@ async function getAppointmentById(appointmentId, connection = getPool()) {
 
   const appointment = normalizeAppointment(rows[0]);
   const [petRows] = await connection.query(
-    `SELECT ap.id AS appointment_pet_id, ap.pet_id, p.name AS pet_name, p.species, p.gender, p.status AS pet_status
+    `SELECT ap.id AS appointment_pet_id, ap.pet_id, p.name AS pet_name, p.species, p.breed, p.gender, p.status AS pet_status
      FROM appointment_pets ap
      INNER JOIN pets p ON p.id = ap.pet_id AND p.shop_id = ap.shop_id
      WHERE ap.appointment_id = ? AND ap.shop_id = ?

@@ -1,5 +1,6 @@
 const { getPool } = require('../config/database');
 const petRepository = require('../data/pet.repository');
+const { getCurrentShopId } = require('../utils/shop-context');
 
 const VALID_SPECIES = new Set(['DOG', 'CAT']);
 const VALID_GENDERS = new Set(['MALE', 'FEMALE', 'UNKNOWN']);
@@ -163,6 +164,25 @@ async function withTransaction(handler) {
 
 async function listPets(filters = {}) {
   return petRepository.listPets(filters);
+}
+
+async function listBreedPrices() {
+  const [rows] = await getPool().query(
+    `SELECT breed, bath_price, bath_price_is_starting, electric_clipper_price, hand_scissor_price
+     FROM shop_pet_breed_prices
+     WHERE shop_id = ?
+     ORDER BY breed`,
+    [getCurrentShopId()],
+  );
+  return {
+    breeds: rows.map((row) => ({
+      ...row,
+      bath_price: row.bath_price == null ? null : Number(row.bath_price),
+      bath_price_is_starting: Boolean(row.bath_price_is_starting),
+      electric_clipper_price: row.electric_clipper_price == null ? null : Number(row.electric_clipper_price),
+      hand_scissor_price: row.hand_scissor_price == null ? null : Number(row.hand_scissor_price),
+    })),
+  };
 }
 
 async function getPetById(petId) {
@@ -426,6 +446,7 @@ module.exports = {
   deletePet,
   deactivatePet,
   getPetById,
+  listBreedPrices,
   listPets,
   listRelationships,
   normalizeMultiSelectValue,

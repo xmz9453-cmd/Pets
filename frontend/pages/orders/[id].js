@@ -4,9 +4,10 @@ import { createPayment, getCurrentStaff, getOrder, getOrderPayments, voidPayment
 
 const methods = { CASH: '現金', CREDIT_CARD: '信用卡', BANK_TRANSFER: '銀行轉帳', MOBILE_PAYMENT: '行動支付' };
 const statuses = { PAID: '已付款', VOID: '已作廢', UNPAID: '未付款' };
+const packageStatuses = { ACTIVE: '使用中', EXHAUSTED: '已用完', EXPIRED: '已到期', VOID: '已退款' };
 
 function formatMoney(value) {
-  return Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 0 });
+  return Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 2 });
 }
 
 export default function OrderDetailPage() {
@@ -29,6 +30,29 @@ export default function OrderDetailPage() {
   return <main className="container py-4">
     <div className="d-flex justify-content-between align-items-center mb-4"><div><h1 className="mb-1">訂單 #{order.id}</h1><p className="text-muted mb-0">訂單詳細資料與付款紀錄</p></div><button type="button" className="btn btn-outline-dark" onClick={() => router.push('/orders')}>返回訂單</button></div>
     {error ? <div className="alert alert-danger">{error}</div> : null}{success ? <div className="alert alert-success">{success}</div> : null}
+    <div className="foundation-panel mb-4">
+      <h2 className="h5">訂單內容</h2>
+      {order.items.length ? (
+        <div className="table-responsive">
+          <table className="table align-middle mb-0">
+            <thead><tr><th>類型</th><th>項目</th><th>數量</th><th>單價</th><th>小計</th></tr></thead>
+            <tbody>{order.items.map((item) => (
+              <tr key={item.id}>
+                <td>{item.item_type === 'PACKAGE' ? '包套' : item.item_type === 'SERVICE' ? '服務' : '商品'}</td>
+                <td>
+                  {item.name}
+                  {item.item_type === 'PACKAGE' ? <div className="small text-muted">{packageStatuses[item.package_status] || item.package_status}・剩餘 {item.remaining_uses}/{item.purchased_uses} 點・有效至 {item.expires_on}</div> : null}
+                  {item.customer_service_package_id ? <div className="small text-success">使用包套扣次：{item.service_package_name || `方案 #${item.service_package_plan_id}`}</div> : null}
+                </td>
+                <td>{item.quantity} {item.unit}</td>
+                <td>${formatMoney(item.transaction_price)}</td>
+                <td>${formatMoney(item.item_amount)}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      ) : <p className="text-muted mb-0">此訂單沒有明細項目。</p>}
+    </div>
     <div className="row g-4"><div className="col-lg-7"><div className="foundation-panel"><h2 className="h5">付款摘要</h2><div className="row g-3 mb-4"><div className="col-4"><div className="foundation-label">訂單總額</div><div className="foundation-status">${formatMoney(summary.order_total)}</div></div><div className="col-4"><div className="foundation-label">已付金額</div><div className="foundation-status text-success">${formatMoney(summary.paid_amount)}</div></div><div className="col-4"><div className="foundation-label">剩餘金額</div><div className="foundation-status text-danger">${formatMoney(summary.remaining_amount)}</div></div></div><h2 className="h5">付款紀錄</h2>{paymentData.payments.length === 0 ? <p className="text-muted">尚無付款紀錄</p> : <div className="table-responsive"><table className="table align-middle"><thead><tr><th>金額</th><th>付款方式</th><th>狀態</th><th>付款時間</th><th>操作</th></tr></thead><tbody>{paymentData.payments.map((payment) => <tr key={payment.id}><td>${formatMoney(payment.amount)}</td><td>{methods[payment.payment_method]}</td><td><span className={`badge ${payment.status === 'VOID' ? 'bg-danger' : 'bg-success'}`}>{statuses[payment.status]}</span>{payment.void_reason ? <div className="small text-muted">原因：{payment.void_reason}</div> : null}</td><td>{payment.status === 'VOID' ? payment.voided_at : payment.paid_at}</td><td>{payment.status === 'PAID' ? <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => handleVoid(payment.id)}>作廢</button> : <span className="text-muted">已作廢</span>}</td></tr>)}</tbody></table></div>}</div></div>
       <div className="col-lg-5"><div className="foundation-panel"><h2 className="h5">新增付款</h2><p>目前付款狀態：<strong>{statuses[summary.payment_status]}</strong></p><form onSubmit={addPayment}><label className="form-label" htmlFor="payment-amount">付款金額</label><input id="payment-amount" className="form-control mb-3" type="number" min="0.01" step="0.01" max={summary.remaining_amount} value={amount} onChange={(event) => setAmount(event.target.value)} required /><label className="form-label" htmlFor="payment-method">付款方式</label><select id="payment-method" className="form-select mb-3" value={method} onChange={(event) => setMethod(event.target.value)}><option value="CASH">現金</option><option value="CREDIT_CARD">信用卡</option><option value="BANK_TRANSFER">銀行轉帳</option><option value="MOBILE_PAYMENT">行動支付</option></select><button type="submit" className="btn btn-primary" disabled={saving || summary.remaining_amount <= 0}>{saving ? '處理中...' : '確認付款'}</button></form></div></div></div>
   </main>;

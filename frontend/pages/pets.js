@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { createPet, deletePet, getCurrentStaff, getCustomers, getPets, updatePet } from '../api/client';
+import { createPet, deletePet, getCurrentStaff, getCustomers, getPetBreedPrices, getPets, updatePet } from '../api/client';
 
 const emptyForm = {
   customer_id: '',
@@ -73,6 +73,7 @@ export default function PetsPage() {
   const router = useRouter();
   const [pets, setPets] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [breedPrices, setBreedPrices] = useState([]);
   const [filters, setFilters] = useState({ search: '', customer_id: '', status: 'ALL' });
   const [submittedFilters, setSubmittedFilters] = useState(filters);
   const [formData, setFormData] = useState(emptyForm);
@@ -99,9 +100,13 @@ export default function PetsPage() {
     async function loadPage() {
       try {
         await getCurrentStaff();
-        const customerResult = await getCustomers({ status: 'ACTIVE' });
+        const [customerResult, breedResult] = await Promise.all([
+          getCustomers({ status: 'ACTIVE' }),
+          getPetBreedPrices(),
+        ]);
         if (!active) return;
         setCustomers((customerResult.customers || []).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant')));
+        setBreedPrices(breedResult.breeds || []);
         await loadPets();
       } catch (loadError) {
         if (active) router.replace('/login');
@@ -270,7 +275,19 @@ export default function PetsPage() {
                 <div className="col-6"><label className="form-label">性別</label><select className="form-select" required value={formData.gender} onChange={(event) => updateField('gender', event.target.value)}><option value="">請選擇性別</option><option value="MALE">公</option><option value="FEMALE">母</option></select></div>
               </div>
               <label className="form-label mt-3">品種</label>
-              <input className="form-control" maxLength="100" value={formData.breed} onChange={(event) => updateField('breed', event.target.value)} />
+              {formData.species === 'DOG' && breedPrices.length ? (
+                <select className="form-select" value={formData.breed} onChange={(event) => updateField('breed', event.target.value)}>
+                  <option value="">請選擇品種</option>
+                  {formData.breed && !breedPrices.some((breed) => breed.breed === formData.breed) ? <option value={formData.breed}>{formData.breed}（舊資料）</option> : null}
+                  {breedPrices.map((breed) => (
+                    <option key={breed.breed} value={breed.breed}>
+                      {breed.breed}{breed.bath_price == null ? '（現場報價）' : `（洗澡 ${breed.bath_price}${breed.bath_price_is_starting ? ' 起' : ''}）`}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input className="form-control" maxLength="100" value={formData.breed} onChange={(event) => updateField('breed', event.target.value)} />
+              )}
               <label className="form-label mt-3">體重</label>
               <input
                 type="number"

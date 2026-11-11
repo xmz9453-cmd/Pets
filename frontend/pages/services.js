@@ -12,10 +12,17 @@ const createEmptyForm = (type = 'GROOMING') => ({
   duration_minutes: '',
   sort_order: '',
   allow_fractional_quantity: false,
+  breed_price_category: 'STANDARD',
 });
 const emptyForm = createEmptyForm();
 const typeLabels = { GROOMING: '美容', BOARDING: '住宿', ADD_ON: '加購服務' };
 const speciesLabels = { DOG: '狗', CAT: '貓', BOTH: '狗與貓' };
+const breedPriceCategoryLabels = {
+  STANDARD: '一般單價（不扣包月點數）',
+  BATH: '洗澡單價（包月扣 1 點）',
+  ELECTRIC_CLIPPER: '電剪修毛單價（包月扣 2 點）',
+  HAND_SCISSOR: '全手修剪單價（包月扣 3 點）',
+};
 
 function formatMoney(value) {
   return Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 0 });
@@ -86,6 +93,7 @@ export default function ServicesPage() {
       duration_minutes: service.type === 'BOARDING' ? '' : service.duration_minutes ?? '',
       sort_order: String(service.sort_order ?? 0),
       allow_fractional_quantity: Boolean(service.allow_fractional_quantity),
+      breed_price_category: service.breed_price_category || 'STANDARD',
     });
     setError('');
   }
@@ -112,8 +120,11 @@ export default function ServicesPage() {
       };
       if (normalizedType === 'GROOMING') {
         payload.duration_minutes = Number(formData.duration_minutes);
+        payload.package_point_cost = { STANDARD: 0, BATH: 1, ELECTRIC_CLIPPER: 2, HAND_SCISSOR: 3 }[formData.breed_price_category];
       } else {
         delete payload.duration_minutes;
+        payload.breed_price_category = 'STANDARD';
+        payload.package_point_cost = 0;
       }
       payload.sort_order = Number(formData.sort_order);
       if (editingId) {
@@ -169,8 +180,9 @@ export default function ServicesPage() {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <div>
           <h1 className="mb-1">服務管理</h1>
-              <p className="text-muted mb-0">管理美容、住宿與可單獨加購的服務。</p>
+          <p className="text-muted mb-0">管理美容、住宿與可單獨加購的服務。</p>
         </div>
+        <button type="button" className="btn btn-outline-primary" onClick={() => router.push('/service-packages')}>包月／包季方案</button>
       </div>
 
       <div className="row g-4">
@@ -229,6 +241,13 @@ export default function ServicesPage() {
 
               {formData.type === 'GROOMING' ? (
                 <div className="row g-2 mt-1">
+                  <div className="col-12">
+                    <label className="form-label">品種單價與包月扣點</label>
+                    <select className="form-select" value={formData.breed_price_category} onChange={(event) => updateField('breed_price_category', event.target.value)}>
+                      {Object.entries(breedPriceCategoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                    <div className="form-text">選擇洗澡、電剪或全手修剪後，現場訂單會依寵物品種套用價目表價格。</div>
+                  </div>
                   <div className="col-12">
                     <label className="form-label">預估時間（分鐘）</label>
                     <input className="form-control" required type="number" min="1" step="1" value={formData.duration_minutes} onChange={(event) => updateField('duration_minutes', event.target.value)} />
@@ -304,7 +323,11 @@ export default function ServicesPage() {
                           </button>
                         </td>
                         <td>{typeLabels[service.type]}</td>
-                        <td>{formatMoney(service.price)} / {service.unit}</td>
+                        <td>
+                          {service.breed_price_category && service.breed_price_category !== 'STANDARD'
+                            ? <>{breedPriceCategoryLabels[service.breed_price_category]?.split('（')[0]}／依品種價目</>
+                            : `${formatMoney(service.price)} / ${service.unit}`}
+                        </td>
                         <td>{speciesLabels[service.species]}</td>
                         <td>{service.type !== 'ADD_ON' && service.duration_minutes ? `${service.duration_minutes} 分鐘` : '—'}</td>
                         <td>

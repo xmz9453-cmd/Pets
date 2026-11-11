@@ -6,6 +6,7 @@ const { requireRole } = require('../middleware/authorize');
 const router = express.Router();
 
 router.get('/pets', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']), petController.listPets);
+router.get('/pet-breed-prices', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']), petController.listBreedPrices);
 router.get('/pets/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK', 'GROOMER']), petController.getPet);
 router.post('/pets', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), petController.createPet);
 router.put('/pets/:id', requireAuthentication, requireRole(['OWNER', 'FRONT_DESK']), petController.updatePet);

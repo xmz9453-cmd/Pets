@@ -16,6 +16,14 @@ async function listPets(req, res, next) {
   }
 }
 
+async function listBreedPrices(req, res, next) {
+  try {
+    sendSuccess(res, await petService.listBreedPrices());
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function getPet(req, res, next) {
   try {
     const pet = await petService.getPetById(req.params.id);
@@ -114,6 +122,7 @@ module.exports = {
   deactivatePet,
   getPet,
   listPets,
+  listBreedPrices,
   listRelationships,
   removeRelationship,
   setPrimaryCustomer,

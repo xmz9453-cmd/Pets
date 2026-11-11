@@ -449,6 +449,81 @@ body {
   padding: 20px;
 }
 
+.service-package-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 16px;
+}
+
+.service-package-card {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--warm-border);
+  border-top: 5px solid var(--warm-brown);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 12px 12px, rgba(121, 86, 56, 0.1) 0 2px, transparent 2.5px) 0 0 / 22px 22px,
+    var(--warm-input);
+  box-shadow: var(--warm-shadow);
+}
+
+.service-package-card-archived {
+  border-top-color: #9c9187;
+  background-color: #eee8e0;
+  color: var(--warm-muted);
+}
+
+.service-package-card-eyebrow {
+  margin-bottom: 6px;
+  color: var(--warm-brown);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.service-package-stamps {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.service-package-stamp-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.service-package-stamp {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 2px solid var(--warm-brown);
+  border-radius: 50%;
+  background: var(--warm-sage-bg);
+  color: var(--warm-sage-text);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.service-package-stamp-used {
+  border-color: var(--warm-border);
+  background: var(--warm-sand);
+  color: var(--warm-muted);
+}
+
+.service-package-history {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--warm-border);
+  color: var(--warm-muted);
+}
+
+.service-package-history summary,
+.service-package-card-grid + details > summary {
+  cursor: pointer;
+}
+
 .foundation-label {
   color: var(--warm-muted);
   font-size: 0.875rem;

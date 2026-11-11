@@ -78,7 +78,7 @@ describe('Order API', () => {
     const agent = await login();
     const customerId = await createCustomer(agent);
     const regularProduct = await agent.post('/api/products').send({ name: `Whole Product ${customerSequence}`, price: 40, species: 'DOG' });
-    const fareService = await agent.post('/api/services').send({ name: `Fare Service ${customerSequence}`, type: 'ADD_ON', price: 40, unit: '公里', species: 'DOG', allow_fractional_quantity: true });
+    const fareService = await agent.post('/api/services').send({ name: `Fare Service ${Date.now()}-${customerSequence}`, type: 'ADD_ON', price: 40, unit: '公里', species: 'DOG', allow_fractional_quantity: true });
     expect(regularProduct.status).toBe(201);
     expect(fareService.status).toBe(201);
 
